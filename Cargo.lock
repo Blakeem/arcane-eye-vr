@@ -94,11 +94,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "launch"
+version = "0.1.0"
+dependencies = [
+ "ipc-layout",
+ "thiserror",
+ "tracing",
+ "windows",
+]
+
+[[package]]
 name = "launcher"
 version = "0.1.0"
 dependencies = [
  "diag",
  "ipc-layout",
+ "launch",
  "thiserror",
  "tracing",
  "windows",

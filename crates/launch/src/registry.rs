@@ -1,4 +1,4 @@
-//! The registry values the launch app reads, and its read error. `raw.rs` holds the reads.
+//! The registry values the launch steps read, and the read error. `raw.rs` holds the reads.
 
 use std::fmt;
 
@@ -6,7 +6,7 @@ use windows::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHI
 
 /// A registry root key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Hive {
+pub enum Hive {
     LocalMachine,
     CurrentUser,
 }
@@ -29,10 +29,10 @@ impl Hive {
 
 /// One named value under a registry key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct RegistryValue {
-    pub(crate) hive: Hive,
-    pub(crate) key: &'static str,
-    pub(crate) name: &'static str,
+pub struct RegistryValue {
+    pub hive: Hive,
+    pub key: &'static str,
+    pub name: &'static str,
 }
 
 impl fmt::Display for RegistryValue {
@@ -44,7 +44,7 @@ impl fmt::Display for RegistryValue {
 /// A registry value that exists but cannot be read, such as one of another type.
 #[derive(Debug, thiserror::Error)]
 #[error("could not read {value}")]
-pub(crate) struct RegistryError {
-    pub(crate) value: RegistryValue,
-    pub(crate) source: windows::core::Error,
+pub struct RegistryError {
+    pub value: RegistryValue,
+    pub source: windows::core::Error,
 }

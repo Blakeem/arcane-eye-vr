@@ -1,0 +1,109 @@
+//! The direct start: runs the game exe itself, so no Larian launcher and no Play click are needed.
+//!
+//! The command line and the working directory are the ones the Larian launcher gives the game. The
+//! two Steam variables keep the game from handing the start back to Steam.
+
+use std::io;
+use std::path::PathBuf;
+use std::process::{Child, Command};
+
+use tracing::info;
+
+use crate::game_dir::GameDir;
+
+const GAME_ARGS: [&str; 5] = ["-externalcrashhandler", "-stats", "1", "-modded", "1"];
+
+/// The environment variables that tell the game Steam started it.
+const STEAM_VARIABLES: [&str; 2] = ["SteamAppId", "SteamGameId"];
+
+/// The Larian launcher's folder, the working directory it gives the game.
+const WORKING_DIR: &str = "Launcher";
+
+/// The game exe failed to start.
+#[derive(Debug, thiserror::Error)]
+#[error("could not start {program} in {working_dir}")]
+pub struct StartError {
+    pub program: PathBuf,
+    pub working_dir: PathBuf,
+    pub source: io::Error,
+}
+
+/// Starts the game exe in `game_dir`. The returned child holds the game's process id and a handle
+/// to wait on.
+///
+/// # Errors
+///
+/// Returns [`StartError`] when Windows cannot start the game exe.
+pub fn start(game_dir: &GameDir) -> Result<Child, StartError> {
+    let mut command = command(game_dir);
+    match command.spawn() {
+        Ok(child) => {
+            info!(pid = child.id(), exe = %game_dir.exe().display(), "game started directly");
+            Ok(child)
+        }
+        Err(source) => {
+            Err(StartError { program: game_dir.exe(), working_dir: working_dir(game_dir), source })
+        }
+    }
+}
+
+/// The command that starts the game exe in `game_dir`. The Steam variables reach only the child.
+fn command(game_dir: &GameDir) -> Command {
+    let mut command = Command::new(game_dir.exe());
+    command.args(GAME_ARGS).current_dir(working_dir(game_dir));
+    for name in STEAM_VARIABLES {
+        command.env(name, steam_app_id!());
+    }
+    command
+}
+
+fn working_dir(game_dir: &GameDir) -> PathBuf {
+    game_dir.as_path().join(WORKING_DIR)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{command, start};
+    use crate::game_dir::GameDir;
+    use crate::test_dir::TestDir;
+    use std::ffi::OsStr;
+    use std::fs;
+
+    /// A game folder whose exe is an empty file, which Windows refuses to run.
+    fn stand_in_game(name: &str) -> TestDir {
+        let dir = TestDir::new(name);
+        fs::create_dir_all(dir.path().join("bin")).expect("create the game folder");
+        fs::write(dir.path().join(r"bin\bg3_dx11.exe"), "").expect("write a stand-in exe");
+        dir
+    }
+
+    #[test]
+    fn the_command_runs_the_game_exe_with_the_launcher_s_arguments_and_the_steam_variables() {
+        let dir = stand_in_game("direct");
+        let game = dir.path();
+        let command = command(&GameDir::new(game.to_path_buf()).expect("a game folder"));
+        assert_eq!(command.get_program(), game.join(r"bin\bg3_dx11.exe"));
+        let args: Vec<&OsStr> = command.get_args().collect();
+        assert_eq!(args, ["-externalcrashhandler", "-stats", "1", "-modded", "1"]);
+        let envs: Vec<(&OsStr, Option<&OsStr>)> = command.get_envs().collect();
+        let app_id = Some(OsStr::new("1086940"));
+        assert_eq!(envs, [(OsStr::new("SteamAppId"), app_id), (OsStr::new("SteamGameId"), app_id)]);
+        assert_eq!(command.get_current_dir(), Some(game.join("Launcher").as_path()));
+    }
+
+    #[test]
+    fn a_start_that_fails_names_the_program_and_the_working_directory() {
+        let dir = stand_in_game("direct-fails");
+        let game = dir.path();
+        let error = start(&GameDir::new(game.to_path_buf()).expect("a game folder"))
+            .expect_err("an empty exe in a folder with no Launcher folder does not start");
+        assert_eq!(error.program, game.join(r"bin\bg3_dx11.exe"));
+        assert_eq!(error.working_dir, game.join("Launcher"));
+        let expected = format!(
+            "could not start {} in {}",
+            game.join(r"bin\bg3_dx11.exe").display(),
+            game.join("Launcher").display()
+        );
+        assert_eq!(error.to_string(), expected);
+    }
+}
