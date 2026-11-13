@@ -1,0 +1,7 @@
+id: no-group-suppression
+language: rust
+severity: error
+message: Suppressing a lint group hides every lint in it. Name the single lint and give a reason.
+rule:
+  kind: attribute
+  regex: '(^|[(,]\s*)(allow|expect|warn)\s*\(.*\b(warnings|unused|nonstandard_style|future_incompatible|rust_2018_idioms|clippy::(all|pedantic|nursery|restriction|cargo|style|complexity|perf|suspicious|correctness))\b'

@@ -1,0 +1,6 @@
+* text=auto eol=lf
+# Vendored sources keep the bytes of the upstream release, so they match its checksum.
+crates/shim/vendor/** -text
+*.zip binary
+*.dll binary
+*.exe binary

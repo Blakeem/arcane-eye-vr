@@ -1,0 +1,9 @@
+id: comment-no-dates
+language: rust
+severity: error
+message: Comments must not contain dates. Git records when a change happened.
+rule:
+  any:
+    - kind: line_comment
+    - kind: block_comment
+  regex: '\b(19|20)\d\d-\d\d(-\d\d)?\b|\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.? \d{1,2}\b'

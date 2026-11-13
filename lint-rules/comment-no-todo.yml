@@ -1,0 +1,9 @@
+id: comment-no-todo
+language: rust
+severity: error
+message: TODO, FIXME, XXX, and HACK markers do not ship. Record the work in an issue.
+rule:
+  any:
+    - kind: line_comment
+    - kind: block_comment
+  regex: '\b(TODO|FIXME|XXX|HACK)\b'

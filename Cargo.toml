@@ -1,0 +1,169 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.dependencies]
+cc = "1.10.0"
+memchr = "2.8.3"
+thiserror = "2.0.21"
+tracing = { version = "0.1.44", default-features = false, features = ["std", "release_max_level_debug"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std"] }
+windows = "0.62.2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+version = "0.1.0"
+publish = false
+
+[workspace.lints.rust]
+# Safety lints are deny because rustc lints also fire in `cargo build` and `cargo test`.
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+non_ascii_idents = "deny"
+# Hygiene lints are warn so a draft still builds. Every gate runs with `-D warnings`.
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+unused_lifetimes = "warn"
+redundant_lifetimes = "warn"
+redundant_imports = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+let_underscore_drop = "warn"
+elided_lifetimes_in_paths = "warn"
+explicit_outlives_requirements = "warn"
+unit_bindings = "warn"
+unused_macro_rules = "warn"
+impl_trait_redundant_captures = "warn"
+
+[workspace.lints.clippy]
+# Groups are deny, not warn, because an in-source `#![expect(warnings)]` silences every warn-level lint
+# even under `-D warnings`. A deny-level lint survives it.
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+style = { level = "deny", priority = -1 }
+complexity = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+
+# pedantic opt-outs
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+
+# nursery cherry-picks. The full group is off. missing_const_for_fn is noise. redundant_pub_crate
+# contradicts unreachable_pub. suboptimal_flops suggests mul_add, which is a CRT call without the fma target feature.
+as_ptr_cast_mut = "deny"
+branches_sharing_code = "deny"
+coerce_container_to_any = "deny"
+collection_is_never_read = "deny"
+debug_assert_with_mut_call = "deny"
+equatable_if_let = "deny"
+fallible_impl_from = "deny"
+imprecise_flops = "deny"
+iter_on_empty_collections = "deny"
+iter_on_single_items = "deny"
+needless_collect = "deny"
+needless_pass_by_ref_mut = "deny"
+non_send_fields_in_send_ty = "deny"
+or_fun_call = "deny"
+path_buf_push_overwrite = "deny"
+read_zero_byte_vec = "deny"
+redundant_clone = "deny"
+set_contains_or_insert = "deny"
+significant_drop_in_scrutinee = "deny"
+string_lit_as_bytes = "deny"
+trailing_empty_array = "deny"
+trait_duplication_in_bounds = "deny"
+transmute_undefined_repr = "deny"
+tuple_array_conversions = "deny"
+type_repetition_in_bounds = "deny"
+uninhabited_references = "deny"
+unnecessary_struct_initialization = "deny"
+unused_peekable = "deny"
+unused_rounding = "deny"
+use_self = "deny"
+useless_let_if_seq = "deny"
+volatile_composites = "deny"
+while_float = "deny"
+
+# cargo cherry-picks. multiple_crate_versions is left to cargo-deny, cargo_common_metadata to nobody.
+negative_feature_names = "deny"
+redundant_feature_names = "deny"
+wildcard_dependencies = "deny"
+
+# Suppression policing. forbid makes `#[expect(clippy::allow_attributes)]` a hard error (E0453).
+# Only these two are forbid: a dependency macro that emits `#[allow(<a forbidden lint>)]` breaks the build.
+allow_attributes = "forbid"
+allow_attributes_without_reason = "forbid"
+
+# unsafe discipline
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+unnecessary_safety_comment = "deny"
+unnecessary_safety_doc = "deny"
+
+# panics in the game process
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+get_unwrap = "deny"
+unwrap_in_result = "deny"
+panic_in_result_fn = "deny"
+string_slice = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+exit = "deny"
+mem_forget = "deny"
+
+# debug and experiment code
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+# swallowed errors
+unused_result_ok = "deny"
+let_underscore_must_use = "deny"
+let_underscore_untyped = "deny"
+map_err_ignore = "deny"
+assertions_on_result_states = "deny"
+
+# hidden intent and structure
+wildcard_enum_match_arm = "deny"
+as_underscore = "deny"
+as_pointer_underscore = "deny"
+fn_to_numeric_cast_any = "deny"
+clone_on_ref_ptr = "deny"
+rest_pat_in_fully_bound_structs = "deny"
+lossy_float_literal = "deny"
+float_cmp_const = "deny"
+shadow_unrelated = "deny"
+same_name_method = "deny"
+multiple_inherent_impl = "deny"
+mixed_read_write_in_expression = "deny"
+infinite_loop = "deny"
+cognitive_complexity = "deny"
+mod_module_files = "deny"
+tests_outside_test_module = "deny"
+redundant_test_prefix = "deny"
+cfg_not_test = "deny"
+error_impl_error = "deny"
+try_err = "deny"
+redundant_type_annotations = "deny"
+empty_structs_with_brackets = "deny"
+unneeded_field_pattern = "deny"
+large_include_file = "deny"
+missing_asserts_for_indexing = "deny"
+
+[profile.dev]
+# Hook entries depend on catch_unwind, so every profile unwinds.
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"
+overflow-checks = true
+# Goes to the PDB.
+debug = "full"

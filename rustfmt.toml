@@ -1,0 +1,9 @@
+# Stable options only. rustfmt 1.10 (Rust 1.99) accepts every key below without a warning.
+# rustfmt 1.9 (Rust 1.97) still treats hex_literal_case as unstable.
+style_edition = "2024"
+max_width = 100
+use_small_heuristics = "Max"
+newline_style = "Unix"
+use_field_init_shorthand = true
+use_try_shorthand = true
+hex_literal_case = "Upper"

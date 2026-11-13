@@ -1,0 +1,53 @@
+# Verified on clippy 0.1.97 and 0.1.99. Clippy rejects unknown keys, so a typo fails the build.
+
+too-many-lines-threshold = 60
+cognitive-complexity-threshold = 15
+excessive-nesting-threshold = 4
+too-many-arguments-threshold = 5
+max-fn-params-bools = 1
+max-struct-bools = 2
+avoid-breaking-exported-api = false
+# Makes missing_safety_doc fire on private unsafe fns too.
+check-private-items = true
+
+# glam operator impls cannot overflow. Integer arithmetic stays linted.
+arithmetic-side-effects-allowed = [
+    "glam::Vec2", "glam::Vec3", "glam::Vec3A", "glam::Vec4",
+    "glam::Quat", "glam::Mat3", "glam::Mat3A", "glam::Mat4", "glam::Affine3A",
+]
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-dbg-in-tests = false
+allow-print-in-tests = false
+
+doc-valid-idents = ["OpenXR", "SafetyHook", "DirectX", "SteamVR", "DXGI", "HLSL", "SPIR-V", "IPD", "TAA", "DLSS", "FSR", ".."]
+
+# Each banned item is allowed in exactly one module, through a module-level
+# `#![expect(clippy::disallowed_types, reason = "...")]` that the suppression inventory records.
+disallowed-types = [
+    { path = "std::sync::OnceLock", reason = "global state lives in game-bindings/src/state only" },
+    { path = "std::sync::LazyLock", reason = "global state lives in game-bindings/src/state only" },
+    { path = "std::sync::atomic::AtomicBool", reason = "atomics live in the pose channel module only" },
+    { path = "std::sync::atomic::AtomicU8", reason = "atomics live in the pose channel module only" },
+    { path = "std::sync::atomic::AtomicU32", reason = "atomics live in the pose channel module only" },
+    { path = "std::sync::atomic::AtomicU64", reason = "atomics live in the pose channel module only" },
+    { path = "std::sync::atomic::AtomicUsize", reason = "atomics live in the pose channel module only" },
+    { path = "std::sync::atomic::AtomicI32", reason = "atomics live in the pose channel module only" },
+    { path = "std::sync::atomic::AtomicI64", reason = "atomics live in the pose channel module only" },
+    { path = "std::sync::atomic::AtomicPtr", reason = "atomics live in the pose channel module only" },
+]
+
+disallowed-methods = [
+    { path = "std::env::var", reason = "settings come from the config module, not environment variables" },
+    { path = "std::env::var_os", reason = "settings come from the config module, not environment variables" },
+    { path = "std::thread::sleep", reason = "a sleep stalls a game thread" },
+    { path = "std::process::abort", reason = "aborting ends the game. Return an error" },
+    { path = "std::boxed::Box::leak", reason = "leaked memory survives a DLL unload" },
+]
+
+disallowed-macros = [
+    { path = "std::thread_local", reason = "thread-local state lives in game-bindings/src/state only" },
+]

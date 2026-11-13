@@ -1,0 +1,10 @@
+# lefthook 2.x. Both hooks call tools/gate.ps1, so a git hook runs the same commands as CI.
+pre-commit:
+  commands:
+    gate:
+      run: pwsh -NoProfile -File tools/gate.ps1 -Suite commit
+
+pre-push:
+  commands:
+    gate:
+      run: pwsh -NoProfile -File tools/gate.ps1 -Suite full

@@ -1,0 +1,7 @@
+id: never-suppress
+language: rust
+severity: error
+message: This lint is never suppressed. Fix the code.
+rule:
+  kind: attribute
+  regex: '(^|[(,]\s*)expect\s*\(.*clippy::(too_many_lines|cognitive_complexity|excessive_nesting|too_many_arguments|unwrap_used|expect_used|panic|todo|unimplemented|dbg_macro|print_stdout|print_stderr|exit|undocumented_unsafe_blocks|multiple_unsafe_ops_per_block|wildcard_enum_match_arm)\b'

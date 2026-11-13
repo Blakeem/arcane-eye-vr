@@ -1,0 +1,7 @@
+id: comment-no-dead-code
+language: rust
+severity: error
+message: Commented-out code is dead code. Delete it. Git keeps the old version.
+rule:
+  kind: line_comment
+  regex: '^//\s*(let|fn|pub|use|impl|struct|enum|match|if|for|while|return|unsafe)\b.*([;{}]|=>)\s*$'

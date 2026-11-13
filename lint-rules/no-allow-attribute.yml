@@ -1,0 +1,7 @@
+id: no-allow-attribute
+language: rust
+severity: error
+message: "`allow` is banned in every form. clippy::allow_attributes misses inner `#![allow]`. Fix the code, or ask Blake for an `#[expect(lint, reason = \"...\")]`."
+rule:
+  kind: attribute
+  regex: '(^|[(,]\s*)allow\s*\('

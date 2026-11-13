@@ -1,0 +1,18 @@
+# Third-party code, clones and downloads that are never committed
+/reference/
+
+# Scratch experiments from research
+/scratch/
+
+# Build output
+/target/
+
+# Staged build from tools/deploy.ps1
+/dist/
+
+# Browser automation logs
+/.playwright-mcp/
+
+# Local only: the plan, design and research notes
+/docs/
+CLAUDE.md

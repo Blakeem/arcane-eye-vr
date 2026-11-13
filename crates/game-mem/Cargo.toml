@@ -1,0 +1,22 @@
+[package]
+name = "game-mem"
+description = "Guarded reads of game memory and typed game addresses. Unsafe inside, safe API out."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+shim = { path = "../shim" }
+thiserror.workspace = true
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+]
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "ipc-layout"
+description = "Byte layouts shared across processes, such as the launch token and the viewer header, and the core DLL's init contract."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true

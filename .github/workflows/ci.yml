@@ -1,0 +1,58 @@
+# .github/workflows/ci.yml. Every job calls tools/gate.ps1, so CI runs the same commands as the local hooks.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+      # rust-toolchain.toml selects 1.99.1. The preinstalled rustup installs it on first use.
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cargo-deny,cargo-shear,typos-cli,ast-grep,stylua
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force -Scope CurrentUser
+      - name: full gate
+        shell: pwsh
+        run: ./tools/gate.ps1 -Suite full
+
+  miri:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+      - name: nightly gate
+        shell: pwsh
+        run: |
+          $nightly = (Select-String -Path tools/gate.ps1 -Pattern "NightlyToolchain = '(.+)'").Matches[0].Groups[1].Value
+          rustup toolchain install $nightly --profile minimal --component miri,rust-src
+          ./tools/gate.ps1 -Suite nightly
+
+  mutants:
+    if: github.event_name == 'pull_request'
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants,cargo-nextest
+      - name: mutants on changed lines
+        shell: pwsh
+        run: |
+          git diff "origin/${{ github.base_ref }}...HEAD" > pr.diff
+          cargo mutants --in-diff pr.diff --test-tool nextest -p stereo-core

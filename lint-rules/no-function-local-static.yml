@@ -1,0 +1,9 @@
+id: no-function-local-static
+language: rust
+severity: error
+message: A function-local `static` hides global state inside a function.
+rule:
+  kind: static_item
+  inside:
+    kind: function_item
+    stopBy: end

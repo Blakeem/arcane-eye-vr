@@ -1,0 +1,8 @@
+id: no-static-mut
+language: rust
+severity: error
+message: "`static mut` is banned. Use a type with interior mutability in game-bindings/src/state.rs."
+rule:
+  kind: static_item
+  has:
+    kind: mutable_specifier

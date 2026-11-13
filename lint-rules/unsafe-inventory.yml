@@ -1,0 +1,6 @@
+id: unsafe-inventory
+language: rust
+severity: hint
+message: Unsafe block. `ast-grep scan --filter unsafe-inventory` lists every one, which replaces the cargo-geiger report.
+rule:
+  kind: unsafe_block

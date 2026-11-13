@@ -1,0 +1,11 @@
+id: no-raw-address-literal
+language: rust
+severity: error
+message: A long hex literal outside a `const` item is a hardcoded address or offset. Name it as a `const` in game-bindings/src/offsets.rs.
+rule:
+  kind: integer_literal
+  regex: '^0x[0-9A-Fa-f_]{7,}'
+  not:
+    inside:
+      kind: const_item
+      stopBy: end

@@ -1,0 +1,19 @@
+id: unsafe-code-allowlist
+language: rust
+severity: error
+message: "`unsafe` is allowed only under the `#![expect(unsafe_code)]` at the top of the files listed in this rule's `ignores`."
+rule:
+  kind: attribute
+  regex: '(^|[(,]\s*)expect\s*\(\s*unsafe_code\b'
+ignores:
+  - "**/proxy/src/lib.rs"
+  - "**/arcane-eye-core/src/raw.rs"
+  - "**/shim/src/raw.rs"
+  - "**/game-mem/src/raw.rs"
+  - "**/hooks/src/raw.rs"
+  - "**/diag/src/raw.rs"
+  - "**/gfx/src/raw.rs"
+  - "**/xr/src/raw.rs"
+  - "**/overlay/src/raw.rs"
+  - "**/launcher/src/raw.rs"
+  - "**/viewer/src/raw.rs"

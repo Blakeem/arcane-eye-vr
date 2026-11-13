@@ -1,0 +1,11 @@
+id: no-static-items
+language: rust
+severity: error
+message: A `static` item is global state. Global state lives only in the files listed in this rule's `ignores`.
+note: Pass state through the context struct that the hook entry receives from game-bindings/src/state. Ask Blake before adding a new global.
+rule:
+  kind: static_item
+ignores:
+  - "**/game-bindings/src/state.rs"
+  - "**/game-bindings/src/state/**"
+  - "**/proxy/src/**"

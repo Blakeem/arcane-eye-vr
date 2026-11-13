@@ -1,0 +1,29 @@
+[package]
+name = "gfx"
+description = "D3D11 resources, the viewer publisher and warp shader dispatch."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ipc-layout = { path = "../ipc-layout" }
+thiserror.workspace = true
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Security",
+    "Win32_System_Memory",
+]
+
+[dev-dependencies.windows]
+workspace = true
+features = ["Win32_Graphics_Direct3D"]
+
+[lints]
+workspace = true

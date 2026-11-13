@@ -1,0 +1,9 @@
+id: comment-no-history
+language: rust
+severity: error
+message: Comments state why the code exists. Change history, authorship, and agent names belong in git.
+rule:
+  any:
+    - kind: line_comment
+    - kind: block_comment
+  regex: '(?i)\b(this used to|we used to|it used to|previously (this|we|it|the code)|no longer (needed|used)|switched (to|from)|changed (on|to|from)|(was|were) (added|changed|removed|fixed|moved) (in|on|by|after)|added (by|after)|now uses|old (path|code|version|implementation)|agent ?\d+|(?-i:agent [A-Z])|claude|chatgpt|copilot|ai[- ]generated|as of (v|version|\d))\b'

@@ -1,0 +1,7 @@
+id: suppression-inventory
+language: rust
+severity: hint
+message: Lint suppression. tools/gate.ps1 compares every hit of this rule with suppressions.txt.
+rule:
+  kind: attribute
+  regex: '(^|[(,]\s*)expect\s*\('

@@ -1,0 +1,4 @@
+# MSVC link.exe 14.51 rejects the proxy's absolute-path export forwarders with LNK2001, and Cargo has
+# no stable per-package linker, so the entire workspace links with rust-lld.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"

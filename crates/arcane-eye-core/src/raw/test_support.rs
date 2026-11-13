@@ -1,0 +1,235 @@
+//! Fixtures for the core's tests.
+//!
+//! It holds a launch token mapping, a WARP device and swapchain on a hidden window, a debug viewer's
+//! view of the viewer header, and a test folder.
+
+use std::path::PathBuf;
+use std::{fs, process, ptr};
+
+use gfx::publish::ViewNames;
+use ipc_layout::launch_token::{self, STATUS_OFFSET};
+use ipc_layout::viewer_header::{self, HEARTBEAT_OFFSET, ViewerHeader, WORDS};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE, HWND, INVALID_HANDLE_VALUE};
+use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_WARP;
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11_CREATE_DEVICE_FLAG, D3D11_SDK_VERSION, D3D11CreateDeviceAndSwapChain,
+};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_MODE_DESC, DXGI_SAMPLE_DESC,
+};
+use windows::Win32::Graphics::Dxgi::{
+    DXGI_SWAP_CHAIN_DESC, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_DISCARD,
+    DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGISwapChain,
+};
+use windows::Win32::System::Memory::{
+    CreateFileMappingW, FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
+    OpenFileMappingW, PAGE_READWRITE, UnmapViewOfFile,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP,
+};
+use windows::core::{HSTRING, Interface as _, w};
+
+use super::StatusView;
+
+/// A folder next to the test binary, so a run that keeps a log file open leaves it in `target/`.
+pub(crate) fn test_dir(name: &str) -> PathBuf {
+    let exe = std::env::current_exe().expect("the test binary path");
+    let dir =
+        exe.parent().expect("the test binary folder").join("arcane-eye-core-tests").join(name);
+    if dir.exists() {
+        fs::remove_dir_all(&dir).expect("remove the test folder a previous run left");
+    }
+    dir
+}
+
+/// A zero-filled launch token mapping under a name only this test process uses, closed on drop.
+pub(crate) struct TestMapping {
+    pub(crate) name: String,
+    mapping: HANDLE,
+}
+
+impl TestMapping {
+    pub(crate) fn create(test: &str) -> Self {
+        let name = format!(r"Local\arcane-eye-vr-core-test-{}-{test}", process::id());
+        let size = u32::try_from(launch_token::SIZE).expect("64 fits a u32");
+        let wide_name = HSTRING::from(&name);
+        // SAFETY: a pagefile-backed mapping with default security and a NUL-terminated name.
+        let mapping = unsafe {
+            CreateFileMappingW(INVALID_HANDLE_VALUE, None, PAGE_READWRITE, 0, size, &wide_name)
+        }
+        .expect("create the test mapping");
+        Self { name, mapping }
+    }
+
+    /// The token's status field.
+    pub(crate) fn status(&self) -> u32 {
+        let opened = StatusView::open(&self.name).expect("map the test mapping");
+        let view = opened.expect("the test mapping exists");
+        let field =
+            ptr::with_exposed_provenance::<u32>(view.address).wrapping_byte_add(STATUS_OFFSET);
+        // SAFETY: the status field is a 4-aligned u32 inside the mapped 64-byte view.
+        unsafe { ptr::read_volatile(field) }
+    }
+}
+
+impl Drop for TestMapping {
+    fn drop(&mut self) {
+        // SAFETY: `mapping` is the handle `create` opened, closed once here.
+        unsafe { CloseHandle(self.mapping) }.expect("close the test mapping");
+    }
+}
+
+/// Viewer names that only this test process and test use, never the real viewer's.
+pub(crate) fn test_view_names(test: &str) -> ViewNames {
+    let prefix = format!(r"Local\arcane-eye-vr-core-test-{}-{test}", process::id());
+    ViewNames { mapping: format!("{prefix}-view"), texture: format!("{prefix}-texture") }
+}
+
+/// A debug viewer's view of the viewer header, which writes the heartbeat as the viewer does.
+pub(crate) struct TestViewer {
+    address: MEMORY_MAPPED_VIEW_ADDRESS,
+    heartbeat: u32,
+}
+
+impl TestViewer {
+    /// Opens the header the core created under `names.mapping`.
+    pub(crate) fn open(names: &ViewNames) -> Self {
+        let name = HSTRING::from(&names.mapping);
+        let access = FILE_MAP_READ | FILE_MAP_WRITE;
+        // SAFETY: `name` is a NUL-terminated wide string that outlives the call.
+        let mapping = unsafe { OpenFileMappingW(access.0, false, &name) }.expect("open the header");
+        // SAFETY: `mapping` is the open handle above, and the view spans the header's bytes.
+        let address = unsafe { MapViewOfFile(mapping, access, 0, 0, viewer_header::SIZE) };
+        // SAFETY: `mapping` is a handle this function opened and closes once.
+        unsafe { CloseHandle(mapping) }.expect("close the header mapping handle");
+        assert!(!address.Value.is_null(), "map the viewer header");
+        Self { address, heartbeat: 0 }
+    }
+
+    pub(crate) fn beat(&mut self) {
+        self.heartbeat = self.heartbeat.wrapping_add(1);
+        let field = self.address.Value.wrapping_byte_add(HEARTBEAT_OFFSET).cast::<u32>();
+        // SAFETY: the heartbeat is a 4-aligned word inside the page-aligned view of the header.
+        unsafe { ptr::write_volatile(field, self.heartbeat) };
+    }
+
+    pub(crate) fn header(&self) -> ViewerHeader {
+        let base = self.address.Value.cast::<u32>().cast_const();
+        let mut words = [0; WORDS];
+        for (index, word) in words.iter_mut().enumerate() {
+            // SAFETY: `index` is below `WORDS`, and the page-aligned view spans the header's bytes.
+            *word = unsafe { ptr::read_volatile(base.wrapping_add(index)) };
+        }
+        ViewerHeader::decode(&words).expect("a header the core wrote")
+    }
+}
+
+impl Drop for TestViewer {
+    fn drop(&mut self) {
+        // SAFETY: `address` is the base of the view `open` mapped, and only this drop unmaps it.
+        unsafe { UnmapViewOfFile(self.address) }.expect("unmap the viewer header");
+    }
+}
+
+/// The back buffer format of every test swapchain.
+pub(crate) const FORMAT: DXGI_FORMAT = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+/// A swapchain on a window that is never shown. The swapchain drops before its window.
+pub(crate) struct TestSwapchain {
+    pub(crate) swapchain: IDXGISwapChain,
+    _window: Window,
+}
+
+struct Window(HWND);
+
+impl Drop for Window {
+    fn drop(&mut self) {
+        // SAFETY: the window was created on this thread by `TestSwapchain::new`, and only this drop
+        // destroys it.
+        unsafe { DestroyWindow(self.0) }.expect("destroy the test window");
+    }
+}
+
+impl TestSwapchain {
+    pub(crate) fn new(width: u32, height: u32) -> Self {
+        let size = |value| i32::try_from(value).expect("a test size fits an i32");
+        // SAFETY: STATIC is a system window class, and the window has no parent, menu or create data.
+        let window = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                w!("arcane-eye-core test"),
+                WS_POPUP,
+                0,
+                0,
+                size(width),
+                size(height),
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("create the hidden test window");
+        let window = Window(window);
+        let desc = DXGI_SWAP_CHAIN_DESC {
+            BufferDesc: DXGI_MODE_DESC {
+                Width: width,
+                Height: height,
+                Format: FORMAT,
+                ..Default::default()
+            },
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+            BufferCount: 1,
+            OutputWindow: window.0,
+            Windowed: true.into(),
+            SwapEffect: DXGI_SWAP_EFFECT_DISCARD,
+            Flags: 0,
+        };
+        let mut swapchain = None;
+        // SAFETY: `desc` and `swapchain` are live for the call, and every other output is skipped.
+        unsafe {
+            D3D11CreateDeviceAndSwapChain(
+                None,
+                D3D_DRIVER_TYPE_WARP,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_FLAG::default(),
+                None,
+                D3D11_SDK_VERSION,
+                Some(&raw const desc),
+                Some(&raw mut swapchain),
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("create a WARP device and swapchain");
+        Self { swapchain: swapchain.expect("the created swapchain"), _window: window }
+    }
+
+    pub(crate) fn address(&self) -> usize {
+        self.swapchain.as_raw().expose_provenance()
+    }
+
+    /// Resizes the back buffer. DXGI fails the call while any reference to the back buffer exists.
+    pub(crate) fn resize(&self, width: u32, height: u32) -> windows::core::Result<()> {
+        // SAFETY: the swapchain is live, and buffer count 0 and format unknown keep both as they are.
+        unsafe {
+            self.swapchain.ResizeBuffers(
+                0,
+                width,
+                height,
+                DXGI_FORMAT_UNKNOWN,
+                DXGI_SWAP_CHAIN_FLAG::default(),
+            )
+        }
+    }
+
+    /// Runs `f` through the guarded borrow the Present call-site hook uses.
+    pub(crate) fn with<R>(&self, f: impl FnOnce(usize, &IDXGISwapChain) -> R) -> Option<R> {
+        // SAFETY: `self.swapchain` holds a reference, so the swapchain lives until `f` returns.
+        unsafe { super::with_swapchain(self.address(), f) }
+    }
+}

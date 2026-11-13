@@ -1,0 +1,7 @@
+id: file-too-long
+language: rust
+severity: error
+message: This file is over 400 lines. Split it by concern.
+rule:
+  kind: source_file
+  regex: '^(?:[^\n]*\n){400}'
