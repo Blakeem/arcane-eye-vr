@@ -14,6 +14,7 @@ dependencies = [
  "ipc-layout",
  "thiserror",
  "tracing",
+ "viewer-client",
  "windows",
 ]
 
@@ -274,7 +275,17 @@ name = "viewer"
 version = "0.1.0"
 dependencies = [
  "ipc-layout",
+ "viewer-client",
+ "windows",
+]
+
+[[package]]
+name = "viewer-client"
+version = "0.1.0"
+dependencies = [
+ "ipc-layout",
  "thiserror",
+ "tracing",
  "windows",
 ]
 

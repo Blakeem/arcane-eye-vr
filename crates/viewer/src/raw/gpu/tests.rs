@@ -1,9 +1,7 @@
 //! The renderer against a texture a WARP device shares in the core's place.
 
-use std::process;
-
-use ipc_layout::viewer_header::AdapterLuid;
-use windows::Win32::Foundation::S_OK;
+use viewer_client::Copied;
+use viewer_client::fixture::{CoreTexture, share, test_name, texture_desc};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
     D3D11_RENDER_TARGET_VIEW_DESC, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
@@ -14,14 +12,12 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_B8G8R8X8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
     DXGI_FORMAT_R10G10B10A2_UNORM,
 };
-use windows::Win32::Graphics::Dxgi::DXGI_ERROR_DEVICE_REMOVED;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, WINDOW_EX_STYLE, WS_OVERLAPPEDWINDOW,
 };
-use windows::core::{HRESULT, HSTRING, Interface as _, w};
+use windows::core::{HSTRING, Interface as _, w};
 
-use super::{Copied, GpuError, Renderer, Screen, Window, acquired, screen_format};
-use crate::raw::test_support::{share, texture_desc};
+use super::{Renderer, Screen, Window, screen_format};
 
 const RED: [u8; 4] = [255, 0, 0, 255];
 const GREEN: [u8; 4] = [0, 255, 0, 255];
@@ -29,19 +25,20 @@ const OPAQUE_BLACK: [u8; 4] = [0, 0, 0, 255];
 
 /// The bytes of `target`, a 4x4 RGBA texture of `renderer`'s device, in row order.
 fn read(renderer: &Renderer, target: &ID3D11Texture2D) -> Vec<[u8; 4]> {
-    let mut desc = texture_desc(4, 4, 0, 0);
+    let (d3d, context) = (renderer.device.d3d(), renderer.device.context());
+    let mut desc = texture_desc(4, 4, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 0);
     desc.Usage = D3D11_USAGE_STAGING;
     desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0.cast_unsigned();
     let mut staging = None;
     // SAFETY: the descriptor and the out slot are live for the call.
-    unsafe { renderer.device.CreateTexture2D(&raw const desc, None, Some(&raw mut staging)) }
+    unsafe { d3d.CreateTexture2D(&raw const desc, None, Some(&raw mut staging)) }
         .expect("create the staging texture");
     let staging = staging.expect("the staging texture");
     // SAFETY: both textures belong to the renderer's device and have the same size and format.
-    unsafe { renderer.context.CopyResource(&staging, target) };
+    unsafe { context.CopyResource(&staging, target) };
     let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
     // SAFETY: the staging texture has CPU read access, and `mapped` is writable.
-    unsafe { renderer.context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&raw mut mapped)) }
+    unsafe { context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&raw mut mapped)) }
         .expect("map the staging texture");
     let mut pixels = Vec::new();
     for y in 0..4_usize {
@@ -51,29 +48,39 @@ fn read(renderer: &Renderer, target: &ID3D11Texture2D) -> Vec<[u8; 4]> {
         pixels.extend_from_slice(unsafe { std::slice::from_raw_parts(row, 4) });
     }
     // SAFETY: the staging texture was mapped above.
-    unsafe { renderer.context.Unmap(&staging, 0) };
+    unsafe { context.Unmap(&staging, 0) };
     pixels
+}
+
+/// Shares a texture of one row of `pixels` under the name [`test_name`] gives `test`, and returns
+/// the core's texture, which must outlive every use of the name, and the name.
+fn share_row(test: &str, pixels: &[[u8; 4]]) -> (CoreTexture, HSTRING) {
+    let name = HSTRING::from(test_name(test));
+    let width = u32::try_from(pixels.len()).expect("a test pixel count");
+    let core = share(&name, width, DXGI_FORMAT_R8G8B8A8_UNORM, pixels).expect("share a texture");
+    (core, name)
 }
 
 #[test]
 fn renderer_opens_the_shared_texture_and_draws_it_letterboxed() {
-    let name = HSTRING::from(format!(r"Local\arcane-eye-vr-viewer-test-{}-draw", process::id()));
-    let (_core, _handle, luid) = share(&name, 2, &[RED, GREEN]);
-    let renderer = Renderer::create(luid).expect("a device on the core's adapter");
-    assert_eq!(renderer.adapter_luid(), luid);
+    let (core, name) = share_row("draw", &[RED, GREEN]);
+    let renderer = Renderer::create(core.luid).expect("a device on the core's adapter");
+    assert_eq!(renderer.adapter_luid(), core.luid);
     let source = renderer.open(&name).expect("open the shared texture by name");
     assert_eq!(source.size(), (2, 1));
     let copied = renderer.copy(&source).expect("the copy acquired the free keyed mutex");
     assert_eq!(copied, Copied::NewFrame);
-    let target_desc = texture_desc(4, 4, D3D11_BIND_RENDER_TARGET.0.cast_unsigned(), 0);
+    let bind = D3D11_BIND_RENDER_TARGET.0.cast_unsigned();
+    let target_desc = texture_desc(4, 4, DXGI_FORMAT_R8G8B8A8_UNORM, bind, 0);
+    let d3d = renderer.device.d3d();
     let mut target = None;
     // SAFETY: the descriptor and the out slot are live for the call.
-    unsafe { renderer.device.CreateTexture2D(&raw const target_desc, None, Some(&raw mut target)) }
+    unsafe { d3d.CreateTexture2D(&raw const target_desc, None, Some(&raw mut target)) }
         .expect("create the target texture");
     let target = target.expect("the target texture");
     let mut view = None;
     // SAFETY: `target` is a render target of the renderer's device, and the out slot is live.
-    unsafe { renderer.device.CreateRenderTargetView(&target, None, Some(&raw mut view)) }
+    unsafe { d3d.CreateRenderTargetView(&target, None, Some(&raw mut view)) }
         .expect("create the target view");
     renderer.draw(&view.expect("the target view"), (4, 4), &source);
     let pixels = read(&renderer, &target);
@@ -107,27 +114,6 @@ fn an_srgb_source_gets_an_srgb_back_buffer_view_and_every_other_format_a_unorm_v
     for format in unorm {
         assert_eq!(screen_format(format), DXGI_FORMAT_B8G8R8A8_UNORM, "{format:?}");
     }
-}
-
-/// A LUID far above the small counters Windows hands out to adapters since boot.
-const MISSING_LUID: AdapterLuid = AdapterLuid { low: u32::MAX, high: i32::MAX };
-
-#[test]
-fn renderer_on_an_unknown_adapter_names_the_failed_step() {
-    let error = Renderer::create(MISSING_LUID).map(|_renderer| ()).expect_err("no such adapter");
-    assert!(error.to_string().starts_with("finding the core's adapter failed: "), "{error}");
-}
-
-#[test]
-fn each_acquire_code_maps_to_its_copy_decision() {
-    assert!(matches!(acquired(S_OK), Ok(true)));
-    assert!(matches!(acquired(HRESULT(0x102)), Ok(false)), "WAIT_TIMEOUT");
-    assert!(matches!(acquired(HRESULT(0x80)), Err(GpuError::Abandoned)), "WAIT_ABANDONED");
-    let removed = acquired(DXGI_ERROR_DEVICE_REMOVED).map(|_held| ()).expect_err("removed");
-    let GpuError::Call { step, source } = removed else {
-        panic!("a failed call, not {removed:?}");
-    };
-    assert_eq!((step, source.code()), ("acquiring the keyed mutex", DXGI_ERROR_DEVICE_REMOVED));
 }
 
 /// A hidden window of the system `STATIC` class, which needs no registered class.
@@ -175,9 +161,8 @@ fn current_view(screen: &Screen, size: (u32, u32), format: DXGI_FORMAT) -> ID3D1
 
 #[test]
 fn screen_resizes_its_back_buffers_for_a_new_size_and_a_new_view_format() {
-    let name = HSTRING::from(format!(r"Local\arcane-eye-vr-viewer-test-{}-resize", process::id()));
-    let (_core, _handle, luid) = share(&name, 2, &[RED, GREEN]);
-    let renderer = Renderer::create(luid).expect("a device on the core's adapter");
+    let (core, name) = share_row("resize", &[RED, GREEN]);
+    let renderer = Renderer::create(core.luid).expect("a device on the core's adapter");
     let source = renderer.open(&name).expect("open the shared texture by name");
     let window = hidden_window();
     let mut screen = Screen::create(&renderer, &window).expect("a swapchain for the window");

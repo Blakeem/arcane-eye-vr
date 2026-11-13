@@ -1,17 +1,30 @@
 //! The heartbeat thread: the one writer of the viewer header's heartbeat.
 //!
-//! A window move or resize runs a modal message loop on the window's thread, so a heartbeat written
-//! there stops for as long as the mouse button is held. This thread beats through every stall of the
-//! window's thread, and its view of the header is its own.
+//! The core publishes frames only while the heartbeat advances. A window move or resize runs a modal
+//! message loop on the window's thread, so a heartbeat written there stops for as long as the mouse
+//! button is held. This thread beats through every stall of the caller's threads, and its view of the
+//! header is its own.
 
 use std::io;
 use std::thread;
+use std::time::Duration;
 
-use crate::raw::HeaderView;
-use crate::{IDLE_WAIT, read_header};
+use ipc_layout::viewer_header;
+
+use crate::HeaderView;
+use crate::header::read_header;
+
+/// The time between two beats. It stays far inside [`viewer_header::STALE_AFTER`], after which the
+/// core stops publishing.
+const PERIOD: Duration = Duration::from_millis(50);
+const _: () = assert!(PERIOD.as_millis() < viewer_header::STALE_AFTER.as_millis());
 
 /// Starts the heartbeat thread for the header mapping `mapping`. The thread ends with the process.
-pub(crate) fn spawn(mapping: String) -> io::Result<()> {
+///
+/// # Errors
+///
+/// Returns the error of a thread that could not be started.
+pub fn spawn(mapping: String) -> io::Result<()> {
     let builder = thread::Builder::new().name("arcane-eye-viewer-heartbeat".to_owned());
     let handle = builder.spawn(move || run(mapping))?;
     // The thread loops until the process exits, so it is detached and never joined.
@@ -25,7 +38,7 @@ fn run(mapping: String) -> ! {
         beater.beat();
         // thread::sleep is banned for game threads. Parking waits the same, and an early wake only
         // beats early.
-        thread::park_timeout(IDLE_WAIT);
+        thread::park_timeout(PERIOD);
     }
 }
 
@@ -43,7 +56,7 @@ impl Beater {
 
     /// Opens the header when no view of it exists and advances its heartbeat. A header that is
     /// missing, fails to open or has another layout version gets no beat, since another layout may
-    /// hold another field at the heartbeat's offset. The window's thread shows that status.
+    /// hold another field at the heartbeat's offset. The header's readers report that error.
     fn beat(&mut self) {
         let Ok((view, _header)) = read_header(&mut self.header, &self.mapping) else {
             return;
@@ -56,38 +69,36 @@ impl Beater {
 #[cfg(test)]
 mod tests {
     use super::{Beater, spawn};
-    use crate::raw::test_support::CoreMapping;
-    use crate::{Status, read_header};
-    use ipc_layout::viewer_header::{TextureInfo, ViewerHeader};
+    use crate::fixture::{CoreMapping, LAYOUT_VERSION_OFFSET};
+    use crate::header::{HeaderReadError, read_header};
+    use ipc_layout::viewer_header::{HeaderError, TextureInfo, ViewerHeader};
     use std::thread;
     use std::time::{Duration, Instant};
-
-    /// The byte offset of the layout version, the header's second word.
-    const LAYOUT_VERSION_OFFSET: usize = 4;
 
     #[test]
     fn a_header_of_another_layout_version_fails_and_gets_no_heartbeat() {
         let header = ViewerHeader::new(TextureInfo::default(), 3, 9);
-        let core = CoreMapping::create("layout", &header);
-        core.write_word(LAYOUT_VERSION_OFFSET, 2);
+        let core = CoreMapping::create("layout", &header).expect("the core's mapping");
+        core.write_word(LAYOUT_VERSION_OFFSET, 2).expect("write the layout version");
         let mut beater = Beater::new(core.name.clone());
         beater.beat();
         assert_eq!(core.heartbeat(), 0, "a heartbeat written into another layout");
         let mut slot = None;
         let failed = read_header(&mut slot, &core.name).map(|_read| ()).expect_err("layout 2");
-        let Status::Failed(message) = failed else {
-            panic!("a failed status, not {failed:?}");
+        let HeaderReadError::Layout(HeaderError::LayoutVersion { found: 2 }) = &failed else {
+            panic!("a layout version error, not {failed:?}");
         };
-        assert!(message.contains("layout version is 2"), "{message}");
-        core.write_word(LAYOUT_VERSION_OFFSET, 1);
+        assert!(failed.to_string().contains("layout version is 2"), "{failed}");
+        core.write_word(LAYOUT_VERSION_OFFSET, 1).expect("write the layout version");
         beater.beat();
         let (_view, read) = read_header(&mut slot, &core.name).expect("a header of this layout");
         assert_eq!((read.generation(), read.frame(), core.heartbeat()), (3, 9, 1));
     }
 
     #[test]
-    fn the_heartbeat_advances_while_no_main_loop_pass_runs() {
-        let core = CoreMapping::create("thread", &ViewerHeader::new(TextureInfo::default(), 1, 1));
+    fn the_heartbeat_thread_advances_the_heartbeat_on_its_own() {
+        let header = ViewerHeader::new(TextureInfo::default(), 1, 1);
+        let core = CoreMapping::create("thread", &header).expect("the core's mapping");
         spawn(core.name.clone()).expect("start the heartbeat thread");
         let deadline = Instant::now().checked_add(Duration::from_secs(5)).expect("a test time");
         while core.heartbeat() < 3 && Instant::now() < deadline {

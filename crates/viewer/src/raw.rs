@@ -1,26 +1,15 @@
-//! The viewer's unsafe edge: the window and the viewer header view here, and in `raw/gpu.rs` the
-//! D3D11 and DXGI calls that open the shared texture and draw it.
+//! The viewer's unsafe edge: the window here, and in `raw/gpu.rs` the D3D11 and DXGI calls that
+//! draw the shared texture's private copy.
 
-#![expect(
-    unsafe_code,
-    reason = "the window, the header mapping and the D3D11 and DXGI calls are Windows calls"
-)]
+#![expect(unsafe_code, reason = "the window and the D3D11 and DXGI calls are Windows calls")]
 
 mod gpu;
 
-use std::ptr;
 use std::time::Duration;
 
-use ipc_layout::viewer_header::{HEARTBEAT_OFFSET, SIZE, WORDS};
-use windows::Win32::Foundation::{
-    CloseHandle, ERROR_FILE_NOT_FOUND, HWND, LPARAM, LRESULT, RECT, WPARAM,
-};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{BLACK_BRUSH, GetStockObject, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Memory::{
-    FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, OpenFileMappingW,
-    UnmapViewOfFile,
-};
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, IDC_ARROW,
     LoadCursorW, MB_ICONERROR, MB_OK, MSG, MessageBoxW, MsgWaitForMultipleObjects, PM_REMOVE,
@@ -29,7 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HSTRING, w};
 
-pub(crate) use gpu::{Copied, GpuError, Renderer, Screen, Source};
+pub(crate) use gpu::{Renderer, Screen, Source};
 
 /// The window's first outer size, frame and title bar included, before the user resizes it.
 const INITIAL_SIZE: (i32, i32) = (1280, 720);
@@ -146,81 +135,3 @@ pub(crate) fn show_error(caption: &str, text: &str) {
     // no owner window.
     unsafe { MessageBoxW(None, &text, &caption, MB_OK | MB_ICONERROR) };
 }
-
-/// A view of the viewer header that the core created. The view is unmapped on drop.
-pub(crate) struct HeaderView {
-    address: MEMORY_MAPPED_VIEW_ADDRESS,
-}
-
-/// Why the viewer header could not be opened or mapped, for any cause but a missing mapping.
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum HeaderViewError {
-    #[error("opening the viewer header's mapping failed: {0}")]
-    Open(#[source] windows::core::Error),
-    #[error("mapping a view of the viewer header failed: {0}")]
-    Map(#[source] windows::core::Error),
-}
-
-impl HeaderView {
-    /// Maps the header in the mapping `name`, or returns `None` when no core created it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`HeaderViewError`] when opening fails for another cause, such as a viewer without
-    /// access to an elevated game's mapping, or when mapping the view fails.
-    pub(crate) fn open(name: &str) -> Result<Option<Self>, HeaderViewError> {
-        let name = HSTRING::from(name);
-        let access = FILE_MAP_READ | FILE_MAP_WRITE;
-        // SAFETY: `name` is a NUL-terminated wide string that outlives the call.
-        let mapping = match unsafe { OpenFileMappingW(access.0, false, &name) } {
-            Ok(mapping) => mapping,
-            Err(error) if error.code() == ERROR_FILE_NOT_FOUND.to_hresult() => return Ok(None),
-            Err(error) => return Err(HeaderViewError::Open(error)),
-        };
-        // SAFETY: `mapping` is the open mapping handle above, and the view spans the header's bytes.
-        let address = unsafe { MapViewOfFile(mapping, access, 0, 0, SIZE) };
-        // The error is read before the close, which can overwrite the thread's last error.
-        let map_error = address.Value.is_null().then(windows::core::Error::from_thread);
-        // The view keeps the mapping alive, so the handle closes at once. A failed close leaks one
-        // handle and changes nothing else.
-        // SAFETY: `mapping` is a handle this function opened and closes once.
-        drop(unsafe { CloseHandle(mapping) });
-        match map_error {
-            Some(error) => Err(HeaderViewError::Map(error)),
-            None => Ok(Some(Self { address })),
-        }
-    }
-
-    /// Copies the header's words. Each read is volatile, since the core writes the header.
-    pub(crate) fn read_words(&self) -> [u32; WORDS] {
-        let base = self.address.Value.cast::<u32>().cast_const();
-        let mut words = [0; WORDS];
-        // The last word is read first, so the generation is read before the texture fields.
-        for (index, word) in words.iter_mut().enumerate().rev() {
-            // SAFETY: `index` is below `WORDS`, and the page-aligned view spans the header's bytes.
-            *word = unsafe { ptr::read_volatile(base.wrapping_add(index)) };
-        }
-        words
-    }
-
-    /// Writes the heartbeat, the one field the viewer owns.
-    pub(crate) fn write_heartbeat(&self, heartbeat: u32) {
-        let field = self.address.Value.wrapping_byte_add(HEARTBEAT_OFFSET).cast::<u32>();
-        // SAFETY: the heartbeat is a 4-aligned word inside the page-aligned view of the header.
-        unsafe { ptr::write_volatile(field, heartbeat) };
-    }
-}
-
-impl Drop for HeaderView {
-    fn drop(&mut self) {
-        // A failed unmap leaves this one view mapped until the viewer exits.
-        // SAFETY: `address` is the base of the view `open` mapped, and only this drop unmaps it.
-        drop(unsafe { UnmapViewOfFile(self.address) });
-    }
-}
-
-#[cfg(test)]
-pub(crate) mod test_support;
-
-#[cfg(test)]
-mod tests;

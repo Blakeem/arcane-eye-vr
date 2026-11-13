@@ -29,6 +29,9 @@ features = [
     "Win32_System_Memory",
 ]
 
+[dev-dependencies]
+viewer-client = { path = "../viewer-client" }
+
 [dev-dependencies.windows]
 workspace = true
 features = [

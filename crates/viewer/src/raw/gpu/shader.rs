@@ -1,5 +1,6 @@
 //! The viewer's two shaders and its sampler, which draw the image into the viewport.
 
+use viewer_client::GpuError;
 use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Direct3D11::{
@@ -8,8 +9,6 @@ use windows::Win32::Graphics::Direct3D11::{
     ID3D11VertexShader,
 };
 use windows::core::{PCSTR, s};
-
-use super::{GpuError, created, step};
 
 /// The viewer may not depend on `gfx`, which owns the game-side shaders, so it compiles its own two
 /// at start. The vertex shader draws one triangle that covers the viewport.
@@ -38,10 +37,10 @@ pub(super) fn pipeline(
     // SAFETY: the bytecode came from D3DCompile, and the out slot is live for the call.
     let vertex_made =
         unsafe { device.CreateVertexShader(&vertex_code, None, Some(&raw mut vertex)) };
-    step("creating the vertex shader", vertex_made)?;
+    GpuError::check("creating the vertex shader", vertex_made)?;
     // SAFETY: the bytecode came from D3DCompile, and the out slot is live for the call.
     let pixel_made = unsafe { device.CreatePixelShader(&pixel_code, None, Some(&raw mut pixel)) };
-    step("creating the pixel shader", pixel_made)?;
+    GpuError::check("creating the pixel shader", pixel_made)?;
     let sampler_desc = D3D11_SAMPLER_DESC {
         Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
         AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
@@ -54,11 +53,11 @@ pub(super) fn pipeline(
     // SAFETY: the descriptor and the out slot are live for the call.
     let sampler_made =
         unsafe { device.CreateSamplerState(&raw const sampler_desc, Some(&raw mut sampler)) };
-    step("creating the sampler", sampler_made)?;
+    GpuError::check("creating the sampler", sampler_made)?;
     Ok((
-        created("creating the vertex shader", vertex)?,
-        created("creating the pixel shader", pixel)?,
-        created("creating the sampler", sampler)?,
+        GpuError::created("creating the vertex shader", vertex)?,
+        GpuError::created("creating the pixel shader", pixel)?,
+        GpuError::created("creating the sampler", sampler)?,
     ))
 }
 
@@ -82,8 +81,8 @@ fn compile(entry: PCSTR, target: PCSTR) -> Result<Vec<u8>, GpuError> {
             None,
         )
     };
-    step("compiling the viewer shaders", compiled)?;
-    let code = created("compiling the viewer shaders", code)?;
+    GpuError::check("compiling the viewer shaders", compiled)?;
+    let code = GpuError::created("compiling the viewer shaders", code)?;
     // SAFETY: the blob is live and returns the start of its buffer.
     let start = unsafe { code.GetBufferPointer() }.cast::<u8>();
     // SAFETY: the blob is live and returns its buffer's length.

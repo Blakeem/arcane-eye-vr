@@ -1,19 +1,17 @@
-//! The viewer's header view against a mapping this test creates in the core's place.
-
-use std::process;
+//! The header view against a mapping this test creates in the core's place.
 
 use ipc_layout::viewer_header::{self, TextureInfo, ViewerHeader};
 use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
 use windows::Win32::System::Memory::{CreateFileMappingW, PAGE_READONLY};
 use windows::core::HSTRING;
 
-use super::test_support::CoreMapping;
+use super::fixture::{CoreMapping, test_name};
 use super::{HeaderView, HeaderViewError};
 
 #[test]
 fn header_view_reads_the_core_header_and_writes_only_the_heartbeat() {
     let header = ViewerHeader::new(TextureInfo { width: 64, ..TextureInfo::default() }, 3, 9);
-    let core = CoreMapping::create("round-trip", &header);
+    let core = CoreMapping::create("round-trip", &header).expect("the core's mapping");
     let opened = HeaderView::open(&core.name).expect("open the header the core created");
     let view = opened.expect("the header the core created exists");
     assert_eq!(ViewerHeader::decode(&view.read_words()), Ok(header));
@@ -26,8 +24,7 @@ fn header_view_reads_the_core_header_and_writes_only_the_heartbeat() {
 
 #[test]
 fn header_view_of_a_missing_mapping_is_none() {
-    let name = format!(r"Local\arcane-eye-vr-viewer-test-{}-missing", process::id());
-    assert!(matches!(HeaderView::open(&name), Ok(None)));
+    assert!(matches!(HeaderView::open(&test_name("missing")), Ok(None)));
 }
 
 #[test]
@@ -40,7 +37,7 @@ fn header_view_of_a_name_in_no_namespace_is_an_open_error_not_a_missing_core() {
 
 #[test]
 fn header_view_of_a_read_only_mapping_is_a_map_error() {
-    let name = format!(r"Local\arcane-eye-vr-viewer-test-{}-read-only", process::id());
+    let name = test_name("read-only");
     let size = u32::try_from(viewer_header::SIZE).expect("128 fits a u32");
     // SAFETY: a pagefile-backed mapping with default security and a NUL-terminated name.
     let handle = unsafe {

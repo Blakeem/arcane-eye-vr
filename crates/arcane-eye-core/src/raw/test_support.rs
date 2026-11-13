@@ -8,7 +8,9 @@ use std::{fs, process, ptr};
 
 use gfx::publish::ViewNames;
 use ipc_layout::launch_token::{self, STATUS_OFFSET};
-use ipc_layout::viewer_header::{self, HEARTBEAT_OFFSET, ViewerHeader, WORDS};
+use ipc_layout::viewer_header::ViewerHeader;
+use viewer_client::HeaderView;
+use viewer_client::header::read_header;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE, HWND, INVALID_HANDLE_VALUE};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_WARP;
 use windows::Win32::Graphics::Direct3D11::{
@@ -21,10 +23,7 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_SWAP_CHAIN_DESC, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_DISCARD,
     DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGISwapChain,
 };
-use windows::Win32::System::Memory::{
-    CreateFileMappingW, FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
-    OpenFileMappingW, PAGE_READWRITE, UnmapViewOfFile,
-};
+use windows::Win32::System::Memory::{CreateFileMappingW, PAGE_READWRITE};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP,
 };
@@ -88,47 +87,30 @@ pub(crate) fn test_view_names(test: &str) -> ViewNames {
 
 /// A debug viewer's view of the viewer header, which writes the heartbeat as the viewer does.
 pub(crate) struct TestViewer {
-    address: MEMORY_MAPPED_VIEW_ADDRESS,
+    mapping: String,
+    view: Option<HeaderView>,
     heartbeat: u32,
 }
 
 impl TestViewer {
     /// Opens the header the core created under `names.mapping`.
     pub(crate) fn open(names: &ViewNames) -> Self {
-        let name = HSTRING::from(&names.mapping);
-        let access = FILE_MAP_READ | FILE_MAP_WRITE;
-        // SAFETY: `name` is a NUL-terminated wide string that outlives the call.
-        let mapping = unsafe { OpenFileMappingW(access.0, false, &name) }.expect("open the header");
-        // SAFETY: `mapping` is the open handle above, and the view spans the header's bytes.
-        let address = unsafe { MapViewOfFile(mapping, access, 0, 0, viewer_header::SIZE) };
-        // SAFETY: `mapping` is a handle this function opened and closes once.
-        unsafe { CloseHandle(mapping) }.expect("close the header mapping handle");
-        assert!(!address.Value.is_null(), "map the viewer header");
-        Self { address, heartbeat: 0 }
+        let mut view = None;
+        read_header(&mut view, &names.mapping).expect("open the header the core created");
+        Self { mapping: names.mapping.clone(), view, heartbeat: 0 }
     }
 
     pub(crate) fn beat(&mut self) {
         self.heartbeat = self.heartbeat.wrapping_add(1);
-        let field = self.address.Value.wrapping_byte_add(HEARTBEAT_OFFSET).cast::<u32>();
-        // SAFETY: the heartbeat is a 4-aligned word inside the page-aligned view of the header.
-        unsafe { ptr::write_volatile(field, self.heartbeat) };
+        let (view, _) =
+            read_header(&mut self.view, &self.mapping).expect("a header the core wrote");
+        view.write_heartbeat(self.heartbeat);
     }
 
-    pub(crate) fn header(&self) -> ViewerHeader {
-        let base = self.address.Value.cast::<u32>().cast_const();
-        let mut words = [0; WORDS];
-        for (index, word) in words.iter_mut().enumerate() {
-            // SAFETY: `index` is below `WORDS`, and the page-aligned view spans the header's bytes.
-            *word = unsafe { ptr::read_volatile(base.wrapping_add(index)) };
-        }
-        ViewerHeader::decode(&words).expect("a header the core wrote")
-    }
-}
-
-impl Drop for TestViewer {
-    fn drop(&mut self) {
-        // SAFETY: `address` is the base of the view `open` mapped, and only this drop unmaps it.
-        unsafe { UnmapViewOfFile(self.address) }.expect("unmap the viewer header");
+    pub(crate) fn header(&mut self) -> ViewerHeader {
+        let (_, header) =
+            read_header(&mut self.view, &self.mapping).expect("a header the core wrote");
+        header
     }
 }
 

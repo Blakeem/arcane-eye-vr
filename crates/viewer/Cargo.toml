@@ -8,7 +8,7 @@ publish.workspace = true
 
 [dependencies]
 ipc-layout = { path = "../ipc-layout" }
-thiserror.workspace = true
+viewer-client = { path = "../viewer-client" }
 
 [dependencies.windows]
 workspace = true
@@ -21,13 +21,11 @@ features = [
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
     "Win32_System_LibraryLoader",
-    "Win32_System_Memory",
     "Win32_UI_WindowsAndMessaging",
 ]
 
-[dev-dependencies.windows]
-workspace = true
-features = ["Win32_Security"]
+[dev-dependencies]
+viewer-client = { path = "../viewer-client", features = ["fixture"] }
 
 [lints]
 workspace = true

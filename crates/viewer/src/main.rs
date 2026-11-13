@@ -1,13 +1,13 @@
 //! Development viewer for the per-eye images in the shared debug texture.
 //!
-//! `viewer.exe` opens the viewer header the core creates, and its heartbeat thread advances the
-//! header's heartbeat, so the core publishes. It opens the shared texture on the adapter the header
-//! names and shows each new frame letterboxed in its window. While no core runs it waits. The `raw`
-//! module holds every Windows call.
+//! `viewer.exe` opens the viewer header the core creates, and the `viewer-client` heartbeat thread
+//! advances the header's heartbeat, so the core publishes. It opens the shared texture on the adapter
+//! the header names and shows each new frame letterboxed in its window. While no core runs it waits.
+//! `viewer-client` holds the link's reading side, and the `raw` module holds the window and drawing
+//! calls.
 
 #![windows_subsystem = "windows"]
 
-mod heartbeat;
 mod letterbox;
 mod raw;
 
@@ -15,17 +15,17 @@ use std::fmt;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use ipc_layout::viewer_header::{self, AdapterLuid, ViewerHeader};
+use ipc_layout::viewer_header::{AdapterLuid, ViewerHeader};
+use viewer_client::header::{HeaderReadError, Names, read_header};
+use viewer_client::{Copied, GpuError, HeaderView, heartbeat};
 use windows::core::HSTRING;
 
-use crate::raw::{Copied, GpuError, HeaderView, Renderer, Screen, Source, Window};
+use crate::raw::{Renderer, Screen, Source, Window};
 
 const TITLE: &str = "Arcane Eye VR viewer";
 
-/// The wait of a loop pass that showed nothing, and the heartbeat thread's period. That period keeps
-/// the heartbeat far inside [`viewer_header::STALE_AFTER`], after which the core stops publishing.
+/// The wait of a loop pass that showed nothing.
 const IDLE_WAIT: Duration = Duration::from_millis(50);
-const _: () = assert!(IDLE_WAIT.as_millis() < viewer_header::STALE_AFTER.as_millis());
 
 /// How long the frame counter may stay unchanged before the title reports that no frames arrive.
 /// The header outlives a core that exited while the viewer holds it.
@@ -77,40 +77,11 @@ impl Tick {
     }
 }
 
-/// The names of the viewer header mapping and the shared texture.
-struct Names {
-    mapping: String,
-    texture: HSTRING,
-}
-
-impl Default for Names {
-    fn default() -> Self {
-        Self {
-            mapping: viewer_header::MAPPING_NAME.to_owned(),
-            texture: HSTRING::from(viewer_header::TEXTURE_NAME),
-        }
-    }
-}
-
-/// Opens the header in the mapping `mapping` when `slot` holds no view of it, and reads the header.
-/// Returns the status to show while no core created the header, it cannot be opened or its layout
-/// differs.
-fn read_header<'slot>(
-    slot: &'slot mut Option<HeaderView>,
-    mapping: &str,
-) -> Result<(&'slot HeaderView, ViewerHeader), Status> {
-    if slot.is_none() {
-        *slot = match HeaderView::open(mapping) {
-            Ok(view) => view,
-            Err(error) => return Err(Status::Failed(error.to_string())),
-        };
-    }
-    let Some(view) = slot.as_ref() else {
-        return Err(Status::NoCore);
-    };
-    match ViewerHeader::decode(&view.read_words()) {
-        Ok(header) => Ok((view, header)),
-        Err(error) => Err(Status::Failed(error.to_string())),
+/// The status a header that could not be read shows.
+fn header_status(error: &HeaderReadError) -> Status {
+    match error {
+        HeaderReadError::Missing => Status::NoCore,
+        HeaderReadError::View(_) | HeaderReadError::Layout(_) => Status::Failed(error.to_string()),
     }
 }
 
@@ -128,7 +99,7 @@ impl View {
     fn tick(&mut self, window: &Window) -> Tick {
         let header = match read_header(&mut self.header, &self.names.mapping) {
             Ok((_view, header)) => header,
-            Err(status) => return Tick::idle(status),
+            Err(error) => return Tick::idle(header_status(&error)),
         };
         let texture = header.texture();
         if texture.width == 0 {
@@ -271,27 +242,29 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Opened, Status, observe_frame};
+    use super::{Opened, Status, header_status, observe_frame};
     use crate::raw::Renderer;
-    use crate::raw::test_support::share;
-    use std::process;
+    use ipc_layout::viewer_header::HeaderError;
     use std::time::{Duration, Instant};
+    use viewer_client::fixture::{share, test_name};
+    use viewer_client::header::HeaderReadError;
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
     use windows::core::HSTRING;
 
     const BLACK: [u8; 4] = [0, 0, 0, 255];
 
     #[test]
     fn a_new_generation_reopens_the_shared_texture_and_the_same_generation_keeps_it() {
-        let name =
-            HSTRING::from(format!(r"Local\arcane-eye-vr-viewer-test-{}-reopen", process::id()));
-        let (first_core, first_handle, luid) = share(&name, 2, &[BLACK; 2]);
-        let renderer = Renderer::create(luid).expect("a device on the core's adapter");
+        let name = HSTRING::from(test_name("reopen"));
+        let format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        let first_core = share(&name, 2, format, &[BLACK; 2]).expect("share the first texture");
+        let renderer = Renderer::create(first_core.luid).expect("a device on the core's adapter");
         let mut slot = None;
         let first = Opened::open(&mut slot, &renderer, &name, 1).expect("open generation 1");
         assert_eq!(first.source.size(), (2, 1));
         first.shown_frame = Some(7);
-        drop((first_core, first_handle));
-        let _second = share(&name, 1, &[BLACK; 3]);
+        drop(first_core);
+        let _second = share(&name, 1, format, &[BLACK; 3]).expect("share the second texture");
         let kept = Opened::open(&mut slot, &renderer, &name, 1).expect("keep generation 1");
         assert_eq!((kept.source.size(), kept.shown_frame), ((2, 1), Some(7)), "the same texture");
         let reopened = Opened::open(&mut slot, &renderer, &name, 2).expect("open generation 2");
@@ -311,6 +284,16 @@ mod tests {
         assert_eq!(past_limit, ((5, at(0)), true));
         let next = observe_frame(Some(past_limit.0), 6, at(2002));
         assert_eq!(next, ((6, at(2002)), false), "a new frame");
+    }
+
+    #[test]
+    fn a_missing_header_waits_for_the_game_and_another_layout_shows_its_error() {
+        assert_eq!(header_status(&HeaderReadError::Missing), Status::NoCore);
+        let layout = HeaderReadError::Layout(HeaderError::LayoutVersion { found: 2 });
+        let Status::Failed(message) = header_status(&layout) else {
+            panic!("a failed status for {layout:?}");
+        };
+        assert!(message.contains("layout version is 2"), "{message}");
     }
 
     #[test]

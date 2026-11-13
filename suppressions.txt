@@ -11,4 +11,5 @@ crates/launch/src/raw.rs | expect(unsafe_code, reason = "the registry, file mapp
 crates/launcher/src/raw.rs | expect(unsafe_code, reason = "the message box call is a Windows call")
 crates/proxy/src/lib.rs | expect(unsafe_code, reason = "DllMain, the launch token view and the core load are Windows calls")
 crates/shim/src/raw.rs | expect(unsafe_code, reason = "the shim's C ABI is a block of foreign functions")
-crates/viewer/src/raw.rs | expect(unsafe_code, reason = "the window, the header mapping and the D3D11 and DXGI calls are Windows calls")
+crates/viewer-client/src/raw.rs | expect(unsafe_code, reason = "the header mapping and the D3D11 and DXGI calls are Windows calls")
+crates/viewer/src/raw.rs | expect(unsafe_code, reason = "the window and the D3D11 and DXGI calls are Windows calls")
