@@ -1,6 +1,6 @@
 [package]
 name = "ipc-layout"
-description = "Byte layouts shared across processes, such as the launch token and the viewer header, and the core DLL's init contract."
+description = "Contracts shared across processes: the launch token and viewer header byte layouts, the core DLL's init contract and the perf summary log line."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true

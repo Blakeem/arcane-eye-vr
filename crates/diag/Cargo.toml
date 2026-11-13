@@ -1,6 +1,6 @@
 [package]
 name = "diag"
-description = "Health registry, panic hook, log ring layer, allocation guard, rate-limited logging and crash client."
+description = "Health registry, panic hook, log ring layer, allocation guard, rate-limited logging, perf summary aggregation and crash client."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true

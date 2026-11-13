@@ -133,6 +133,7 @@ impl fmt::Write for TextBuf {
 }
 
 /// Writes each event field as ` name=value` into a line. The `message` field is written as `msg`.
+// ipc_layout::perf_line parses this form, so a change here changes that parser too.
 pub(crate) struct FieldWriter<'a> {
     pub(crate) line: &'a mut TextBuf,
 }
