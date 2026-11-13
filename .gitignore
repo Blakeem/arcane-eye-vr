@@ -10,6 +10,9 @@
 # Staged build from tools/deploy.ps1
 /dist/
 
+# Output of trial.exe, the test harness
+/trial-results/
+
 # Browser automation logs
 /.playwright-mcp/
 

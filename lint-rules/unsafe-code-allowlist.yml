@@ -17,3 +17,5 @@ ignores:
   - "**/overlay/src/raw.rs"
   - "**/launcher/src/raw.rs"
   - "**/viewer/src/raw.rs"
+  - "**/launch/src/raw.rs"
+  - "**/viewer-client/src/raw.rs"
