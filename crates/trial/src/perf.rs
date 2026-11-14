@@ -249,7 +249,7 @@ pub(crate) fn text(summaries: &[PerfSummary]) -> String {
 }
 
 /// The text of `camera.txt`: the one line `none` when no summary line has a camera, otherwise one
-/// line per summary line in `perf.txt` order, holding its camera's numbers or `none`.
+/// line per summary line in `perf.txt` order, holding its camera's eye and numbers or `none`.
 pub(crate) fn camera_text(cameras: &[Option<CameraLine>]) -> String {
     if cameras.iter().all(Option::is_none) {
         return format!("{NO_CAMERA}\n");

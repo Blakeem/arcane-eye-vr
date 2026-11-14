@@ -5,7 +5,7 @@ use std::io::Write as _;
 use std::path::Path;
 use std::time::Duration;
 
-use ipc_layout::camera_line::CameraLine;
+use ipc_layout::camera_line::{CameraEye, CameraLine};
 use ipc_layout::perf_line::PerfSummary;
 
 use super::{
@@ -39,16 +39,20 @@ fn summary(frames: u32, mean: u64, p99: u64, max: u64) -> PerfSummary {
 /// A camera line in the session log's format, with its line ending.
 fn camera_log_line(x: f32) -> String {
     format!(
-        "{PREFIX} msg=camera x={x} y=2 z=3 fx=0 fy=0 fz=1 fov_y_rad=1.25 aspect=1.5 near=0.1 \
-         far=1000\n"
+        "{PREFIX} msg=camera eye=left x={x} y=2 z=3 head_x=7 head_y=2 head_z=3 fx=0 fy=0 fz=1 \
+         fov_y_rad=1.25 aspect=1.5 near=0.1 far=1000\n"
     )
 }
 
 fn camera(x: f32) -> CameraLine {
     CameraLine {
+        eye: CameraEye::Left,
         x,
         y: 2.0,
         z: 3.0,
+        head_x: 7.0,
+        head_y: 2.0,
+        head_z: 3.0,
         fx: 0.0,
         fy: 0.0,
         fz: 1.0,
@@ -191,9 +195,11 @@ fn the_window_keeps_the_camera_line_before_each_counted_summary_line() {
 #[test]
 fn the_camera_text_holds_a_line_per_summary_line_or_one_none() {
     let expected = "\
-x=1.5 y=2.0 z=3.0 fx=0.0 fy=0.0 fz=1.0 fov_y_rad=1.25 aspect=1.5 near=0.1 far=1000.0
+eye=left x=1.5 y=2.0 z=3.0 head_x=7.0 head_y=2.0 head_z=3.0 fx=0.0 fy=0.0 fz=1.0 fov_y_rad=1.25 \
+aspect=1.5 near=0.1 far=1000.0
 none
-x=-4.0 y=2.0 z=3.0 fx=0.0 fy=0.0 fz=1.0 fov_y_rad=1.25 aspect=1.5 near=0.1 far=1000.0
+eye=left x=-4.0 y=2.0 z=3.0 head_x=7.0 head_y=2.0 head_z=3.0 fx=0.0 fy=0.0 fz=1.0 fov_y_rad=1.25 \
+aspect=1.5 near=0.1 far=1000.0
 ";
     assert_eq!(camera_text(&[Some(camera(1.5)), None, Some(camera(-4.0))]), expected);
     assert_eq!(camera_text(&[None, None]), "none\n", "a window with no camera");

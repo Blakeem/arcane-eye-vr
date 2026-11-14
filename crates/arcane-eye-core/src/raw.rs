@@ -1,7 +1,8 @@
 //! The core DLL's unsafe edge.
 //!
-//! It holds the exports, the Present call-site and view camera hook installs, the launch token's
-//! status field, and the D3D11 and DXGI calls of the frame handler.
+//! It holds the exports, the Present call-site, view camera and eye camera hook installs, the pages
+//! the core shares with game threads, the launch token's status field, and the D3D11 and DXGI calls of
+//! the frame handler.
 
 #![expect(
     unsafe_code,
@@ -21,8 +22,9 @@ use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext, ID
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 use windows::Win32::System::Memory::{
-    FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, OpenFileMappingW,
-    UnmapViewOfFile,
+    FILE_MAP_READ, FILE_MAP_WRITE, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE,
+    MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, OpenFileMappingW, PAGE_READWRITE, UnmapViewOfFile,
+    VirtualAlloc, VirtualFree,
 };
 use windows::core::{HRESULT, HSTRING, Interface as _};
 
@@ -30,8 +32,8 @@ use windows::core::{HRESULT, HSTRING, Interface as _};
 /// frame handler calls: `IUnknown` 0 to 2, `IDXGIObject` 3 to 6, `GetDevice` 7, `GetDesc` 12.
 const GET_DESC_SLOT_OFFSET: usize = 12 * size_of::<usize>();
 
-/// Starts the core: the root folder, the session log, the settings files, the Present call-site hook,
-/// then the core context. `mode` is the launch token's mode value.
+/// Starts the core: the root folder, the session log, the settings files, the Present call-site, view
+/// camera and eye camera hooks, then the core context. `mode` is the launch token's mode value.
 ///
 /// Returns 0 on success and an [`InitStatus`](crate::init::InitStatus) failure code otherwise. A mode
 /// value that names no mode returns the unknown-mode code, and a second call in one process returns
@@ -78,6 +80,67 @@ pub(crate) fn install_view_camera_hook(
     // render thunk's token requires.
     let hook = unsafe { hooks::install_mid_hook(address, thunk) }?;
     Ok(ManuallyDrop::new(hook))
+}
+
+/// Installs `thunk` as the mid hook at the begin-recording entry `address`.
+///
+/// `address` must be the one match of the `render_view_begin` signature in the loaded game exe. The
+/// hook never drops, so it stays installed for the process life on every path, and no render thread
+/// runs a freed stub.
+pub(crate) fn install_eye_camera_hook(
+    address: GameAddr,
+    thunk: MidThunk,
+) -> Result<ManuallyDrop<MidHook>, HookError> {
+    // SAFETY: the signature's one match is a function entry that starts with `push rbx` and
+    // `sub rsp,20h`, 6 bytes with no RIP-relative operand that SafetyHook's 5-byte jump moves, and no
+    // jump targets a byte past a function's entry. bg3-vr hooks the same address. Begin-recording runs
+    // on the render thread, which the render thunk's token requires.
+    let hook = unsafe { hooks::install_mid_hook(address, thunk) }?;
+    Ok(ManuallyDrop::new(hook))
+}
+
+/// Committed, zero-filled read-write pages that the core shares with game threads, such as the eye
+/// camera's proxy controllers. The pages are released on drop.
+///
+/// Only guarded copies reach the pages, so no Rust reference covers them while a game thread reads or
+/// writes them. The address is a plain number, so the core context that holds the pages stays
+/// `Send + Sync`.
+#[derive(Debug)]
+pub(crate) struct SharedPages {
+    address: usize,
+}
+
+impl SharedPages {
+    /// Commits pages that hold at least `len` bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the Windows error of a failed commit, such as no memory left.
+    pub(crate) fn commit(len: usize) -> Result<Self, windows::core::Error> {
+        let allocation = MEM_COMMIT | MEM_RESERVE;
+        // SAFETY: a null address lets the system place the new pages, which only this value owns.
+        let pages = unsafe { VirtualAlloc(None, len, allocation, PAGE_READWRITE) };
+        if pages.is_null() {
+            return Err(windows::core::Error::from_thread());
+        }
+        Ok(Self { address: pages.expose_provenance() })
+    }
+
+    /// The first byte of the pages, which is page-aligned.
+    pub(crate) const fn address(&self) -> GameAddr {
+        GameAddr::new(self.address)
+    }
+}
+
+impl Drop for SharedPages {
+    fn drop(&mut self) {
+        let pages = ptr::with_exposed_provenance_mut::<c_void>(self.address);
+        // A failed release leaves these pages committed, and the core context that holds them lives
+        // for the process.
+        // SAFETY: `address` is the base of the pages `commit` committed, and only this drop releases
+        // them.
+        drop(unsafe { VirtualFree(pages, 0, MEM_RELEASE) });
+    }
 }
 
 /// The back buffer's size and format, as the swapchain describes it.

@@ -13,14 +13,16 @@ use std::time::{Duration, Instant};
 use diag::perf::{FrameWindow, SUMMARY_FRAMES};
 use diag::rate::{Once, RateLimit};
 use diag::{error_every, once, warn_every};
-use game_bindings::camera::Camera;
 use hooks::Registers;
-use ipc_layout::{camera_line, perf_line};
+use ipc_layout::camera_line::{self, CameraEye};
+use ipc_layout::perf_line;
+use stereo_core::eye::Eye;
 use tracing::Level;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 use windows::core::HRESULT;
 
 use crate::raw::{self, BackBuffer, Devices};
+use crate::view_camera::{FrameCamera, Viewpoint};
 use crate::viewer::ViewerLink;
 
 /// The shortest time between two lines of one rate-limited call site.
@@ -48,7 +50,7 @@ pub(crate) struct FrameState {
     last_call: Option<Instant>,
     frame_times: FrameWindow,
     /// The newest main view camera of the current perf window, for its camera line.
-    camera: Option<Camera>,
+    camera: Option<FrameCamera>,
 }
 
 /// The rate-limit state of each log call site of the frame handler.
@@ -74,7 +76,7 @@ struct Snapshot {
 pub(crate) fn on_present_call(
     state: &mut FrameState,
     registers: &Registers,
-    camera: Option<Camera>,
+    camera: Option<FrameCamera>,
 ) -> FrameReport {
     let now = Instant::now();
     keep_camera(state, camera);
@@ -95,7 +97,7 @@ pub(crate) fn on_present_call(
 }
 
 /// Keeps `camera` as the newest camera of the perf window, when the frame has one.
-fn keep_camera(state: &mut FrameState, camera: Option<Camera>) {
+fn keep_camera(state: &mut FrameState, camera: Option<FrameCamera>) {
     if camera.is_some() {
         state.camera = camera;
     }
@@ -131,15 +133,21 @@ fn record_interval(state: &mut FrameState, now: Instant) {
 }
 
 /// Logs the camera line. A reader pairs it with the perf summary line that follows it.
-fn log_camera(camera: &Camera) {
+fn log_camera(frame: &FrameCamera) {
+    let camera = &frame.camera;
     let [x, y, z] = camera.position;
+    let [head_x, head_y, head_z] = frame.head();
     let [fx, fy, fz] = camera.forward;
     // The perf window limits this line to one per SUMMARY_FRAMES frames, so it needs no rate-limit
     // macro. Debug writes an extreme f32 in exponent form, which keeps every field inside one log slot.
     tracing::info!(
+        eye = camera_eye(frame.viewpoint).as_str(),
         x = ?x,
         y = ?y,
         z = ?z,
+        head_x = ?head_x,
+        head_y = ?head_y,
+        head_z = ?head_z,
         fx = ?fx,
         fy = ?fy,
         fz = ?fz,
@@ -150,6 +158,15 @@ fn log_camera(camera: &Camera) {
         "{}",
         camera_line::MESSAGE
     );
+}
+
+/// The camera line's name for the position a view rendered from.
+const fn camera_eye(viewpoint: Viewpoint) -> CameraEye {
+    match viewpoint {
+        Viewpoint::Head => CameraEye::Center,
+        Viewpoint::Eye { eye: Eye::Left, .. } => CameraEye::Left,
+        Viewpoint::Eye { eye: Eye::Right, .. } => CameraEye::Right,
+    }
 }
 
 /// Runs the frame work for `swapchain`, which lives at `address`.

@@ -41,6 +41,17 @@ pub const DX11_PRESENT_CALL: Signature = Signature {
     rip: None,
 };
 
+/// The entry of a render view's begin-recording (view vtable slot 1). It runs on the render thread
+/// once per view per frame, before the engine builds the view's `PerView` and `PerCamera` blocks, and
+/// `rcx` holds the view. The bytes are `push rbx`, `sub rsp,20h`, `cmp byte ptr [rcx+2150h],0`,
+/// `mov rbx,rcx` and a short `jne`. From bg3-vr.
+pub const RENDER_VIEW_BEGIN: Signature = Signature {
+    name: "render_view_begin",
+    pattern: "40 53 48 83 EC 20 80 B9 50 21 00 00 00 48 8B D9 75 ??",
+    offset: 0,
+    rip: None,
+};
+
 /// The point inside a render view's begin-recording where the engine has built the view's `PerView` and
 /// `PerCamera` blocks. It runs on the render thread once per view per frame, and `rdi` holds the view.
 /// The first instruction is `lea rdx,[rdi+2340h]`. From bg3-vr.
@@ -65,7 +76,7 @@ pub const GET_WORLD_TRANSLATE: Signature = Signature {
 
 /// Every signature the mod resolves at start-up and `sigcheck` checks against an exe.
 pub const SIGNATURES: &[Signature] =
-    &[DX11_PRESENT_CALL, RENDER_VIEW_CAMERA_BUILT, GET_WORLD_TRANSLATE];
+    &[DX11_PRESENT_CALL, RENDER_VIEW_BEGIN, RENDER_VIEW_CAMERA_BUILT, GET_WORLD_TRANSLATE];
 
 /// Why a signature yields no address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]

@@ -17,6 +17,7 @@ gfx = { path = "../gfx" }
 hooks = { path = "../hooks" }
 ipc-layout = { path = "../ipc-layout" }
 settings = { path = "../settings" }
+stereo-core = { path = "../stereo-core" }
 thiserror.workspace = true
 tracing.workspace = true
 

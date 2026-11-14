@@ -1,8 +1,8 @@
 //! The Present call-site hook: its install at init and its handler on the render thread.
 //!
 //! The install resolves the `dx11_present_call` signature in the game exe's code and puts a mid hook
-//! on the match. The handler ends the view camera's frame, runs the frame work before the engine's
-//! `Present` call and reports the first frame through the launch token.
+//! on the match. The handler ends the frames of the view camera and the eye camera, runs the frame
+//! work before the engine's `Present` call and reports the first frame through the launch token.
 
 use std::mem::ManuallyDrop;
 
@@ -15,6 +15,7 @@ use ipc_layout::launch_token::Status;
 use tracing::{info, warn};
 
 use crate::context::CoreContext;
+use crate::eye_camera;
 use crate::frame::{self, FrameReport};
 use crate::install::{GameCode, InstallError};
 use crate::raw::{self, StatusView};
@@ -78,8 +79,9 @@ fn report(status: Option<&StatusView>, value: Status) {
 }
 
 /// The hook's handler, on the render thread before the engine's `Present` call. The views of the frame
-/// passed the view camera's site before this call.
+/// passed the eye camera's and the view camera's sites before this call.
 fn on_present_call(context: &CoreContext, thread: &RenderThread, registers: &mut Registers) {
+    eye_camera::end_frame(context, thread);
     let camera = view_camera::end_frame(context, thread);
     let frame =
         context.frame.with(thread, |state| frame::on_present_call(state, registers, camera));

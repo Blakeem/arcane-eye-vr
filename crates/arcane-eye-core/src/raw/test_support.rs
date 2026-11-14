@@ -1,10 +1,12 @@
 //! Fixtures for the core's tests.
 //!
-//! It holds a launch token mapping, a WARP device and swapchain on a hidden window, and a debug
-//! viewer's view of the viewer header.
+//! It holds a launch token mapping, a WARP device and swapchain on a hidden window, a debug viewer's
+//! view of the viewer header, a call of a proxy controller's slot 9 and pages with a read-only tail.
 
-use std::{process, ptr};
+use std::ffi::c_void;
+use std::{mem, process, ptr};
 
+use game_mem::GameAddr;
 use gfx::publish::ViewNames;
 use ipc_layout::launch_token::{self, STATUS_OFFSET};
 use ipc_layout::viewer_header::ViewerHeader;
@@ -22,13 +24,15 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_SWAP_CHAIN_DESC, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_DISCARD,
     DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGISwapChain,
 };
-use windows::Win32::System::Memory::{CreateFileMappingW, PAGE_READWRITE};
+use windows::Win32::System::Memory::{
+    CreateFileMappingW, PAGE_PROTECTION_FLAGS, PAGE_READONLY, PAGE_READWRITE, VirtualProtect,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP,
 };
 use windows::core::{HSTRING, Interface as _, w};
 
-use super::StatusView;
+use super::{SharedPages, StatusView};
 
 /// A zero-filled launch token mapping under a name only this test process uses, closed on drop.
 pub(crate) struct TestMapping {
@@ -201,5 +205,48 @@ impl TestSwapchain {
     pub(crate) fn with<R>(&self, f: impl FnOnce(usize, &IDXGISwapChain) -> R) -> Option<R> {
         // SAFETY: `self.swapchain` holds a reference, so the swapchain lives until `f` returns.
         unsafe { super::with_swapchain(self.address(), f) }
+    }
+}
+
+/// Calls the controller vtable slot 9 function at `function` with `controller` in `rcx`, as the
+/// engine calls it, and returns the address it returns. `function` must be the eye camera's proxy
+/// slot 9, which the caller checks first.
+pub(crate) fn call_world_translate(function: GameAddr, controller: GameAddr) -> GameAddr {
+    let pointer = ptr::with_exposed_provenance::<()>(function.get());
+    // SAFETY: the caller checked that `function` is the proxy's `extern "system" fn(usize) -> usize`.
+    let slot_9 =
+        unsafe { mem::transmute::<*const (), extern "system" fn(usize) -> usize>(pointer) };
+    GameAddr::new(slot_9(controller.get()))
+}
+
+/// The x64 Windows page size.
+pub(crate) const PAGE_SIZE: usize = 4096;
+
+/// Read-write pages followed by one read-only page, so a write past the read-write pages faults.
+pub(crate) struct ReadOnlyTail {
+    pages: SharedPages,
+    writable_len: usize,
+}
+
+impl ReadOnlyTail {
+    /// The pages with `tail_words` at the start of the read-only page, written before it is
+    /// protected.
+    pub(crate) fn new(writable_pages: usize, tail_words: &[usize]) -> Self {
+        let writable_len = writable_pages.checked_mul(PAGE_SIZE).expect("a test size");
+        let len = writable_len.checked_add(PAGE_SIZE).expect("a test size");
+        let pages = SharedPages::commit(len).expect("commit the test pages");
+        let tail = pages.address().checked_add(writable_len).expect("a test address");
+        game_mem::try_write_slice(tail, tail_words).expect("fill the tail page");
+        let tail = ptr::with_exposed_provenance::<c_void>(tail.get());
+        let mut old = PAGE_PROTECTION_FLAGS::default();
+        // SAFETY: `tail` is the last page of the pages above, which only this value uses.
+        unsafe { VirtualProtect(tail, PAGE_SIZE, PAGE_READONLY, &raw mut old) }
+            .expect("protect the last test page");
+        Self { pages, writable_len }
+    }
+
+    /// The first byte of the read-only page.
+    pub(crate) fn read_only_start(&self) -> GameAddr {
+        self.pages.address().checked_add(self.writable_len).expect("a test address")
     }
 }

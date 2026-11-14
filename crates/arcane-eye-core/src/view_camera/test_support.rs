@@ -1,11 +1,13 @@
-//! Render views and camera controllers built in the test process's memory, for the view camera's reads.
+//! Render views and camera controllers built in the test process's memory, for the view camera's
+//! reads and the eye camera's reads and writes.
 
 use std::hint::black_box;
 
 use game_bindings::camera::PerCamera;
 use game_bindings::offsets::{
     CONTROLLER_WORLD_TRANSLATE_SLOT, PER_CAMERA_FAR, PER_CAMERA_NEAR, PER_CAMERA_POSITION,
-    PER_CAMERA_PROJECTION, PER_CAMERA_VIEW, VIEW_PER_CAMERA, VIEW_READ_STATE_CONTROLLER,
+    PER_CAMERA_PROJECTION, PER_CAMERA_VIEW, VIEW_LAST_SEEN_CONTROLLER, VIEW_PER_CAMERA,
+    VIEW_READ_STATE_CONTROLLER,
 };
 use game_bindings::render_view::RenderView;
 use game_mem::GameAddr;
@@ -34,25 +36,48 @@ impl TestController {
 }
 
 /// A render view whose `ReadState` controller pointer is `controller` and whose `PerCamera` block 0
-/// holds `block`.
+/// holds `block`. The eye camera writes its `ReadState` and last-seen controller fields.
 pub(crate) struct TestView {
-    bytes: Box<[u8]>,
+    _bytes: Box<[u8]>,
+    /// The address of the bytes, taken from a mutable pointer, since the eye camera writes there.
+    address: GameAddr,
 }
 
 impl TestView {
     pub(crate) fn new(controller: usize, block: &PerCamera) -> Self {
-        let mut bytes = vec![0_u8; VIEW_PER_CAMERA + 0x100].into_boxed_slice();
+        let mut bytes = vec![0_u8; VIEW_LAST_SEEN_CONTROLLER + 8].into_boxed_slice();
         put(&mut bytes, VIEW_READ_STATE_CONTROLLER, &controller.to_ne_bytes());
         put(&mut bytes, VIEW_PER_CAMERA + PER_CAMERA_VIEW, &floats(&block.view));
         put(&mut bytes, VIEW_PER_CAMERA + PER_CAMERA_PROJECTION, &floats(&block.projection));
         put(&mut bytes, VIEW_PER_CAMERA + PER_CAMERA_NEAR, &block.near.to_ne_bytes());
         put(&mut bytes, VIEW_PER_CAMERA + PER_CAMERA_FAR, &block.far.to_ne_bytes());
         put(&mut bytes, VIEW_PER_CAMERA + PER_CAMERA_POSITION, &floats(&block.position));
-        black_box(Self { bytes })
+        let address = GameAddr::new(bytes.as_mut_ptr().expose_provenance());
+        black_box(Self { _bytes: bytes, address })
     }
 
-    pub(crate) fn view(&self) -> RenderView {
-        RenderView::new(GameAddr::new(self.bytes.as_ptr().expose_provenance()))
+    pub(crate) const fn view(&self) -> RenderView {
+        RenderView::new(self.address)
+    }
+
+    /// The pointer in the field `offset` bytes into the view.
+    pub(crate) fn pointer_at(&self, offset: usize) -> usize {
+        let field = self.address.checked_add(offset).expect("a view field");
+        game_mem::try_read(field).expect("a readable view field")
+    }
+
+    /// Does what the engine does to the view after the begin-recording hook: begin-recording stores
+    /// the `ReadState` pointer as the last-seen controller, and the frame sync at the frame's end
+    /// points the `ReadState` at `controller`.
+    pub(crate) fn finish_frame(&self, controller: usize) {
+        let read_state = self.pointer_at(VIEW_READ_STATE_CONTROLLER);
+        self.write_pointer(VIEW_LAST_SEEN_CONTROLLER, read_state);
+        self.write_pointer(VIEW_READ_STATE_CONTROLLER, controller);
+    }
+
+    fn write_pointer(&self, offset: usize, value: usize) {
+        let field = self.address.checked_add(offset).expect("a view field");
+        game_mem::try_write(field, value).expect("a writable view field");
     }
 }
 

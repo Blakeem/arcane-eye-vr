@@ -1,5 +1,5 @@
-// The guarded copy behind game-mem's try_read. It is C because `__try` is MSVC structured exception
-// handling, which Rust has no form for.
+// The guarded copy behind game-mem's try_read and try_write. It is C because `__try` is MSVC
+// structured exception handling, which Rust has no form for.
 #include <windows.h>
 #include <string.h>
 
@@ -24,8 +24,8 @@ static int guarded_copy_filter(DWORD code, EXCEPTION_POINTERS* info) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-// Returns 1 when all `len` bytes were copied and 0 when a read faulted. After a fault `dst` holds a
-// partial copy.
+// Returns 1 when all `len` bytes were copied and 0 when a read or a write faulted. After a fault `dst`
+// holds a partial copy.
 int shim_guarded_copy(void* dst, const void* src, size_t len) {
     __try {
         memcpy(dst, src, len);

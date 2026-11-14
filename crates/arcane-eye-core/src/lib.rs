@@ -2,6 +2,7 @@
 
 mod config;
 mod context;
+mod eye_camera;
 mod frame;
 mod init;
 mod install;

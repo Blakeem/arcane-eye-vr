@@ -23,6 +23,7 @@ These parts work in tests:
 - The launch app starts the game through Steam. The mod stays inactive on a normal Steam launch.
 - The mod loads into the DirectX 11 version of the game and reads each frame.
 - A debug viewer shows that frame in its own window.
+- For trials, the game's view can render from the left or right eye. The keys `main_view_eye` and `ipd_mm` under Settings set it.
 
 Stereo rendering, headset output and controller input are not built yet.
 
@@ -67,7 +68,7 @@ cargo nextest run --workspace        # tests
 ## Credits
 
 - [SafetyHook](https://github.com/cursey/safetyhook) and [Zydis](https://github.com/zyantific/zydis) do the hooking. Their license files are in `crates/shim/vendor/safetyhook/`.
-- [bg3-vr](https://github.com/PlasteredCrab/bg3-vr) by PlasteredCrab (MIT license) is the source of the byte pattern that finds the game's Present call.
+- [bg3-vr](https://github.com/PlasteredCrab/bg3-vr) by PlasteredCrab (MIT license) is the source of the byte patterns that find the game's Present call and the start of each view's frame. It is also the source of the camera controller layout and the method that renders the game's view from an eye position.
 
 ## Legal
 

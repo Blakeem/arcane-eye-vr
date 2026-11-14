@@ -1,11 +1,14 @@
-//! Guarded reads and the main module's code ranges, run against the test binary's own memory.
+//! Guarded reads and writes and the main module's code ranges, run against the test binary's own
+//! memory.
 
 #[cfg(test)]
 mod tests {
     use std::hint::black_box;
 
     use game_mem::module::main_module;
-    use game_mem::{GameAddr, try_read, try_read_array, try_read_bytes};
+    use game_mem::{
+        GameAddr, WriteError, try_read, try_read_array, try_read_bytes, try_write, try_write_slice,
+    };
 
     /// Windows reserves the lowest 64 KiB of every process, so no read there succeeds.
     const UNMAPPED: GameAddr = GameAddr::new(0x10);
@@ -51,6 +54,36 @@ mod tests {
     fn try_read_bytes_returns_none_for_a_length_no_buffer_can_hold() {
         let stored = black_box(STORED);
         assert_eq!(try_read_bytes(address_of(&stored), usize::MAX), None);
+    }
+
+    #[test]
+    fn try_write_stores_values_at_a_mapped_address() {
+        let mut buffer = black_box(vec![0_u64; 4]);
+        let address = GameAddr::new(buffer.as_mut_ptr().expose_provenance());
+        assert_eq!(try_write(address, STORED), Ok(()));
+        let second = address.checked_add(size_of::<u64>()).expect("a test address");
+        assert_eq!(try_write_slice(second, &[7_u64, 8, 9]), Ok(()));
+        let written = try_read_array::<u64, 4>(address);
+        assert_eq!(written, Some([STORED, 7, 8, 9]));
+        drop(black_box(buffer));
+    }
+
+    #[test]
+    fn try_write_to_an_unmapped_address_yields_the_fault_and_no_crash() {
+        let expected = Err(WriteError::Faulted { address: UNMAPPED.get() });
+        assert_eq!(try_write(UNMAPPED, STORED), expected);
+        assert_eq!(try_write_slice(UNMAPPED, &[1.5_f32, 2.5]), expected);
+        assert_eq!(
+            WriteError::Faulted { address: 0x10 }.to_string(),
+            "a guarded write to 0x10 faulted, so it wrote none or part of its bytes"
+        );
+    }
+
+    #[test]
+    fn a_write_destination_is_the_offset_address_or_past_the_address_space() {
+        assert_eq!(UNMAPPED.destination(8), Ok(GameAddr::new(0x18)));
+        let top = GameAddr::new(usize::MAX);
+        assert_eq!(top.destination(1), Err(WriteError::PastAddressSpace));
     }
 
     #[inline(never)]

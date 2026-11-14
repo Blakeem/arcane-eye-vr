@@ -20,6 +20,8 @@ pub enum Feature {
     PresentHook,
     /// The mid hook where a render view's camera is built, which reads the main view's camera.
     ViewCamera,
+    /// The mid hook at a render view's begin-recording, which renders the main view from one eye.
+    EyeCamera,
 }
 
 impl Feature {
@@ -28,6 +30,7 @@ impl Feature {
         match self {
             Self::PresentHook => "present-hook",
             Self::ViewCamera => "view-camera",
+            Self::EyeCamera => "eye-camera",
         }
     }
 }
@@ -103,6 +106,7 @@ const fn next(state: FeatureState, event: Event) -> Option<FeatureState> {
 pub struct Health {
     present_hook: AtomicU8,
     view_camera: AtomicU8,
+    eye_camera: AtomicU8,
 }
 
 impl Health {
@@ -111,6 +115,7 @@ impl Health {
         Self {
             present_hook: AtomicU8::new(FeatureState::Pending as u8),
             view_camera: AtomicU8::new(FeatureState::Pending as u8),
+            eye_camera: AtomicU8::new(FeatureState::Pending as u8),
         }
     }
 
@@ -142,6 +147,7 @@ impl Health {
         match feature {
             Feature::PresentHook => &self.present_hook,
             Feature::ViewCamera => &self.view_camera,
+            Feature::EyeCamera => &self.eye_camera,
         }
     }
 
@@ -220,6 +226,8 @@ mod tests {
             "a panic in view-camera latched present-hook"
         );
         assert_eq!(Feature::ViewCamera.as_str(), "view-camera");
+        assert_eq!(health.state(Feature::EyeCamera), FeatureState::Pending);
+        assert_eq!(Feature::EyeCamera.as_str(), "eye-camera");
     }
 
     #[test]

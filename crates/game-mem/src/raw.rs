@@ -1,4 +1,5 @@
-//! game-mem's unsafe edge: the guarded copy and the Windows memory queries behind safe wrappers.
+//! game-mem's unsafe edge: the guarded copy in both directions and the Windows memory queries behind
+//! safe wrappers.
 
 #![expect(unsafe_code, reason = "the guarded copy and the memory queries are foreign calls")]
 
@@ -34,6 +35,17 @@ pub(crate) fn read_into<T: Plain>(address: GameAddr, values: &mut [T]) -> Option
     // bit pattern, so even a partial copy leaves valid values. The copy needs no valid `source`.
     let copied = unsafe { shim::raw::guarded_copy(destination, source, size_of_val(values)) };
     (copied == COPY_COMPLETE).then_some(())
+}
+
+/// Copies `values` to `address`. Returns `false` when a byte of the destination could not be
+/// written, and the destination may then hold a partial copy.
+pub(crate) fn write_from<T: Plain>(address: GameAddr, values: &[T]) -> bool {
+    let destination = ptr::with_exposed_provenance_mut::<c_void>(address.get());
+    let source = values.as_ptr().cast::<c_void>();
+    // SAFETY: `source` is valid for `size_of_val(values)` byte reads. The copy needs no valid
+    // `destination`. `try_write`'s contract has `address` name memory no Rust value owns.
+    let copied = unsafe { shim::raw::guarded_copy(destination, source, size_of_val(values)) };
+    copied == COPY_COMPLETE
 }
 
 /// The load address of the process exe's module.
@@ -106,10 +118,11 @@ mod tests {
 
     use windows::Win32::System::Memory::{
         MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, MEMORY_BASIC_INFORMATION, PAGE_GUARD,
-        PAGE_PROTECTION_FLAGS, PAGE_READWRITE, VirtualAlloc, VirtualFree, VirtualQuery,
+        PAGE_PROTECTION_FLAGS, PAGE_READONLY, PAGE_READWRITE, VirtualAlloc, VirtualFree,
+        VirtualQuery,
     };
 
-    use super::read;
+    use super::{read, write_from};
     use crate::GameAddr;
 
     /// The x64 Windows page size, which the guarded copy's page mask assumes.
@@ -141,5 +154,20 @@ mod tests {
         assert_eq!(first, None);
         assert_eq!(after_first, guarded, "the guarded copy set PAGE_GUARD again");
         assert_eq!(second, None, "a second read faults on the guard again");
+    }
+
+    #[test]
+    fn a_write_to_a_read_only_page_fails_and_leaves_the_page_unchanged() {
+        // SAFETY: the system picks the address of a new committed page, which only this test uses.
+        let page =
+            unsafe { VirtualAlloc(None, PAGE_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READONLY) };
+        assert!(!page.is_null(), "commit a read-only page");
+        let address = GameAddr::new(page.expose_provenance());
+        let wrote = write_from(address, &[u64::MAX]);
+        let after = read::<u64>(address);
+        // SAFETY: `page` is the base of the allocation above, and this is its one release.
+        unsafe { VirtualFree(page, 0, MEM_RELEASE) }.expect("release the test page");
+        assert!(!wrote, "a write to a read-only page succeeded");
+        assert_eq!(after, Some(0), "the committed page still reads as zero");
     }
 }

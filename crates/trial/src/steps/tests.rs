@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use ipc_layout::camera_line::CameraLine;
+use ipc_layout::camera_line::{CameraEye, CameraLine};
 use ipc_layout::launch_token::Mode;
 
 use self::stand_in::{Exits, LOG_TEXT, StandInFrames, StandInGame};
@@ -237,9 +237,13 @@ fn a_window_with_a_camera_line_writes_one_line_per_summary_line_to_camera_txt() 
     let dir = test_dir("cameras");
     let folder = dir.path();
     let camera = CameraLine {
+        eye: CameraEye::Right,
         x: 1.5,
         y: -2.0,
         z: 3.0,
+        head_x: 1.25,
+        head_y: -2.0,
+        head_z: 3.0,
         fx: 0.0,
         fy: 0.0,
         fz: 1.0,
@@ -255,7 +259,8 @@ fn a_window_with_a_camera_line_writes_one_line_per_summary_line_to_camera_txt() 
     let text = fs::read_to_string(folder.join("camera.txt")).expect("read camera.txt");
     let expected = "\
 none
-x=1.5 y=-2.0 z=3.0 fx=0.0 fy=0.0 fz=1.0 fov_y_rad=1.25 aspect=1.5 near=0.1 far=1000.0
+eye=right x=1.5 y=-2.0 z=3.0 head_x=1.25 head_y=-2.0 head_z=3.0 fx=0.0 fy=0.0 fz=1.0 \
+fov_y_rad=1.25 aspect=1.5 near=0.1 far=1000.0
 ";
     assert_eq!(text, expected);
     assert_eq!(report.exit_code(), ExitCode::SUCCESS);

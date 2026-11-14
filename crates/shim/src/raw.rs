@@ -61,12 +61,14 @@ pub const HOOK_BAD_INLINE_HOOK: i32 = 16;
 
 unsafe extern "C" {
     /// Copies `len` bytes from `src` to `dst` under `__try`. Returns 1 when every byte was copied and 0
-    /// when a read raised an access violation or a guard page fault. After a fault `dst` holds a partial
-    /// copy.
+    /// when a read or a write raised an access violation or a guard page fault. After a fault `dst`
+    /// holds a partial copy.
     ///
     /// # Safety
     ///
-    /// `dst` is valid for writes of `len` bytes. `src` needs no validity.
+    /// One of `dst` and `src` is Rust memory: `dst` valid for writes of `len` bytes or `src` valid for
+    /// reads of `len` bytes. The other one is game memory, which needs no validity and which no Rust
+    /// reference covers.
     #[link_name = "shim_guarded_copy"]
     pub fn guarded_copy(dst: *mut c_void, src: *const c_void, len: usize) -> i32;
 

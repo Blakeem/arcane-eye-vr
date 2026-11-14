@@ -1,6 +1,6 @@
 [package]
 name = "game-mem"
-description = "Guarded reads of game memory and typed game addresses. Unsafe inside, safe API out."
+description = "Guarded reads and writes of game memory and typed game addresses. Unsafe inside, safe API out."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true

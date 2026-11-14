@@ -6,7 +6,6 @@ use std::fs;
 use std::time::{Duration, Instant};
 
 use diag::logging::LogName;
-use game_bindings::camera::Camera;
 use game_bindings::state::arm_alloc_guard;
 use gfx::publish::ViewNames;
 use ipc_layout::perf_line::{self, PerfSummary};
@@ -17,6 +16,7 @@ use crate::raw::{
     test_support::{FORMAT, TestSwapchain, TestViewer, test_view_names},
 };
 use crate::test_dir;
+use crate::view_camera::FrameCamera;
 use crate::viewer::ViewerLink;
 
 /// A frame state whose viewer link uses names of its own, and those names.
@@ -47,7 +47,7 @@ fn timed_frame(
     state: &mut FrameState,
     test: &TestSwapchain,
     now: Instant,
-    camera: Option<Camera>,
+    camera: Option<FrameCamera>,
 ) -> FrameReport {
     keep_camera(state, camera);
     let report = frame(state, test);

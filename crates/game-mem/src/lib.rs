@@ -1,8 +1,13 @@
-//! Guarded reads of game memory and typed game addresses. Unsafe inside, safe API out.
+//! Guarded reads and writes of game memory and typed game addresses. Unsafe inside, safe API out.
 //!
-//! Every read copies through the shim's `__try` copy, so an unmapped or protected address yields
-//! `None` instead of a crash. A read copies plain data into a Rust value, so no reference into game
-//! memory exists.
+//! Every read and write copies through the shim's `__try` copy, so an unmapped or protected address
+//! yields a failure value instead of a crash. A read copies plain data into a Rust value and a write
+//! copies plain data out of one, so no reference into game memory exists.
+//!
+//! The safe API has one accepted gap. A [`GameAddr`] is a plain number, so a write cannot prove that
+//! its address names memory no Rust value owns, and a write over a live Rust value is undefined
+//! behavior that no type here prevents. The mod's callers write only to game memory and to pages the
+//! mod commits for the game.
 
 pub mod module;
 mod raw;
@@ -26,6 +31,18 @@ impl GameAddr {
         match self.0.checked_add(bytes) {
             Some(address) => Some(Self(address)),
             None => None,
+        }
+    }
+
+    /// The address `bytes` past this one, as the destination of a write.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WriteError::PastAddressSpace`] past the end of the address space.
+    pub const fn destination(self, bytes: usize) -> Result<Self, WriteError> {
+        match self.checked_add(bytes) {
+            Some(address) => Ok(address),
+            None => Err(WriteError::PastAddressSpace),
         }
     }
 }
@@ -72,4 +89,44 @@ pub fn try_read_bytes(address: GameAddr, len: usize) -> Option<Vec<u8>> {
     bytes.resize(len, 0);
     raw::read_into(address, &mut bytes)?;
     Some(bytes)
+}
+
+/// Why a guarded write did not write all of its bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum WriteError {
+    #[error("a guarded write to {address:#x} faulted, so it wrote none or part of its bytes")]
+    Faulted { address: usize },
+    /// A destination computed from a base address and an offset lies past the end of the address
+    /// space, so no write was tried.
+    #[error("the destination lies past the end of the address space")]
+    PastAddressSpace,
+}
+
+/// Writes `value` to `address`.
+///
+/// The write trusts `address` to name game memory or memory the mod shares with the game, which no
+/// Rust value owns. The guard catches a fault and nothing else, so a write over a live Rust value is
+/// the undefined behavior the crate doc names.
+///
+/// # Errors
+///
+/// Returns [`WriteError::Faulted`] when any byte of the destination cannot be written. The
+/// destination may then hold part of `value`.
+pub fn try_write<T: Plain>(address: GameAddr, value: T) -> Result<(), WriteError> {
+    try_write_slice(address, &[value])
+}
+
+/// Writes `values` to `address` and the bytes after it, in one guarded copy that makes no heap
+/// allocation. The write trusts `address` as [`try_write`] does.
+///
+/// # Errors
+///
+/// Returns [`WriteError::Faulted`] when any byte of the destination cannot be written. The
+/// destination may then hold part of `values`.
+pub fn try_write_slice<T: Plain>(address: GameAddr, values: &[T]) -> Result<(), WriteError> {
+    if raw::write_from(address, values) {
+        Ok(())
+    } else {
+        Err(WriteError::Faulted { address: address.get() })
+    }
 }
