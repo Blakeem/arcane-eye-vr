@@ -7,7 +7,8 @@ use std::time::Duration;
 use ipc_layout::launch_token::Mode;
 
 pub(crate) const USAGE: &str = "usage: trial --name <name> [--mode vr|desktop-stereo] \
-     [--warmup-secs <n>] [--perf-lines <n>] [--captures <n>] [--out <folder>] [--game-dir <folder>]";
+     [--warmup-secs <n>] [--perf-lines <n>] [--captures <n>] [--out <folder>] [--game-dir <folder>] \
+     [--settings-file <path>] [--dev-file <path>]";
 
 /// The most frames one trial captures, since a frame file's number has 4 digits.
 const MAX_CAPTURES: u32 = 9999;
@@ -43,6 +44,10 @@ pub(crate) struct Settings {
     pub(crate) out: PathBuf,
     /// `None` finds the game's folder through Steam.
     pub(crate) game_dir: Option<PathBuf>,
+    /// The file the game gets as its `settings.toml`, or `None` for no file.
+    pub(crate) player_file: Option<PathBuf>,
+    /// The file the game gets as its `dev.toml`, or `None` for no file.
+    pub(crate) dev_file: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -54,6 +59,8 @@ impl Default for Settings {
             captures: 1,
             out: PathBuf::from("trial-results"),
             game_dir: None,
+            player_file: None,
+            dev_file: None,
         }
     }
 }
@@ -94,10 +101,12 @@ enum Flag {
     Captures,
     Out,
     GameDir,
+    SettingsFile,
+    DevFile,
 }
 
 impl Flag {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 9] = [
         Self::Name,
         Self::Mode,
         Self::WarmupSecs,
@@ -105,6 +114,8 @@ impl Flag {
         Self::Captures,
         Self::Out,
         Self::GameDir,
+        Self::SettingsFile,
+        Self::DevFile,
     ];
 
     const fn as_str(self) -> &'static str {
@@ -116,6 +127,8 @@ impl Flag {
             Self::Captures => "--captures",
             Self::Out => "--out",
             Self::GameDir => "--game-dir",
+            Self::SettingsFile => "--settings-file",
+            Self::DevFile => "--dev-file",
         }
     }
 
@@ -146,6 +159,8 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options,
             Flag::Captures => settings.captures = count(flag, &value, MAX_CAPTURES)?,
             Flag::Out => settings.out = PathBuf::from(value),
             Flag::GameDir => settings.game_dir = Some(PathBuf::from(value)),
+            Flag::SettingsFile => settings.player_file = Some(PathBuf::from(value)),
+            Flag::DevFile => settings.dev_file = Some(PathBuf::from(value)),
         }
     }
     let name = name.ok_or(ArgsError::MissingName)?;

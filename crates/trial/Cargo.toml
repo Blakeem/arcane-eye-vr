@@ -11,6 +11,7 @@ diag = { path = "../diag" }
 ipc-layout = { path = "../ipc-layout" }
 launch = { path = "../launch" }
 png.workspace = true
+settings = { path = "../settings" }
 thiserror.workspace = true
 tracing.workspace = true
 viewer-client = { path = "../viewer-client" }

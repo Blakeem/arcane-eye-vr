@@ -19,7 +19,6 @@ use tracing_subscriber::layer::SubscriberExt as _;
 use windows::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
 
 use crate::layer::{Base, RingLayer};
-use crate::raw;
 use crate::ring::LogRing;
 use crate::rotation::{self, PruneError, RotateError};
 use crate::writer::{self, Clock};
@@ -27,8 +26,6 @@ use crate::writer::{self, Clock};
 /// Why session logging failed to start or to write.
 #[derive(Debug, thiserror::Error)]
 pub enum LogError {
-    #[error("could not resolve the local app data folder")]
-    LocalAppData(#[from] windows::core::Error),
     #[error("could not create the log folder {path}")]
     CreateDir { path: PathBuf, source: io::Error },
     #[error("could not create the session log {path}")]
@@ -94,15 +91,6 @@ impl LogName {
             Self::Trial => "arcane-eye-vr-trial",
         }
     }
-}
-
-/// The session log folder, `%LOCALAPPDATA%\arcane-eye-vr\logs`.
-///
-/// # Errors
-///
-/// Returns [`LogError::LocalAppData`] when Windows cannot resolve the folder.
-pub fn session_log_dir() -> Result<PathBuf, LogError> {
-    Ok(raw::local_app_data()?.join("arcane-eye-vr").join("logs"))
 }
 
 /// The file that the process `process_id`, started at `started`, writes its `log` session to in

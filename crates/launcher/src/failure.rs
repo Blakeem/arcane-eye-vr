@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use diag::error_chain::chain;
 use diag::logging::LogError;
+use diag::root::{DEFAULT_FOLDER, LOG_FOLDER, RootError};
 use ipc_layout::launch_token::{Status, TokenError};
+use ipc_layout::root_folder::HOME_VARIABLE;
 use launch::checks::{GameRunning, RuntimeError};
 use launch::registry::RegistryError;
 use launch::status::{Goal, WaitError};
@@ -13,8 +15,6 @@ use launch::steam::OpenUrlError;
 use launch::token::TokenCreateError;
 
 use crate::args::ArgsError;
-
-const LOG_FOLDER: &str = r"%LOCALAPPDATA%\arcane-eye-vr\logs";
 
 const SECONDS_PER_MINUTE: u64 = 60;
 
@@ -26,7 +26,17 @@ const STEAMVR_FIX: &str =
 pub(crate) enum Failure {
     #[error("{0}. Start it with no arguments for VR, or with --mode desktop-stereo.")]
     Args(#[from] ArgsError),
-    #[error("Arcane Eye VR could not start its log ({}). Check that {LOG_FOLDER} can be written.", chain(.0))]
+    #[error(
+        "Arcane Eye VR could not find its folder ({}). Set {HOME_VARIABLE} to an absolute folder \
+         path, then start Arcane Eye VR again.",
+        chain(.0)
+    )]
+    Root(#[from] RootError),
+    #[error(
+        "Arcane Eye VR could not start its log ({}). Check that the log folder can be written. {}",
+        chain(.0),
+        log_folder_text()
+    )]
     Log(#[from] LogError),
     #[error("Arcane Eye VR could not read the active OpenXR runtime ({}). {STEAMVR_FIX}", chain(.0))]
     RuntimeRead(#[source] RegistryError),
@@ -57,7 +67,8 @@ pub(crate) enum Failure {
     WrongRenderer,
     #[error(
         "The game could not start Arcane Eye VR. Check that arcane_eye_core.dll is in the game's bin folder \
-         and that the virus scanner did not remove it. The log in {LOG_FOLDER} may name the cause."
+         and that the virus scanner did not remove it. The log in the log folder may name the cause. {}",
+        log_folder_text()
     )]
     CoreLoadFailed,
     #[error(
@@ -78,11 +89,12 @@ pub(crate) enum Failure {
     #[error(
         "The game did not report that {} within {}. The last status was that \
          {}. {} The log \
-         in {LOG_FOLDER} names the last step.",
+         in the log folder names the last step. {}",
         status_text(.goal.status()),
         timeout_text(*.timeout),
         status_text(*.last),
-        timeout_fix(*.last)
+        timeout_fix(*.last),
+        log_folder_text()
     )]
     Timeout { goal: Goal, last: Status, timeout: Duration },
 }
@@ -122,6 +134,15 @@ impl From<WaitError> for Failure {
             WaitError::Timeout { goal, last, timeout } => Self::Timeout { goal, last, timeout },
         }
     }
+}
+
+/// Where the log folder is, as the player reads it. It names both folders, since the game's core
+/// reads the root folder variable from Steam's environment and not from the launch app's.
+fn log_folder_text() -> String {
+    format!(
+        "The log folder is %{HOME_VARIABLE}%\\{LOG_FOLDER} when {HOME_VARIABLE} is an absolute path, \
+         and %LOCALAPPDATA%\\{DEFAULT_FOLDER}\\{LOG_FOLDER} otherwise."
+    )
 }
 
 /// A status as the player reads it.
@@ -170,6 +191,7 @@ fn timeout_text(timeout: Duration) -> String {
 mod tests {
     use super::{Failure, timeout_text};
     use diag::logging::LogError;
+    use diag::root::RootError;
     use ipc_layout::launch_token::{Status, TokenError};
     use launch::checks::{GameRunning, RuntimeError};
     use launch::registry::{Hive, RegistryError, RegistryValue};
@@ -192,12 +214,41 @@ mod tests {
     }
 
     #[test]
-    fn log_failure_message_names_the_cause_and_the_folder() {
+    fn log_failure_message_names_the_cause_and_both_log_folders() {
         let expected = concat!(
             r"Arcane Eye VR could not start its log (could not create the log folder C:\logs: ",
-            r"access denied). Check that %LOCALAPPDATA%\arcane-eye-vr\logs can be written."
+            r"access denied). Check that the log folder can be written. The log folder is ",
+            r"%ARCANE_EYE_VR_HOME%\logs when ARCANE_EYE_VR_HOME is an absolute path, and ",
+            r"%LOCALAPPDATA%\arcane-eye-vr\logs otherwise."
         );
         assert_eq!(Failure::Log(log_error()).to_string(), expected);
+    }
+
+    #[test]
+    fn core_load_failure_message_points_at_both_log_folders() {
+        let message = Failure::CoreLoadFailed.to_string();
+        let end = concat!(
+            r"The log in the log folder may name the cause. The log folder is ",
+            r"%ARCANE_EYE_VR_HOME%\logs when ARCANE_EYE_VR_HOME is an absolute path, and ",
+            r"%LOCALAPPDATA%\arcane-eye-vr\logs otherwise."
+        );
+        assert!(message.ends_with(end), "{message}");
+    }
+
+    #[test]
+    fn root_failure_message_names_the_cause_and_the_variable_that_avoids_it() {
+        let root = RootError::LocalAppData(windows::core::Error::empty());
+        let message = Failure::from(root).to_string();
+        let start = concat!(
+            "Arcane Eye VR could not find its folder ",
+            "(could not resolve the local app data folder"
+        );
+        assert!(message.starts_with(start), "{message}");
+        let end = concat!(
+            "Set ARCANE_EYE_VR_HOME to an absolute folder path, ",
+            "then start Arcane Eye VR again."
+        );
+        assert!(message.ends_with(end), "{message}");
     }
 
     #[test]
@@ -212,9 +263,10 @@ mod tests {
         let vr_start = concat!(
             "The game did not report that the VR session runs within 10 minutes. The last status ",
             "was that the game drew its first frame. Check that the headset is connected and ",
-            "SteamVR runs. The log in "
+            "SteamVR runs. The log in the log folder names the last step. The log folder is "
         );
         assert!(vr.starts_with(vr_start), "{vr}");
+        assert!(vr.ends_with(r"%LOCALAPPDATA%\arcane-eye-vr\logs otherwise."), "{vr}");
         let desktop = Failure::Timeout {
             goal: Goal::FirstPresent,
             last: Status::Waiting,

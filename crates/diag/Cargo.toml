@@ -1,12 +1,13 @@
 [package]
 name = "diag"
-description = "Health registry, panic hook, log ring layer, allocation guard, rate-limited logging, perf summary aggregation, error chain text and crash client."
+description = "Health registry, panic hook, log ring layer, allocation guard, rate-limited logging, perf summary aggregation, error chain text, root folder and crash client."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
 publish.workspace = true
 
 [dependencies]
+ipc-layout = { path = "../ipc-layout" }
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

@@ -30,12 +30,13 @@ use windows::core::{HRESULT, HSTRING, Interface as _};
 /// frame handler calls: `IUnknown` 0 to 2, `IDXGIObject` 3 to 6, `GetDevice` 7, `GetDesc` 12.
 const GET_DESC_SLOT_OFFSET: usize = 12 * size_of::<usize>();
 
-/// Starts the core: the session log, the Present call-site hook, then the core context. `mode` is the
-/// launch token's mode value.
+/// Starts the core: the root folder, the session log, the settings files, the Present call-site hook,
+/// then the core context. `mode` is the launch token's mode value.
 ///
 /// Returns 0 on success and an [`InitStatus`](crate::init::InitStatus) failure code otherwise. A mode
 /// value that names no mode returns the unknown-mode code, and a second call in one process returns
-/// the already-running code. Neither starts anything. A hook that does not install is no failure here.
+/// the already-running code. Neither starts anything. A root folder that cannot be found returns the
+/// root-failed code before any log exists. A hook that does not install is no failure here.
 /// The launch token's status reports it, and the game runs unmodified.
 #[unsafe(no_mangle)]
 pub(crate) extern "C" fn arcane_eye_init(mode: u32) -> u32 {

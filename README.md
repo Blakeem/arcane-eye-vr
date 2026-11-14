@@ -26,6 +26,28 @@ These parts work in tests:
 
 Stereo rendering, headset output and controller input are not built yet.
 
+## Settings
+
+The mod reads two files from its root folder `%LOCALAPPDATA%\arcane-eye-vr\` at start. `settings.toml` holds the player settings and `dev.toml` holds the development flags. Each file holds only the values that differ from the defaults, so a missing file gives the defaults.
+
+```toml
+# settings.toml
+version = 1
+
+[stereo]
+ipd_mm = 63.0    # distance between the eyes in millimeters, 50 to 80
+```
+
+```toml
+# dev.toml
+[stereo]
+main_view_eye = "center"    # the eye position of the game's view: center, left or right
+```
+
+A file with an invalid value is rejected as an entire file and its defaults apply. The session log in `logs\` names the line and column of the problem. An unknown key in `settings.toml` is logged and skipped, and an unknown key in `dev.toml` rejects the file.
+
+The environment variable `ARCANE_EYE_VR_HOME` sets a different root folder when its value is an absolute path. The game reads it from the environment it inherits. The launch app starts the game through Steam, so the game gets Steam's environment and not the launch app's. A user variable reaches the game when Steam starts after the variable is set. `trial.exe` sets it on the game it starts.
+
 ## Build
 
 The build needs Windows, PowerShell 7.4, the MSVC build tools (tested with 14.51) and the Rust version in `rust-toolchain.toml`. The checks also need `cargo-nextest`, `ast-grep` and `typos-cli`.
@@ -35,7 +57,7 @@ pwsh tools/deploy.ps1            # build, stage in dist/, copy the two DLLs into
 pwsh tools/deploy.ps1 -Remove    # move the two DLLs to the Recycle Bin
 ```
 
-Then start `dist\arcane-eye-vr.exe --mode desktop-stereo` and `dist\viewer.exe`. Also `dist\trial.exe --name <name>` runs one trial with no person at the PC and writes its frame times, frames and result to `trial-results\` in the current folder.
+Then start `dist\arcane-eye-vr.exe --mode desktop-stereo` and `dist\viewer.exe`. Also `dist\trial.exe --name <name>` runs one trial with no person at the PC and writes its frame times, frames and result to `trial-results\` in the current folder. The trial's `--settings-file <path>` and `--dev-file <path>` give the game its settings files. The trial fails before it starts the game when a given file is rejected or holds an unknown key. The trial copies them into `home\` in its result folder and starts the game with that folder as its root folder, so the player's files stay untouched.
 
 ```
 pwsh tools/gate.ps1 -Suite commit    # format, clippy, lint rules, typos

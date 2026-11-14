@@ -1,15 +1,16 @@
 //! The init sequence behind `arcane_eye_init`.
 //!
 //! [`start`] takes its inputs as parameters and returns the log handle and the subscriber without
-//! installing either, so tests run it in isolation. Only [`init_process`] sets the process-wide
-//! subscriber, opens the launch token, installs the Present call-site hook and fills the core context
-//! slot.
+//! installing either, so tests run it in isolation. Only [`init_process`] finds the root folder, sets
+//! the process-wide subscriber, reads the settings files, opens the launch token, installs the Present
+//! call-site hook and fills the core context slot.
 
 use std::panic::{self, UnwindSafe};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use diag::health::Health;
 use diag::logging::{self, LogError, LogHandle, LogName};
+use diag::root::{Root, RootError};
 use game_bindings::state::{self, StateError};
 use hooks::RenderCell;
 use ipc_layout::core_init::INIT_STARTED;
@@ -17,6 +18,7 @@ use ipc_layout::launch_token::{self, Mode, UnknownMode};
 use tracing::dispatcher::{self, SetGlobalDefaultError};
 use tracing::{Dispatch, info, warn};
 
+use crate::config;
 use crate::context::CoreContext;
 use crate::present;
 use crate::raw::StatusView;
@@ -32,12 +34,15 @@ pub(crate) enum InitStatus {
     SlotFull = 4,
     Panicked = 5,
     UnknownMode = 6,
+    RootFailed = 7,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum InitError {
     #[error("the core is already running in this process")]
     AlreadyRunning,
+    #[error("the root folder could not be found")]
+    Root(#[from] RootError),
     #[error("session logging failed to start")]
     Log(#[from] LogError),
     #[error("another tracing subscriber is already the process-wide default")]
@@ -52,6 +57,7 @@ impl InitError {
     const fn status(&self) -> InitStatus {
         match self {
             Self::AlreadyRunning => InitStatus::AlreadyRunning,
+            Self::Root(_) => InitStatus::RootFailed,
             Self::Log(_) => InitStatus::LogFailed,
             Self::Subscriber(_) => InitStatus::SubscriberTaken,
             Self::State(_) => InitStatus::SlotFull,
@@ -79,7 +85,7 @@ pub(crate) fn start(mode: Mode, log_dir: &Path) -> Result<Core, InitError> {
 
 /// Runs the init sequence once per process, catching any panic, and returns the `arcane_eye_init` code.
 pub(crate) fn init_process(mode: u32) -> u32 {
-    guarded(move || run(mode, logging::session_log_dir, launch_token::MAPPING_NAME))
+    guarded(move || run(mode, Root::find, launch_token::MAPPING_NAME))
 }
 
 /// Maps the init outcome to its code. A failure is also logged with its cause, which the code alone
@@ -100,26 +106,31 @@ fn guarded(init: impl FnOnce() -> Result<(), InitError> + UnwindSafe) -> u32 {
 }
 
 /// The full init: decodes the mode and checks the slot first, so neither an unknown mode nor a second
-/// call starts anything, then installs the core. `token_name` names the launch token's mapping.
+/// call starts anything, then installs the core. `root` finds the root folder, and `token_name` names
+/// the launch token's mapping.
 ///
 /// The hook install runs after every other step that can fail but the store, and the check above found
 /// the slot empty, so a failed init leaves the game unmodified.
 fn run(
     mode: u32,
-    log_dir: impl FnOnce() -> Result<PathBuf, LogError>,
+    root: impl FnOnce() -> Result<Root, RootError>,
     token_name: &str,
 ) -> Result<(), InitError> {
     let mode = Mode::try_from(mode)?;
     if state::core_context::<CoreContext>().is_some() {
         return Err(InitError::AlreadyRunning);
     }
-    let core = start(mode, &log_dir()?)?;
+    let root = root()?;
+    let core = start(mode, &root.log_dir())?;
     dispatcher::set_global_default(core.dispatch)?;
+    root.warn_ignored();
+    let config = config::load(root.path());
     let health = Health::new();
     let status = open_status(token_name);
     let present_hook = present::install(&health, status.as_ref());
     let context = CoreContext {
         _log: core.log,
+        _config: config,
         health,
         status,
         frame: RenderCell::default(),
@@ -149,6 +160,7 @@ mod tests {
     use crate::test_dir;
     use diag::health::{Feature, FeatureState};
     use diag::logging::{LogError, LogName};
+    use diag::root::{Root, RootError};
     use game_bindings::state::{self, StateError};
     use ipc_layout::launch_token::{Mode, Status, UnknownMode};
     use std::fs;
@@ -178,14 +190,16 @@ mod tests {
         let folder = test_dir("second-run");
         let dir = folder.path().to_path_buf();
         let mapping = TestMapping::create("second-run");
-        run(1, || Ok(dir.clone()), &mapping.name).expect("the first run starts the core");
+        run(1, || Ok(Root::new(dir.clone())), &mapping.name)
+            .expect("the first run starts the core");
         assert_eq!(mapping.status(), Status::SignatureFailure as u32);
         let context = state::core_context::<CoreContext>().expect("the stored context");
         assert_eq!(context.health.state(Feature::PresentHook), FeatureState::Unavailable);
-        let second = run(1, || Ok(dir.clone()), &mapping.name);
+        assert!(dir.join(r"logs\arcane-eye-vr.log").is_file(), "the session log is in root\\logs");
+        let second = run(1, || Ok(Root::new(dir.clone())), &mapping.name);
         assert!(matches!(second, Err(InitError::AlreadyRunning)));
         assert!(
-            !dir.join("arcane-eye-vr.1.log").exists(),
+            !dir.join(r"logs\arcane-eye-vr.1.log").exists(),
             "a second start would have rotated the log"
         );
         let taken = dispatcher::set_global_default(Dispatch::none())
@@ -196,14 +210,14 @@ mod tests {
     #[test]
     fn an_unknown_mode_fails_with_code_6_and_starts_nothing() {
         let folder = test_dir("unknown-mode");
-        let dir = folder.path().join("logs");
+        let dir = folder.path().join("root");
         let mapping = TestMapping::create("unknown-mode");
-        let result = run(7, || Ok(dir.clone()), &mapping.name);
+        let result = run(7, || Ok(Root::new(dir.clone())), &mapping.name);
         assert!(matches!(result, Err(InitError::Mode(UnknownMode(7)))), "{result:?}");
         assert!(!dir.exists(), "an unknown mode started session logging");
         assert_eq!(mapping.status(), Status::Waiting as u32, "an unknown mode wrote a status");
         assert_eq!(guarded(|| Err(InitError::Mode(UnknownMode(7)))), 6);
-        let zero = run(0, || Ok(dir.clone()), &mapping.name);
+        let zero = run(0, || Ok(Root::new(dir.clone())), &mapping.name);
         assert!(matches!(zero, Err(InitError::Mode(UnknownMode(0)))));
     }
 
@@ -252,5 +266,7 @@ mod tests {
         assert_eq!(guarded(|| Err(InitError::State(StateError::CoreContextFull))), 4);
         assert_eq!(guarded(|| panic!("init panicked")), InitStatus::Panicked as u32);
         assert_eq!(InitStatus::Panicked as u32, 5);
+        let root = RootError::LocalAppData(windows::core::Error::empty());
+        assert_eq!(guarded(|| Err(InitError::Root(root))), 7);
     }
 }

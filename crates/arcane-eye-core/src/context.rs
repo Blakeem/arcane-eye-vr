@@ -9,12 +9,15 @@ use diag::health::Health;
 use diag::logging::LogHandle;
 use hooks::{HookContext, MidHook, RenderCell};
 
+use crate::config::Config;
 use crate::frame::FrameState;
 use crate::raw::StatusView;
 
 pub(crate) struct CoreContext {
     /// Held so the log writer thread runs for the life of the context.
     pub(crate) _log: LogHandle,
+    /// The settings read at start, kept where hook handlers can copy them.
+    pub(crate) _config: Config,
     pub(crate) health: Health,
     /// The launch token, or `None` when the launch app's mapping is gone.
     pub(crate) status: Option<StatusView>,

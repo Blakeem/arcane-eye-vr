@@ -1,5 +1,6 @@
 //! The game and the frame reader of a real trial. The launch crate starts and closes the game, the
-//! core's session log holds the perf window, and the viewer-client crate reads the frames.
+//! core's session log in the game's root folder holds the perf window, and the viewer-client crate
+//! reads the frames.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,6 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use diag::logging::{self, LogName};
+use diag::root::Root;
 use ipc_layout::core_init::CORE_DLL;
 use ipc_layout::launch_token::Mode;
 use ipc_layout::perf_line::PerfSummary;
@@ -57,11 +59,12 @@ pub(crate) struct LiveGame {
     game: Option<Started>,
 }
 
-/// The game process and the time just before it started.
+/// The game process, the time just before it started and its core's session log folder.
 struct Started {
     /// Keeps the game's process id bound to the game until the trial ends.
     child: Child,
     at: SystemTime,
+    log_dir: PathBuf,
 }
 
 impl LiveGame {
@@ -82,8 +85,7 @@ impl LiveGame {
     /// The session log the game's core writes to.
     fn core_log(&mut self) -> Result<PathBuf, StepError> {
         let game = self.game()?;
-        let (pid, started) = (game.child.id(), game.at);
-        core_log_in(&logging::session_log_dir()?, pid, started)
+        core_log_in(&game.log_dir, game.child.id(), game.at)
     }
 }
 
@@ -117,10 +119,11 @@ impl Game for LiveGame {
         Ok(())
     }
 
-    fn start(&mut self) -> Result<(), StepError> {
+    fn start(&mut self, home: &Path) -> Result<(), StepError> {
         let game_dir = self.game_dir.as_ref().ok_or(StepError::Needs(Step::Check))?;
+        let log_dir = Root::new(home.to_path_buf()).log_dir();
         let at = SystemTime::now();
-        self.game = Some(Started { child: direct::start(game_dir)?, at });
+        self.game = Some(Started { child: direct::start(game_dir, home)?, at, log_dir });
         Ok(())
     }
 

@@ -49,6 +49,8 @@ pub(super) struct StandInGame {
     pub(super) closed: Closed,
     pub(super) ran: Vec<Step>,
     pub(super) warmup: Option<Duration>,
+    /// The root folder the start step gave the game.
+    pub(super) home: Option<PathBuf>,
 }
 
 impl StandInGame {
@@ -60,6 +62,7 @@ impl StandInGame {
             closed: Closed::Exited,
             ran: Vec::new(),
             warmup: None,
+            home: None,
         }
     }
 
@@ -78,7 +81,8 @@ impl Game for StandInGame {
         self.step(Step::Token, StepError::Needs(Step::Check))
     }
 
-    fn start(&mut self) -> Result<(), StepError> {
+    fn start(&mut self, home: &Path) -> Result<(), StepError> {
+        self.home = Some(home.to_path_buf());
         self.step(Step::Start, StepError::Needs(Step::Token))
     }
 

@@ -1,5 +1,6 @@
 //! The core DLL the proxy loads. Owns the init sequence and wires the subsystems together.
 
+mod config;
 mod context;
 mod frame;
 mod init;

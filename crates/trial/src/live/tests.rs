@@ -4,7 +4,7 @@ use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::os::windows::process::CommandExt as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -90,7 +90,7 @@ fn a_close_that_cannot_open_the_game_fails_with_the_open_error() {
 #[test]
 fn a_step_whose_earlier_step_did_not_pass_names_that_step() {
     let mut game = LiveGame::new(&Settings::default());
-    assert!(matches!(game.start(), Err(StepError::Needs(Step::Check))));
+    assert!(matches!(game.start(Path::new(r"C:\home")), Err(StepError::Needs(Step::Check))));
     assert!(matches!(game.wait_first_present(), Err(StepError::Needs(Step::Token))));
     assert!(matches!(game.exit_status(), Err(StepError::Needs(Step::Start))));
     assert!(matches!(game.perf_window(1), Err(StepError::Needs(Step::Start))));
@@ -101,8 +101,8 @@ fn a_step_whose_earlier_step_did_not_pass_names_that_step() {
     assert_eq!(message, "the check step did not pass first");
 }
 
-#[test]
-fn a_game_that_exited_reports_its_exit_status_and_passes_the_close() {
+/// A stand-in game process that already exited with code 0.
+fn exited_game() -> Child {
     // This test binary with a filter that matches no test exits at once with code 0.
     let mut child = Command::new(env::current_exe().expect("the test binary path"))
         .args(["--exact", "no-such-test"])
@@ -110,8 +110,29 @@ fn a_game_that_exited_reports_its_exit_status_and_passes_the_close() {
         .spawn()
         .expect("start the stand-in game");
     child.wait().expect("the stand-in game's exit");
+    child
+}
+
+#[test]
+fn the_core_log_and_its_copy_come_from_the_home_log_folder() {
+    let dir = test_dir("home-log");
+    let log_dir = dir.path().join(r"home\logs");
+    fs::create_dir_all(&log_dir).expect("create the home log folder");
+    fs::write(log_dir.join("arcane-eye-vr.log"), "the core's session log\n").expect("write");
+    let started = SystemTime::UNIX_EPOCH;
     let mut game = LiveGame::new(&Settings::default());
-    game.game = Some(Started { child, at: SystemTime::now() });
+    game.game = Some(Started { child: exited_game(), at: started, log_dir: log_dir.clone() });
+    assert_eq!(game.core_log().expect("the core log"), log_dir.join("arcane-eye-vr.log"));
+    let copy = dir.path().join("arcane-eye-vr.log");
+    game.copy_log(&copy).expect("copy the core log");
+    assert_eq!(fs::read_to_string(copy).expect("read the copy"), "the core's session log\n");
+}
+
+#[test]
+fn a_game_that_exited_reports_its_exit_status_and_passes_the_close() {
+    let mut game = LiveGame::new(&Settings::default());
+    let log_dir = PathBuf::from(r"C:\home\logs");
+    game.game = Some(Started { child: exited_game(), at: SystemTime::now(), log_dir });
     let status = game.exit_status().expect("an exit status").expect("an exited game");
     assert_eq!(status.code(), Some(0));
     assert!(matches!(game.close(), Ok(Closed::Exited)));

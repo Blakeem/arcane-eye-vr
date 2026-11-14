@@ -16,6 +16,7 @@ game-mem = { path = "../game-mem" }
 gfx = { path = "../gfx" }
 hooks = { path = "../hooks" }
 ipc-layout = { path = "../ipc-layout" }
+settings = { path = "../settings" }
 thiserror.workspace = true
 tracing.workspace = true
 

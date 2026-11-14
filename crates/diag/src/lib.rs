@@ -1,4 +1,4 @@
-//! Health registry, panic hook, log ring layer, allocation guard, rate-limited logging, perf summary aggregation, error chain text and crash client.
+//! Health registry, panic hook, log ring layer, allocation guard, rate-limited logging, perf summary aggregation, error chain text, root folder and crash client.
 
 pub mod alloc_guard;
 pub mod error_chain;
@@ -10,6 +10,7 @@ pub mod perf;
 pub mod rate;
 mod raw;
 mod ring;
+pub mod root;
 mod rotation;
 mod writer;
 

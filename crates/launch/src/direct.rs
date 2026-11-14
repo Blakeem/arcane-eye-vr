@@ -1,12 +1,14 @@
 //! The direct start: runs the game exe itself, so no Larian launcher and no Play click are needed.
 //!
 //! The command line and the working directory are the ones the Larian launcher gives the game. The
-//! two Steam variables keep the game from handing the start back to Steam.
+//! two Steam variables keep the game from handing the start back to Steam. The root folder variable
+//! gives the game's core the caller's root folder.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 
+use ipc_layout::root_folder::HOME_VARIABLE;
 use tracing::info;
 
 use crate::game_dir::GameDir;
@@ -28,17 +30,23 @@ pub struct StartError {
     pub source: io::Error,
 }
 
-/// Starts the game exe in `game_dir`. The returned child holds the game's process id and a handle
-/// to wait on.
+/// Starts the game exe in `game_dir` with `home` as its root folder, an absolute path as
+/// [`HOME_VARIABLE`] requires. The returned child holds the game's process id and a handle to wait
+/// on.
 ///
 /// # Errors
 ///
 /// Returns [`StartError`] when Windows cannot start the game exe.
-pub fn start(game_dir: &GameDir) -> Result<Child, StartError> {
-    let mut command = command(game_dir);
+pub fn start(game_dir: &GameDir, home: &Path) -> Result<Child, StartError> {
+    let mut command = command(game_dir, home);
     match command.spawn() {
         Ok(child) => {
-            info!(pid = child.id(), exe = %game_dir.exe().display(), "game started directly");
+            info!(
+                pid = child.id(),
+                exe = %game_dir.exe().display(),
+                home = %home.display(),
+                "game started directly"
+            );
             Ok(child)
         }
         Err(source) => {
@@ -47,13 +55,15 @@ pub fn start(game_dir: &GameDir) -> Result<Child, StartError> {
     }
 }
 
-/// The command that starts the game exe in `game_dir`. The Steam variables reach only the child.
-fn command(game_dir: &GameDir) -> Command {
+/// The command that starts the game exe in `game_dir` with the root folder `home`. The Steam
+/// variables and the root folder variable reach only the child.
+fn command(game_dir: &GameDir, home: &Path) -> Command {
     let mut command = Command::new(game_dir.exe());
     command.args(GAME_ARGS).current_dir(working_dir(game_dir));
     for name in STEAM_VARIABLES {
         command.env(name, steam_app_id!());
     }
+    command.env(HOME_VARIABLE, home);
     command
 }
 
@@ -68,6 +78,7 @@ mod tests {
     use crate::test_dir;
     use std::ffi::OsStr;
     use std::fs;
+    use std::path::Path;
     use test_support::TestDir;
 
     /// A game folder whose exe is an empty file, which Windows refuses to run.
@@ -79,16 +90,22 @@ mod tests {
     }
 
     #[test]
-    fn the_command_runs_the_game_exe_with_the_launcher_s_arguments_and_the_steam_variables() {
+    fn the_command_runs_the_game_exe_with_the_launcher_s_arguments_and_the_added_variables() {
         let dir = stand_in_game("direct");
         let game = dir.path();
-        let command = command(&GameDir::new(game.to_path_buf()).expect("a game folder"));
+        let home = Path::new(r"D:\trial-results\2026-11-13T143530Z-menu\home");
+        let command = command(&GameDir::new(game.to_path_buf()).expect("a game folder"), home);
         assert_eq!(command.get_program(), game.join(r"bin\bg3_dx11.exe"));
         let args: Vec<&OsStr> = command.get_args().collect();
         assert_eq!(args, ["-externalcrashhandler", "-stats", "1", "-modded", "1"]);
         let envs: Vec<(&OsStr, Option<&OsStr>)> = command.get_envs().collect();
         let app_id = Some(OsStr::new("1086940"));
-        assert_eq!(envs, [(OsStr::new("SteamAppId"), app_id), (OsStr::new("SteamGameId"), app_id)]);
+        let expected = [
+            (OsStr::new("ARCANE_EYE_VR_HOME"), Some(home.as_os_str())),
+            (OsStr::new("SteamAppId"), app_id),
+            (OsStr::new("SteamGameId"), app_id),
+        ];
+        assert_eq!(envs, expected);
         assert_eq!(command.get_current_dir(), Some(game.join("Launcher").as_path()));
     }
 
@@ -96,7 +113,8 @@ mod tests {
     fn a_start_that_fails_names_the_program_and_the_working_directory() {
         let dir = stand_in_game("direct-fails");
         let game = dir.path();
-        let error = start(&GameDir::new(game.to_path_buf()).expect("a game folder"))
+        let game_dir = GameDir::new(game.to_path_buf()).expect("a game folder");
+        let error = start(&game_dir, &game.join("home"))
             .expect_err("an empty exe in a folder with no Launcher folder does not start");
         assert_eq!(error.program, game.join(r"bin\bg3_dx11.exe"));
         assert_eq!(error.working_dir, game.join("Launcher"));

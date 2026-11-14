@@ -17,6 +17,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use diag::logging::{self, LogName, Logging};
+use diag::root::Root;
 use ipc_layout::launch_token::Mode;
 use launch::status::{self, Goal};
 use launch::{checks, steam, token};
@@ -53,9 +54,13 @@ fn main() -> ExitCode {
     }
 }
 
+/// Starts the launch app's log in the root folder's log folder, and logs a warning there when the root
+/// folder ignored the root folder variable.
 fn start_logging() -> Result<Logging, Failure> {
-    let log_dir = logging::session_log_dir()?;
-    Ok(logging::start(&log_dir, LogName::Launcher)?)
+    let root = Root::find()?;
+    let logging = logging::start(&root.log_dir(), LogName::Launcher)?;
+    dispatcher::with_default(&logging.dispatch, || root.warn_ignored());
+    Ok(logging)
 }
 
 /// Runs the launch steps in order and returns once the game reports the goal status of the mode

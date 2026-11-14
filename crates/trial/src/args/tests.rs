@@ -25,6 +25,8 @@ fn a_name_alone_takes_every_default() {
         captures: 1,
         out: PathBuf::from("trial-results"),
         game_dir: None,
+        player_file: None,
+        dev_file: None,
     };
     assert_eq!(
         parse(args(&["--name", "menu"])),
@@ -49,6 +51,10 @@ fn each_option_sets_its_setting() {
         "0",
         "--mode",
         "vr",
+        "--dev-file",
+        r"C:\trials\left.toml",
+        "--settings-file",
+        r"C:\trials\ipd 60.toml",
     ]);
     let expected = Settings {
         mode: Mode::Vr,
@@ -57,6 +63,8 @@ fn each_option_sets_its_setting() {
         captures: 9999,
         out: PathBuf::from(r"C:\results"),
         game_dir: Some(PathBuf::from(r"D:\Games\Baldurs Gate 3")),
+        player_file: Some(PathBuf::from(r"C:\trials\ipd 60.toml")),
+        dev_file: Some(PathBuf::from(r"C:\trials\left.toml")),
     };
     assert_eq!(parse(line), Ok(Options { name: name("Menu-2"), settings: expected }));
     let desktop = parse(args(&["--name", "a", "--mode", "desktop-stereo"])).expect("a trial");
@@ -136,8 +144,17 @@ fn a_number_outside_its_range_is_an_error_that_names_the_range() {
 
 #[test]
 fn the_usage_names_every_option() {
-    let options =
-        ["--name", "--mode", "--warmup-secs", "--perf-lines", "--captures", "--out", "--game-dir"];
+    let options = [
+        "--name",
+        "--mode",
+        "--warmup-secs",
+        "--perf-lines",
+        "--captures",
+        "--out",
+        "--game-dir",
+        "--settings-file",
+        "--dev-file",
+    ];
     for option in options {
         assert!(USAGE.contains(option), "{option}: {USAGE}");
     }

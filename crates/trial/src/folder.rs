@@ -55,13 +55,12 @@ pub(crate) fn write(folder: &Path, file: &str, text: &str) -> Result<(), FolderE
 /// The text of `trial.txt`: the name, the mode, each option's value and the mod version.
 pub(crate) fn trial_text(options: &Options) -> String {
     let settings = &options.settings;
-    let game_dir = settings
-        .game_dir
-        .as_ref()
-        .map_or_else(|| "found through Steam".to_owned(), |path| path.display().to_string());
+    let game_dir = path_or(settings.game_dir.as_deref(), "found through Steam");
+    let player_file = path_or(settings.player_file.as_deref(), "none");
+    let dev_file = path_or(settings.dev_file.as_deref(), "none");
     format!(
         "name: {}\nmode: {}\nwarmup-secs: {}\nperf-lines: {}\ncaptures: {}\nout: {}\ngame-dir: {}\n\
-         mod-version: {}\n",
+         settings-file: {}\ndev-file: {}\nmod-version: {}\n",
         options.name.as_str(),
         settings.mode.as_str(),
         settings.warmup.as_secs(),
@@ -69,8 +68,15 @@ pub(crate) fn trial_text(options: &Options) -> String {
         settings.captures,
         settings.out.display(),
         game_dir,
+        player_file,
+        dev_file,
         env!("CARGO_PKG_VERSION")
     )
+}
+
+/// `path` as text, or `absent` when there is no path.
+fn path_or(path: Option<&Path>, absent: &str) -> String {
+    path.map_or_else(|| absent.to_owned(), |path| path.display().to_string())
 }
 
 /// The UTC time `since_epoch` after the Unix epoch as `YYYY-MM-DDTHHMMSSZ`, which sorts by time and
@@ -182,15 +188,19 @@ mod tests {
             captures: 2,
             out: PathBuf::from(r"C:\results"),
             game_dir: Some(PathBuf::from(r"D:\Games\Baldurs Gate 3")),
+            player_file: Some(PathBuf::from(r"C:\trials\ipd-60.toml")),
+            dev_file: Some(PathBuf::from(r"C:\trials\left.toml")),
         };
         let name = TrialName::new("menu").expect("a valid name");
         let expected = format!(
             "name: menu\nmode: vr\nwarmup-secs: 30\nperf-lines: 4\ncaptures: 2\nout: C:\\results\n\
-             game-dir: D:\\Games\\Baldurs Gate 3\nmod-version: {}\n",
+             game-dir: D:\\Games\\Baldurs Gate 3\nsettings-file: C:\\trials\\ipd-60.toml\n\
+             dev-file: C:\\trials\\left.toml\nmod-version: {}\n",
             env!("CARGO_PKG_VERSION")
         );
         assert_eq!(trial_text(&Options { name: name.clone(), settings }), expected);
         let steam = trial_text(&Options { name, settings: Settings::default() });
-        assert!(steam.contains("\nout: trial-results\ngame-dir: found through Steam\n"), "{steam}");
+        let defaults = "\nout: trial-results\ngame-dir: found through Steam\nsettings-file: none\ndev-file: none\n";
+        assert!(steam.contains(defaults), "{steam}");
     }
 }

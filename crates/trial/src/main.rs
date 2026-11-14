@@ -2,15 +2,16 @@
 //!
 //! `trial.exe --name <name>` starts the game with the mod, waits for its first frame, measures the
 //! frame times from the core's perf summary lines, saves frames as PNG files, closes the game and
-//! writes `<out>/<UTC time>-<name>/`. `steps.rs` runs the steps against two traits, and `live.rs`
-//! drives the game and the viewer link through the `launch` and `viewer-client` crates. It exits
-//! with 0 when every step passed, 1 when a step failed or the result could not be recorded, and 2
-//! for a bad command line.
+//! writes `<out>/<UTC time>-<name>/`. The game's root folder is `home` in that folder. `steps.rs`
+//! runs the steps against two traits, and `live.rs` drives the game and the viewer link through the
+//! `launch` and `viewer-client` crates. It exits with 0 when every step passed, 1 when a step failed
+//! or the result could not be recorded, and 2 for a bad command line.
 
 #![forbid(unsafe_code)]
 
 mod args;
 mod folder;
+mod home;
 mod live;
 mod perf;
 mod pixels;

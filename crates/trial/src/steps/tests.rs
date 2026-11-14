@@ -23,6 +23,8 @@ fn options(out: &Path) -> Options {
         captures: 2,
         out: out.to_path_buf(),
         game_dir: Some(PathBuf::from(r"D:\Game")),
+        player_file: None,
+        dev_file: None,
     };
     Options { name: TrialName::new("menu").expect("a valid name"), settings }
 }
@@ -201,7 +203,7 @@ fn a_passed_trial_writes_every_file_of_the_result_folder() {
     let read = |file: &str| fs::read_to_string(folder.join(file)).expect("read a result file");
     let trial_text = format!(
         "name: menu\nmode: desktop-stereo\nwarmup-secs: 7\nperf-lines: 2\ncaptures: 2\nout: {}\n\
-         game-dir: D:\\Game\nmod-version: {}\n",
+         game-dir: D:\\Game\nsettings-file: none\ndev-file: none\nmod-version: {}\n",
         folder.display(),
         env!("CARGO_PKG_VERSION")
     );
@@ -223,7 +225,54 @@ total frames=900 mean_us=16333 highest_p99_us=18000 highest_max_us=19000
     assert!(folder.join("frame-0002.png").is_file());
     assert!(!folder.join("frame-0003.png").exists());
     assert_eq!(game.warmup, Some(Duration::from_secs(7)));
+    assert_eq!(game.home.as_deref(), Some(folder.join("home").as_path()));
+    assert!(folder.join("home").is_dir());
     assert_eq!(report.exit_code(), ExitCode::SUCCESS);
+}
+
+#[test]
+fn the_given_settings_files_land_in_home_before_the_game_starts_with_it() {
+    let dir = test_dir("given-files");
+    let folder = dir.path();
+    let (player_file, dev_file) = (folder.join("ipd.toml"), folder.join("eye.toml"));
+    fs::write(&player_file, "[stereo]\nipd_mm = 60\n").expect("write");
+    fs::write(&dev_file, "[stereo]\nmain_view_eye = \"right\"\n").expect("write");
+    let mut options = options(folder);
+    options.settings.player_file = Some(player_file.clone());
+    options.settings.dev_file = Some(dev_file.clone());
+    let mut game = StandInGame::failing_at(Some(Step::FirstPresent));
+    let mut frames = StandInFrames { fail_reads: false, beating: false };
+    trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
+    let home = folder.join("home");
+    assert_eq!(game.home.as_deref(), Some(home.as_path()));
+    let read = |file: &Path| fs::read_to_string(file).expect("read a file");
+    assert_eq!(read(&home.join("settings.toml")), "[stereo]\nipd_mm = 60\n");
+    assert_eq!(read(&home.join("dev.toml")), "[stereo]\nmain_view_eye = \"right\"\n");
+    let trial_text = read(&folder.join("trial.txt"));
+    let files =
+        format!("\nsettings-file: {}\ndev-file: {}\n", player_file.display(), dev_file.display());
+    assert!(trial_text.contains(&files), "{trial_text}");
+}
+
+#[test]
+fn a_missing_settings_file_fails_the_check_step_with_its_path_and_starts_nothing() {
+    let dir = test_dir("missing-settings-file");
+    let folder = dir.path();
+    let missing = folder.join("missing.toml");
+    let mut options = options(folder);
+    options.settings.player_file = Some(missing.clone());
+    let mut game = StandInGame::failing_at(None);
+    let mut frames = StandInFrames { fail_reads: false, beating: false };
+    let report = trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
+    let result = fs::read_to_string(folder.join("result.txt")).expect("read result.txt");
+    let expected = format!(
+        "check: failed: the settings file {} is not an existing file\noutcome: failed\n",
+        missing.display()
+    );
+    assert_eq!(result, expected);
+    assert_eq!(game.ran, [Step::Check; 0], "the game was checked or started");
+    assert!(!folder.join("home").exists());
+    assert_eq!(report.exit_code(), ExitCode::from(1));
 }
 
 #[test]

@@ -8,7 +8,6 @@ use std::process::{ExitCode, ExitStatus};
 use std::time::{Duration, Instant};
 
 use diag::error_chain;
-use diag::logging::LogError;
 use ipc_layout::perf_line::PerfSummary;
 use launch::checks::{GameRunning, RuntimeError};
 use launch::direct::StartError;
@@ -21,6 +20,7 @@ use viewer_client::frame::{Frame, ReadError};
 
 use crate::args::{Options, Settings};
 use crate::folder::{self, FolderError, RESULT_FILE, TRIAL_FILE};
+use crate::home::{self, HomeError};
 use crate::perf::{self, PerfError};
 use crate::pixels::{self, SizeError};
 use crate::png_file::{self, PngError};
@@ -77,7 +77,8 @@ pub(crate) enum Closed {
 pub(crate) trait Game {
     fn check(&mut self) -> Result<(), StepError>;
     fn create_token(&mut self) -> Result<(), StepError>;
-    fn start(&mut self) -> Result<(), StepError>;
+    /// Starts the game with `home`, an absolute path, as its root folder.
+    fn start(&mut self, home: &Path) -> Result<(), StepError>;
     fn wait_first_present(&mut self) -> Result<(), StepError>;
     /// Waits `time`.
     fn warm_up(&mut self, time: Duration);
@@ -127,7 +128,7 @@ pub(crate) enum StepError {
     #[error("could not check whether the game runs")]
     GameState(#[source] io::Error),
     #[error(transparent)]
-    LogDir(#[from] LogError),
+    Home(#[from] HomeError),
     #[error("the core wrote no session log in {} after the game started", log_dir.display())]
     NoCoreLog { log_dir: PathBuf },
     #[error(transparent)]
@@ -255,9 +256,9 @@ pub(crate) fn trial(
 fn run(options: &Options, folder: &Path, game: &mut impl Game, frames: &mut impl Frames) -> Report {
     let settings = &options.settings;
     let mut report = Report::default();
-    let started = report.record(Step::Check, game.check())
+    let started = report.record(Step::Check, check(settings, game))
         && report.record(Step::Token, game.create_token())
-        && report.record(Step::Start, game.start());
+        && report.record(Step::Start, start(settings, folder, game));
     if !started {
         return report;
     }
@@ -265,6 +266,18 @@ fn run(options: &Options, folder: &Path, game: &mut impl Game, frames: &mut impl
     report.record_close(game.close());
     report.record(Step::CopyLog, game.copy_log(&folder.join(CORE_LOG_COPY)));
     report
+}
+
+/// Checks the settings files the command line gives, then the game.
+fn check(settings: &Settings, game: &mut impl Game) -> Result<(), StepError> {
+    home::check(settings)?;
+    game.check()
+}
+
+/// Fills the game's root folder in the result folder `folder`, then starts the game with it.
+fn start(settings: &Settings, folder: &Path, game: &mut impl Game) -> Result<(), StepError> {
+    let home = home::prepare(folder, settings)?;
+    game.start(&home)
 }
 
 /// Runs the steps from the first Present to the capture and stops at the first that fails. Each
