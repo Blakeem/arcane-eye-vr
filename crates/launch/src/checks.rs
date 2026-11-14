@@ -55,3 +55,13 @@ pub fn check_game_not_running() -> Result<(), GameRunning> {
     }
     decide::check_not_running(&running)
 }
+
+/// Whether Steam reports the game running. A failed read logs nothing, so the caller words its own
+/// line.
+///
+/// # Errors
+///
+/// Returns the [`RegistryError`] of a failed read of Steam's `Running` value.
+pub fn game_running() -> Result<bool, RegistryError> {
+    Ok(decide::reports_running(GAME_RUNNING.read_dword()?))
+}

@@ -10,7 +10,9 @@ use game_bindings::offsets::{
     VIEW_READ_STATE_CONTROLLER,
 };
 use game_bindings::render_view::RenderView;
-use game_mem::GameAddr;
+use game_mem::{GameAddr, WriteDest};
+
+use crate::raw::test_support::view_writes;
 
 /// The address a test gives the resolved `GetWorldTranslate`. No code runs there.
 pub(crate) const WORLD_TRANSLATE: GameAddr = GameAddr::new(0x7FF6_0000_1000);
@@ -60,6 +62,11 @@ impl TestView {
         RenderView::new(self.address)
     }
 
+    /// The destination of the eye camera's writes to the view, which lives as long as the view.
+    pub(crate) fn writes(&self) -> WriteDest<'_> {
+        view_writes(self.view())
+    }
+
     /// The pointer in the field `offset` bytes into the view.
     pub(crate) fn pointer_at(&self, offset: usize) -> usize {
         let field = self.address.checked_add(offset).expect("a view field");
@@ -76,7 +83,7 @@ impl TestView {
     }
 
     fn write_pointer(&self, offset: usize, value: usize) {
-        let field = self.address.checked_add(offset).expect("a view field");
+        let field = self.writes().offset(offset).expect("a view field");
         game_mem::try_write(field, value).expect("a writable view field");
     }
 }

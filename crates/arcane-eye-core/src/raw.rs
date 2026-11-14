@@ -1,8 +1,8 @@
 //! The core DLL's unsafe edge.
 //!
-//! It holds the exports, the Present call-site, view camera and eye camera hook installs, the pages
-//! the core shares with game threads, the launch token's status field, and the D3D11 and DXGI calls of
-//! the frame handler.
+//! It holds the exports, the Present call-site, view camera and eye camera hook installs, the write
+//! destinations of the render view and of the pages the core shares with game threads, the launch
+//! token's status field, and the D3D11 and DXGI calls of the frame handler.
 
 #![expect(
     unsafe_code,
@@ -13,7 +13,8 @@ use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::ptr;
 
-use game_mem::{GameAddr, try_read};
+use game_bindings::render_view::RenderView;
+use game_mem::{GameAddr, WriteDest, try_read};
 use hooks::{HookError, MidHook, MidThunk, Registers};
 use ipc_layout::core_init::InitFn;
 use ipc_layout::launch_token::{self, STATUS_OFFSET, Status};
@@ -41,7 +42,7 @@ const GET_DESC_SLOT_OFFSET: usize = 12 * size_of::<usize>();
 /// root-failed code before any log exists. A hook that does not install is no failure here.
 /// The launch token's status reports it, and the game runs unmodified.
 #[unsafe(no_mangle)]
-pub(crate) extern "C" fn arcane_eye_init(mode: u32) -> u32 {
+pub(crate) extern "system" fn arcane_eye_init(mode: u32) -> u32 {
     crate::init::init_process(mode)
 }
 
@@ -58,8 +59,11 @@ pub(crate) fn install_present_hook(
     thunk: MidThunk,
 ) -> Result<ManuallyDrop<MidHook>, HookError> {
     // SAFETY: the signature's one match starts with `mov rax,[rcx]` and `call [rax+40h]`, 6 bytes that
-    // SafetyHook relocates and that no jump in `FlipBuffers` targets. bg3-vr hooks the same address.
-    // `FlipBuffers` runs on the render thread, which the render thunk's token requires.
+    // SafetyHook's 5-byte jump relocates. Its 14-byte fallback also moves `mov esi,eax` and
+    // `lea ecx,[rax+7785FFFBh]`, neither RIP-relative. A cdb disassembly of `FlipBuffers` shows no
+    // branch to bytes 1 to 13 of the match, and its FH4 data holds no try block, so no catch resumes
+    // there. bg3-vr hooks the same address. `FlipBuffers` runs on the render thread, which the render
+    // thunk's token requires.
     let hook = unsafe { hooks::install_mid_hook(address, thunk) }?;
     Ok(ManuallyDrop::new(hook))
 }
@@ -99,6 +103,17 @@ pub(crate) fn install_eye_camera_hook(
     Ok(ManuallyDrop::new(hook))
 }
 
+/// The render view that `rcx` holds at the begin-recording entry, and the destination of the core's
+/// writes to its first [`RenderView::WRITE_LEN`] bytes, which lives for the hook's borrow of
+/// `registers`. Only the eye camera hook passes its registers here.
+pub(crate) fn begin_recording_view(registers: &Registers) -> (RenderView, WriteDest<'_>) {
+    let address = GameAddr::new(registers.rcx());
+    // SAFETY: at the begin-recording entry `rcx` holds the engine's render view, game memory that no
+    // Rust reference covers. The destination lives only for the hook, while the engine records it.
+    let writes = unsafe { WriteDest::new(address, RenderView::WRITE_LEN) };
+    (RenderView::new(address), writes)
+}
+
 /// Committed, zero-filled read-write pages that the core shares with game threads, such as the eye
 /// camera's proxy controllers. The pages are released on drop.
 ///
@@ -108,6 +123,7 @@ pub(crate) fn install_eye_camera_hook(
 #[derive(Debug)]
 pub(crate) struct SharedPages {
     address: usize,
+    len: usize,
 }
 
 impl SharedPages {
@@ -123,12 +139,19 @@ impl SharedPages {
         if pages.is_null() {
             return Err(windows::core::Error::from_thread());
         }
-        Ok(Self { address: pages.expose_provenance() })
+        Ok(Self { address: pages.expose_provenance(), len })
     }
 
     /// The first byte of the pages, which is page-aligned.
     pub(crate) const fn address(&self) -> GameAddr {
         GameAddr::new(self.address)
+    }
+
+    /// The `len` bytes `commit` was given, as the destination of guarded writes while the pages live.
+    pub(crate) const fn destination(&self) -> WriteDest<'_> {
+        // SAFETY: the pages stay committed until this value drops, which outlasts the borrow, and only
+        // guarded copies reach them, so no Rust reference covers them.
+        unsafe { WriteDest::new(self.address(), self.len) }
     }
 }
 

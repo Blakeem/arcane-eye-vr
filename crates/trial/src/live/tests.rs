@@ -8,11 +8,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
+use launch::registry::{Hive, RegistryError, RegistryValue};
 use launch::stop::StopError;
 use test_support::TestDir;
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
-use super::{LiveGame, MOD_FILES, Started, close_game, core_log_in, missing_files, wait};
+use super::{
+    LiveGame, MOD_FILES, Started, close_game, core_log_in, missing_files, running_or_clear, wait,
+};
 use crate::args::Settings;
 use crate::steps::{Closed, Game, Step, StepError};
 use crate::test_dir;
@@ -139,17 +142,42 @@ fn a_game_that_exited_reports_its_exit_status_and_passes_the_close() {
 }
 
 #[test]
+fn a_failed_read_of_steams_running_value_counts_as_clear() {
+    let value = RegistryValue { hive: Hive::CurrentUser, key: r"Software\Valve", name: "Running" };
+    let failed = Err(RegistryError { value, source: windows::core::Error::empty() });
+    assert!(!running_or_clear(failed), "a failed read");
+    assert!(running_or_clear(Ok(true)), "a running game");
+    assert!(!running_or_clear(Ok(false)), "a clear value");
+}
+
+#[test]
 fn a_bin_folder_lacking_a_mod_file_names_each_missing_file() {
     let dir = test_dir("mod-files");
     let bin = dir.path();
-    assert_eq!(missing_files(bin, &MOD_FILES), ["version.dll", "arcane_eye_core.dll"]);
+    let missing = |folder: &Path| missing_files(folder, &MOD_FILES).expect("check the mod files");
+    assert_eq!(missing(bin), ["version.dll", "arcane_eye_core.dll"]);
     fs::write(bin.join("version.dll"), "").expect("write the proxy stand-in");
-    assert_eq!(missing_files(bin, &MOD_FILES), ["arcane_eye_core.dll"]);
+    assert_eq!(missing(bin), ["arcane_eye_core.dll"]);
     fs::create_dir(bin.join("arcane_eye_core.dll")).expect("a folder in the core's place");
-    assert_eq!(missing_files(bin, &MOD_FILES), ["arcane_eye_core.dll"]);
+    assert_eq!(missing(bin), ["arcane_eye_core.dll"]);
     fs::remove_dir(bin.join("arcane_eye_core.dll")).expect("remove the folder");
     fs::write(bin.join("arcane_eye_core.dll"), "").expect("write the core stand-in");
-    assert_eq!(missing_files(bin, &MOD_FILES), [""; 0]);
+    assert_eq!(missing(bin), [""; 0]);
+}
+
+#[test]
+fn a_mod_file_that_cannot_be_checked_is_an_error_that_keeps_the_cause() {
+    let dir = test_dir("mod-file-check");
+    // Windows rejects `?` in a file name, so the check fails with an error other than not found.
+    let bin = dir.path().join("bad?name");
+    let error = missing_files(&bin, &MOD_FILES).expect_err("an invalid folder name");
+    let StepError::ModCheck { path, source } = &error else {
+        panic!("a failed check, not a missing file: {error:?}");
+    };
+    assert_eq!(*path, bin.join("version.dll"));
+    assert_ne!(source.kind(), std::io::ErrorKind::NotFound, "{source}");
+    let expected = format!("could not check the mod file {}", bin.join("version.dll").display());
+    assert_eq!(error.to_string(), expected);
 }
 
 #[test]

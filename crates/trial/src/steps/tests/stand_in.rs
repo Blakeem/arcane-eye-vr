@@ -14,7 +14,7 @@ use launch::status::WaitError;
 use launch::stop::StopError;
 use viewer_client::frame::{Frame, PixelFormat, ReadError};
 
-use crate::perf::{CountedLine, PerfError};
+use crate::perf::{CountedLine, PerfError, PerfWindow};
 use crate::steps::{Closed, Frames, Game, Step, StepError};
 
 pub(super) const LOG_TEXT: &str = "the core's session log\n";
@@ -54,6 +54,11 @@ pub(super) struct StandInGame {
     pub(super) home: Option<PathBuf>,
     /// The camera of each of the perf window's two summary lines.
     pub(super) cameras: [Option<CameraLine>; 2],
+    /// The reads of Steam's running state that report the game running, or `None` for every read.
+    pub(super) steam_running_reads: Option<usize>,
+    steam_reads: usize,
+    /// The time of each pause, in order.
+    pub(super) pauses: Vec<Duration>,
 }
 
 impl StandInGame {
@@ -67,6 +72,9 @@ impl StandInGame {
             warmup: None,
             home: None,
             cameras: [None; 2],
+            steam_running_reads: Some(0),
+            steam_reads: 0,
+            pauses: Vec::new(),
         }
     }
 
@@ -110,7 +118,7 @@ impl Game for StandInGame {
         }
     }
 
-    fn perf_window(&mut self, lines: u32) -> Result<Vec<CountedLine>, StepError> {
+    fn perf_window(&mut self, lines: u32) -> Result<PerfWindow, StepError> {
         let timeout = PerfError::Timeout {
             path: PathBuf::from(r"C:\logs\arcane-eye-vr.log"),
             got: 1,
@@ -121,12 +129,23 @@ impl Game for StandInGame {
         let count = usize::try_from(lines).unwrap_or(usize::MAX);
         let summaries = [summary(600, 16_000), summary(300, 17_000)];
         let counted = summaries.into_iter().zip(self.cameras);
-        Ok(counted.map(|(summary, camera)| CountedLine { summary, camera }).take(count).collect())
+        let counted_lines =
+            counted.map(|(summary, camera)| CountedLine { summary, camera }).take(count).collect();
+        Ok(PerfWindow { lines: counted_lines, dropped: 3 })
     }
 
     fn close(&mut self) -> Result<Closed, StepError> {
         self.step(Step::Close, StopError::StillRunning { pid: 7 }.into())?;
         Ok(self.closed)
+    }
+
+    fn steam_reports_running(&mut self) -> bool {
+        self.steam_reads = self.steam_reads.saturating_add(1);
+        self.steam_running_reads.is_none_or(|running| self.steam_reads <= running)
+    }
+
+    fn pause(&mut self, time: Duration) {
+        self.pauses.push(time);
     }
 
     fn copy_log(&mut self, to: &Path) -> Result<(), StepError> {

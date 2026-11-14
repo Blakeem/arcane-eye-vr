@@ -165,12 +165,39 @@ fn a_forced_close_is_recorded_and_the_trial_still_passes() {
 fn a_failed_close_fails_the_trial_and_the_log_is_still_copied() {
     let dir = test_dir("close-fails");
     let mut game = StandInGame::failing_at(Some(Step::Close));
+    game.steam_running_reads = None;
     let mut frames = StandInFrames { fail_reads: false, beating: false };
     let (report, _printed, result) = run_trial(dir.path(), &mut game, &mut frames);
     let tail = "capture: passed\nclose: failed: process 7 still ran 10s after it was ended\n\
                 copy-log: passed\noutcome: failed\n";
     assert!(result.ends_with(tail), "{result}");
+    assert_eq!(game.pauses, [], "a wait for Steam after a failed close");
     assert_eq!(report.exit_code(), ExitCode::from(1));
+}
+
+#[test]
+fn the_close_waits_until_steam_no_longer_reports_the_game_running() {
+    let dir = test_dir("steam-clears");
+    let mut game = StandInGame::failing_at(None);
+    game.steam_running_reads = Some(2);
+    let mut frames = StandInFrames { fail_reads: false, beating: false };
+    let (report, _printed, result) = run_trial(dir.path(), &mut game, &mut frames);
+    assert_eq!(game.pauses, [Duration::from_millis(250); 2], "one pause per read that ran");
+    assert!(result.ends_with("close: passed\ncopy-log: passed\noutcome: passed\n"), "{result}");
+    assert_eq!(report.exit_code(), ExitCode::SUCCESS);
+}
+
+#[test]
+fn a_steam_state_that_never_clears_ends_the_wait_after_30_seconds_and_the_close_still_passes() {
+    let dir = test_dir("steam-never-clears");
+    let mut game = StandInGame::failing_at(None);
+    game.steam_running_reads = None;
+    let mut frames = StandInFrames { fail_reads: false, beating: false };
+    let (report, _printed, result) = run_trial(dir.path(), &mut game, &mut frames);
+    // 30 s of 250 ms pauses.
+    assert_eq!(game.pauses, [Duration::from_millis(250); 120]);
+    assert!(result.ends_with("close: passed\ncopy-log: passed\noutcome: passed\n"), "{result}");
+    assert_eq!(report.exit_code(), ExitCode::SUCCESS);
 }
 
 #[test]
@@ -219,6 +246,7 @@ fn a_passed_trial_writes_every_file_of_the_result_folder() {
 frames=600 mean_us=16000 p50_us=16000 p95_us=17000 p99_us=18000 max_us=19000 width=2 height=1
 frames=300 mean_us=17000 p50_us=16000 p95_us=17000 p99_us=18000 max_us=19000 width=2 height=1
 total frames=900 mean_us=16333 highest_p99_us=18000 highest_max_us=19000
+dropped lines=3
 ";
     assert_eq!(read("perf.txt"), perf_text);
     assert_eq!(read("camera.txt"), "none\n", "a window with no camera line");

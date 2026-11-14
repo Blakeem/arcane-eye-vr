@@ -33,14 +33,20 @@ pub(crate) fn check_runtime(active_runtime: Option<String>) -> Result<(), Runtim
     Err(RuntimeError::NotSteamVr { active: active_runtime })
 }
 
-/// Fails when `running`, Steam's `Running` value for the game, says it runs. A missing value means
-/// it does not. A failed read lets the launch go ahead, since the value is undocumented and only
-/// guards against a second game start.
+/// Whether `running`, Steam's `Running` value for the game, says it runs. A missing value means it
+/// does not.
+pub(crate) const fn reports_running(running: Option<u32>) -> bool {
+    matches!(running, Some(value) if value != 0)
+}
+
+/// Fails when `running`, the read of Steam's `Running` value for the game, says it runs. A failed
+/// read lets the launch go ahead, since the value is undocumented and only guards against a second
+/// game start.
 pub(crate) const fn check_not_running(
     running: &Result<Option<u32>, RegistryError>,
 ) -> Result<(), GameRunning> {
     match running {
-        Ok(Some(value)) if *value != 0 => Err(GameRunning),
+        Ok(value) if reports_running(*value) => Err(GameRunning),
         Ok(_) | Err(_) => Ok(()),
     }
 }
@@ -79,7 +85,7 @@ fn status_poll(goal: Goal, status: Status) -> Result<Poll, WaitError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Poll, check_not_running, check_runtime, poll};
+    use super::{Poll, check_not_running, check_runtime, poll, reports_running};
     use crate::checks::{GameRunning, RuntimeError};
     use crate::registry::{Hive, RegistryError, RegistryValue};
     use crate::status::{Goal, WaitError};
@@ -143,6 +149,14 @@ mod tests {
         }
         assert_eq!(check_not_running(&Ok(Some(0))), Ok(()));
         assert_eq!(check_not_running(&Ok(None)), Ok(()));
+    }
+
+    #[test]
+    fn steam_reports_the_game_running_for_a_nonzero_value_only() {
+        assert!(reports_running(Some(1)), "value 1");
+        assert!(reports_running(Some(7)), "value 7");
+        assert!(!reports_running(Some(0)), "value 0");
+        assert!(!reports_running(None), "no value");
     }
 
     #[test]

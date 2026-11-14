@@ -24,7 +24,7 @@ use diag::{once, warn_every};
 use game_bindings::render_view::{CameraController, ReadState, RenderView};
 use game_bindings::signatures::{GET_WORLD_TRANSLATE, RENDER_VIEW_BEGIN};
 use game_bindings::state;
-use game_mem::{GameAddr, WriteError};
+use game_mem::{GameAddr, WriteDest, WriteError};
 use hooks::{MidHook, Registers, RenderThread};
 use settings::dev::MainViewEye;
 use stereo_core::eye::{self, Eye};
@@ -196,10 +196,10 @@ fn hook_at(site: GameAddr) -> Result<ManuallyDrop<MidHook>, InstallError> {
 
 /// The hook's handler, on the render thread once per render view per frame. `rcx` holds the view.
 fn on_view_begin(context: &CoreContext, thread: &RenderThread, registers: &mut Registers) {
-    let view = RenderView::new(GameAddr::new(registers.rcx()));
+    let (view, writes) = raw::begin_recording_view(registers);
     context.eye_camera.with(thread, |state| {
         if let Some(state) = state {
-            state.on_view_begin(view);
+            state.on_view_begin(view, writes);
         }
     });
 }
@@ -232,10 +232,10 @@ struct EyeLogs {
 /// The feature's render thread state, held in the core context.
 #[derive(Debug)]
 pub(crate) struct EyeState {
-    /// Held so the proxies stay mapped while the core context lives.
-    _pages: SharedPages,
-    /// The proxies, the next one first.
-    ring: [GameAddr; RING_LEN],
+    /// The proxies' pages, which stay mapped while the core context lives.
+    pages: SharedPages,
+    /// The byte offset of each proxy in `pages`, the next one first.
+    ring: [usize; RING_LEN],
     /// The resolved `GetWorldTranslate`, which marks the main view's head controller.
     world_translate: GameAddr,
     eye: Eye,
@@ -250,10 +250,9 @@ impl EyeState {
     /// The state for proxies in `pages`, which hold [`RING_SIZE`] bytes, at `offset_m` from the head
     /// controllers whose slot 9 is `world_translate`.
     fn new(pages: SharedPages, world_translate: GameAddr, eye: Eye, offset_m: f32) -> Self {
-        let ring = proxy::ring(pages.address());
         Self {
-            _pages: pages,
-            ring,
+            pages,
+            ring: proxy::ring(),
             world_translate,
             eye,
             offset_m,
@@ -273,10 +272,10 @@ impl EyeState {
         self.main_view = MainView::Open;
     }
 
-    /// Renders `view` from the eye for this frame when it is the frame's main view. A failed read or
-    /// write logs a rate-limited warning.
-    pub(crate) fn on_view_begin(&mut self, view: RenderView) {
-        match self.proxy_view(view) {
+    /// Renders `view`, whose first bytes are `writes`, from the eye for this frame when it is the
+    /// frame's main view. A failed read or write logs a rate-limited warning.
+    pub(crate) fn on_view_begin(&mut self, view: RenderView, writes: WriteDest<'_>) {
+        match self.proxy_view(view, writes) {
             Ok(Outcome::Proxied { proxy, history }) => {
                 once!(
                     self.logs.first_proxy,
@@ -301,8 +300,8 @@ impl EyeState {
     }
 
     /// Reads the head controller and the view's last-seen controller, fills the next proxy for the
-    /// eye and points `view` at it. Only the first main view of a frame is proxied.
-    fn proxy_view(&mut self, view: RenderView) -> Result<Outcome, EyeFault> {
+    /// eye and points `view` at it through `writes`. Only the first main view of a frame is proxied.
+    fn proxy_view(&mut self, view: RenderView, writes: WriteDest<'_>) -> Result<Outcome, EyeFault> {
         if self.main_view == MainView::Found {
             return Ok(Outcome::NotMainView);
         }
@@ -317,11 +316,15 @@ impl EyeState {
         let head_view = copy.view();
         let eye_camera = EyeCamera::from_head(&head_view, self.offset_m);
         let head_position = eye_camera::position(&head_view);
-        let [proxy, ..] = self.ring;
+        let [next, ..] = self.ring;
         self.ring.rotate_left(1);
         let parts = ProxyParts { head: &copy, vtable: &vtable, eye: &eye_camera, head_position };
-        let Ok(()) = proxy::write(proxy, &parts) else { return Err(EyeFault::ProxyWrite) };
-        point_view(view, head, CameraController::new(proxy), history)?;
+        let Ok(proxy_writes) = self.pages.destination().offset(next) else {
+            return Err(EyeFault::ProxyWrite);
+        };
+        let proxy = proxy_writes.start();
+        let Ok(()) = proxy::write(proxy_writes, &parts) else { return Err(EyeFault::ProxyWrite) };
+        point_view(writes, head, CameraController::new(proxy), history)?;
         self.last = Some(LastProxy { head, proxy });
         Ok(Outcome::Proxied { proxy, history })
     }
@@ -342,17 +345,20 @@ impl EyeState {
     }
 }
 
-/// Points the `ReadState` of `view` at `proxy`, and its last-seen controller too when `history` is
-/// kept. A failed last-seen write points the `ReadState` back at `head`.
+/// Points the `ReadState` of the view whose first bytes are `view` at `proxy`, and its last-seen
+/// controller too when `history` is kept. A failed last-seen write points the `ReadState` back at
+/// `head`.
 fn point_view(
-    view: RenderView,
+    view: WriteDest<'_>,
     head: CameraController,
     proxy: CameraController,
     history: History,
 ) -> Result<(), EyeFault> {
-    let Ok(()) = view.write_read_state(proxy) else { return Err(EyeFault::ReadStateWrite) };
-    if history == History::Kept && view.write_last_seen_controller(proxy).is_err() {
-        return Err(last_seen_fault(view.write_read_state(head)));
+    let Ok(()) = RenderView::write_read_state(view, proxy) else {
+        return Err(EyeFault::ReadStateWrite);
+    };
+    if history == History::Kept && RenderView::write_last_seen_controller(view, proxy).is_err() {
+        return Err(last_seen_fault(RenderView::write_read_state(view, head)));
     }
     Ok(())
 }

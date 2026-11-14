@@ -262,24 +262,26 @@ fn the_dll_main_of_the_built_proxy_acts_on_the_real_token_by_exe() {
     let _lock = RealTokenLock::acquire();
     let real_name = HSTRING::from(launch_token::MAPPING_NAME);
     assert!(TokenView::open(&real_name).is_none(), "a launch token exists. Close the launch app.");
-    let dir = test_dir("built-proxy");
+    let dir_guard = test_dir("built-proxy");
+    let dir = dir_guard.path();
     fs::copy(built_proxy(), dir.join("version.dll")).expect("copy the built proxy");
     // A wrongly started loader thread loads this stand-in, which the child then finds loaded.
     fs::copy(built_proxy(), dir.join("arcane_eye_core.dll")).expect("copy a stand-in core");
-    run_child_as(&dir, "bg3_dx11.exe", CHILD_WITHOUT_LOADER);
+    run_child_as(dir, "bg3_dx11.exe", CHILD_WITHOUT_LOADER);
 
     let token = TestToken::create_named(launch_token::MAPPING_NAME, &valid_token());
-    run_child_as(&dir, "bg3.exe", CHILD_WITHOUT_LOADER);
+    run_child_as(dir, "bg3.exe", CHILD_WITHOUT_LOADER);
     assert_eq!(token.token().status(), Ok(Status::WrongRenderer));
     assert_eq!(token.token().game_pid(), 0);
 
-    let loader_dir = test_dir("built-proxy-loader");
+    let loader_guard = test_dir("built-proxy-loader");
+    let loader_dir = loader_guard.path();
     fs::copy(built_proxy(), loader_dir.join("version.dll")).expect("copy the built proxy");
     // A proxy copy as the core would start a second loader in bg3_dx11.exe. System32's version.dll
     // starts nothing and has no init export, so the loader reports core load failed.
     let system_version = system_dir().join("version.dll");
     fs::copy(system_version, loader_dir.join("arcane_eye_core.dll")).expect("copy a stand-in core");
-    let child_pid = run_child_as(&loader_dir, "bg3_dx11.exe", CHILD_WITH_LOADER);
+    let child_pid = run_child_as(loader_dir, "bg3_dx11.exe", CHILD_WITH_LOADER);
     assert_eq!(token.token().game_pid(), child_pid);
     assert_eq!(token.token().status(), Ok(Status::CoreLoadFailed));
 }

@@ -28,6 +28,10 @@ features = [
     "Win32_System_Threading",
 ]
 
+# version.dll links only ipc-layout among the workspace crates. A dev-dependency never reaches it.
+[dev-dependencies]
+test-support = { path = "../test-support" }
+
 [dev-dependencies.windows]
 workspace = true
 features = [

@@ -2,9 +2,10 @@
 //! `ReadState` names.
 //!
 //! Each read and write goes through `game-mem`'s guarded copy, so a wrong address yields a failure
-//! value and never a fault. A read checks no type, so a right address is the caller's part.
+//! value and never a fault. A read checks no type, so a right address is the caller's part. A write
+//! goes to the view's [`WriteDest`], which the caller's unsafe code constructs.
 
-use game_mem::{GameAddr, WriteError, try_read, try_read_array, try_write};
+use game_mem::{GameAddr, WriteDest, WriteError, try_read, try_read_array, try_write};
 
 use crate::camera::PerCamera;
 use crate::offsets::{
@@ -36,7 +37,13 @@ pub struct ControllerCopy([u8; CONTROLLER_SIZE]);
 /// The index of the view matrix's first `f32` in a controller's bytes.
 const VIEW_WORD: usize = CONTROLLER_VIEW / size_of::<f32>();
 
+// `WRITE_LEN` ends at the last-seen field, so the `ReadState` field must come before it.
+const _: () = assert!(VIEW_READ_STATE_CONTROLLER < VIEW_LAST_SEEN_CONTROLLER);
+
 impl RenderView {
+    /// The bytes from a view's start that hold each field the view's writes fill.
+    pub const WRITE_LEN: usize = VIEW_LAST_SEEN_CONTROLLER + size_of::<usize>();
+
     pub const fn new(address: GameAddr) -> Self {
         Self(address)
     }
@@ -64,36 +71,37 @@ impl RenderView {
         }
     }
 
-    /// Points the view's `ReadState` at `controller`. The engine's frame sync points it back at the
-    /// `WriteState` controller at the frame's end.
+    /// Points the `ReadState` of the view whose first [`RenderView::WRITE_LEN`] bytes are `view` at
+    /// `controller`. The engine's frame sync points it back at the `WriteState` controller at the
+    /// frame's end.
     ///
     /// # Errors
     ///
-    /// Returns the [`WriteError`] of a field that cannot be written.
-    pub fn write_read_state(self, controller: CameraController) -> Result<(), WriteError> {
-        self.write_pointer(VIEW_READ_STATE_CONTROLLER, controller)
-    }
-
-    /// Sets the controller pointer the view saw last to `controller`. Begin-recording then sets no
-    /// camera cut when the `ReadState` controller is `controller`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the [`WriteError`] of a field that cannot be written.
-    pub fn write_last_seen_controller(
-        self,
+    /// Returns the [`WriteError`] of a field that cannot be written or lies outside `view`.
+    pub fn write_read_state(
+        view: WriteDest<'_>,
         controller: CameraController,
     ) -> Result<(), WriteError> {
-        self.write_pointer(VIEW_LAST_SEEN_CONTROLLER, controller)
+        write_pointer(view, VIEW_READ_STATE_CONTROLLER, controller)
+    }
+
+    /// Sets the controller pointer that the view whose first [`RenderView::WRITE_LEN`] bytes are
+    /// `view` saw last to `controller`. Begin-recording then sets no camera cut when the `ReadState`
+    /// controller is `controller`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`WriteError`] of a field that cannot be written or lies outside `view`.
+    pub fn write_last_seen_controller(
+        view: WriteDest<'_>,
+        controller: CameraController,
+    ) -> Result<(), WriteError> {
+        write_pointer(view, VIEW_LAST_SEEN_CONTROLLER, controller)
     }
 
     /// The controller pointer the view saw last, null included, or `None` when it cannot be read.
     pub fn last_seen_controller(self) -> Option<GameAddr> {
         try_read::<usize>(self.0.checked_add(VIEW_LAST_SEEN_CONTROLLER)?).map(GameAddr::new)
-    }
-
-    fn write_pointer(self, offset: usize, controller: CameraController) -> Result<(), WriteError> {
-        try_write(self.0.destination(offset)?, controller.0.get())
     }
 
     /// The view's `PerCamera` block 0, or `None` when any field of it cannot be read.
@@ -107,6 +115,14 @@ impl RenderView {
             position: try_read_array(block.checked_add(PER_CAMERA_POSITION)?)?,
         })
     }
+}
+
+fn write_pointer(
+    view: WriteDest<'_>,
+    offset: usize,
+    controller: CameraController,
+) -> Result<(), WriteError> {
+    try_write(view.offset(offset)?, controller.0.get())
 }
 
 impl CameraController {
@@ -159,7 +175,7 @@ impl ControllerCopy {
 mod tests {
     use std::hint::black_box;
 
-    use game_mem::{GameAddr, WriteError, try_read};
+    use game_mem::GameAddr;
 
     use super::{CameraController, ReadState, RenderView};
     use crate::offsets::{
@@ -243,39 +259,11 @@ mod tests {
     }
 
     #[test]
-    fn the_pointer_writes_land_in_the_read_state_and_last_seen_fields() {
-        let mut view = black_box(vec![0_u8; VIEW_LAST_SEEN_CONTROLLER + 8]);
-        let address = GameAddr::new(view.as_mut_ptr().expose_provenance());
-        let render_view = RenderView::new(address);
-        let first = CameraController::new(GameAddr::new(CONTROLLER));
-        let second = CameraController::new(GameAddr::new(CONTROLLER + 0x40));
-        assert_eq!(render_view.write_read_state(first), Ok(()));
-        assert_eq!(render_view.write_last_seen_controller(second), Ok(()));
-        let field = |offset| try_read::<usize>(address.checked_add(offset).expect("a field"));
-        assert_eq!(field(VIEW_READ_STATE_CONTROLLER), Some(CONTROLLER));
-        assert_eq!(field(VIEW_LAST_SEEN_CONTROLLER), Some(CONTROLLER + 0x40));
-        assert_eq!(render_view.read_state_controller(), Some(first));
-        assert_eq!(render_view.last_seen_controller(), Some(GameAddr::new(CONTROLLER + 0x40)));
-        assert_eq!(render_view.address(), address);
-        drop(black_box(view));
-    }
-
-    #[test]
     fn the_last_seen_controller_reads_a_null_pointer_and_nothing_from_an_unmapped_view() {
         let view = black_box(vec![0_u8; VIEW_LAST_SEEN_CONTROLLER + 8]);
         let last_seen = RenderView::new(address_of(&view)).last_seen_controller();
         assert_eq!(last_seen, Some(GameAddr::new(0)));
         assert_eq!(RenderView::new(UNMAPPED).last_seen_controller(), None);
-    }
-
-    #[test]
-    fn a_pointer_write_to_an_unmapped_or_overflowing_view_yields_the_failure() {
-        let controller = CameraController::new(GameAddr::new(CONTROLLER));
-        let unmapped = RenderView::new(UNMAPPED).write_read_state(controller);
-        let field = UNMAPPED.get() + VIEW_READ_STATE_CONTROLLER;
-        assert_eq!(unmapped, Err(WriteError::Faulted { address: field }));
-        let top = RenderView::new(GameAddr::new(usize::MAX));
-        assert_eq!(top.write_last_seen_controller(controller), Err(WriteError::PastAddressSpace));
     }
 
     #[test]

@@ -12,7 +12,8 @@ use diag::logging::{self, LogName};
 use diag::root::Root;
 use ipc_layout::core_init::CORE_DLL;
 use ipc_layout::launch_token::Mode;
-use launch::game_dir::GameDir;
+use launch::game_dir::{self, GameDir};
+use launch::registry::RegistryError;
 use launch::status::{self, Goal};
 use launch::stop::{self, ProcessState};
 use launch::token::{self, TokenMapping};
@@ -23,7 +24,7 @@ use viewer_client::header::Names;
 use viewer_client::heartbeat;
 
 use crate::args::Settings;
-use crate::perf::{self, CountedLine, LogTail};
+use crate::perf::{self, LogTail, PerfWindow};
 use crate::steps::{Closed, Frames, Game, Step, StepError};
 
 /// The files the mod puts in the game's bin folder.
@@ -35,7 +36,7 @@ const STATUS_POLL: Duration = Duration::from_millis(250);
 /// The longest wait from the start to the first Present.
 const FIRST_PRESENT_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// The longest wait for each perf summary line.
+/// The `line_timeout` that `perf::collect` applies.
 const PERF_LINE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The longest wait for the game to exit after its windows were asked to close.
@@ -105,7 +106,7 @@ impl Game for LiveGame {
             None => GameDir::find()?,
         };
         let bin = game_dir.bin();
-        let missing = missing_files(&bin, &MOD_FILES);
+        let missing = missing_files(&bin, &MOD_FILES)?;
         if !missing.is_empty() {
             return Err(StepError::ModMissing { bin, files: missing });
         }
@@ -145,7 +146,7 @@ impl Game for LiveGame {
         }
     }
 
-    fn perf_window(&mut self, lines: u32) -> Result<Vec<CountedLine>, StepError> {
+    fn perf_window(&mut self, lines: u32) -> Result<PerfWindow, StepError> {
         let mut tail = LogTail::at_end(&self.core_log()?)?;
         Ok(perf::collect(&mut tail, lines, PERF_LINE_TIMEOUT)?)
     }
@@ -155,11 +156,31 @@ impl Game for LiveGame {
         close_game(pid, CLOSE_TIMEOUT)
     }
 
+    fn steam_reports_running(&mut self) -> bool {
+        running_or_clear(checks::game_running())
+    }
+
+    fn pause(&mut self, time: Duration) {
+        wait(time);
+    }
+
     fn copy_log(&mut self, to: &Path) -> Result<(), StepError> {
         let from = self.core_log()?;
         match fs::copy(&from, to) {
             Ok(_bytes) => Ok(()),
             Err(source) => Err(StepError::Copy { from, to: to.to_path_buf(), source }),
+        }
+    }
+}
+
+/// Whether the `read` of Steam's `Running` value reports the game running. A failed read counts as
+/// clear, so the trial does not wait out a value it cannot read.
+fn running_or_clear(read: Result<bool, RegistryError>) -> bool {
+    match read {
+        Ok(running) => running,
+        Err(error) => {
+            warn!(error = %error, "could not read whether Steam still reports the closed game running");
+            false
         }
     }
 }
@@ -214,9 +235,19 @@ impl Frames for LiveFrames {
     }
 }
 
-/// The names in `files` that `folder` holds no file of.
-fn missing_files(folder: &Path, files: &[&'static str]) -> Vec<&'static str> {
-    files.iter().copied().filter(|file| !folder.join(file).is_file()).collect()
+/// The names in `files` that `folder` holds no file of. A check that fails for a cause other than a
+/// missing entry, such as access denied, is an error that keeps the cause.
+fn missing_files(folder: &Path, files: &[&'static str]) -> Result<Vec<&'static str>, StepError> {
+    let mut missing = Vec::new();
+    for &file in files {
+        let path = folder.join(file);
+        match game_dir::is_file(&path) {
+            Ok(true) => {}
+            Ok(false) => missing.push(file),
+            Err(source) => return Err(StepError::ModCheck { path, source }),
+        }
+    }
+    Ok(missing)
 }
 
 /// Waits `time` on this thread.

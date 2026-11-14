@@ -4,6 +4,7 @@
 #![expect(unsafe_code, reason = "the guarded copy and the memory queries are foreign calls")]
 
 use core::ffi::c_void;
+use core::marker::PhantomData;
 use core::ptr;
 
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -13,10 +14,41 @@ use windows::Win32::System::Memory::{
 };
 use windows::core::PCWSTR;
 
-use crate::{GameAddr, Plain};
+use crate::{GameAddr, Plain, WriteDest, WriteError};
 
 /// The shim's guarded copy reports a complete copy with 1.
 const COPY_COMPLETE: i32 = 1;
+
+impl WriteDest<'_> {
+    /// The `len` bytes from `start` as the destination of guarded writes.
+    ///
+    /// # Safety
+    ///
+    /// For the destination's lifetime, the `len` bytes from `start` are game memory, memory the caller
+    /// owns for writes or unmapped addresses, and no Rust reference to any of them is live while a
+    /// write runs.
+    pub const unsafe fn new(start: GameAddr, len: usize) -> Self {
+        Self { start, len, memory: PhantomData }
+    }
+
+    /// The first byte of the range.
+    pub const fn start(self) -> GameAddr {
+        self.start
+    }
+
+    /// The part of the range from `bytes` past its start on.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WriteError::OutsideDestination`] when `bytes` exceeds the range's length.
+    pub const fn offset(self, bytes: usize) -> Result<Self, WriteError> {
+        let (Some(len), Some(start)) = (self.len.checked_sub(bytes), self.start.checked_add(bytes))
+        else {
+            return Err(WriteError::OutsideDestination);
+        };
+        Ok(Self { start, len, memory: PhantomData })
+    }
+}
 
 pub(crate) fn read<T: Plain>(address: GameAddr) -> Option<T> {
     let mut value = T::default();
@@ -37,15 +69,22 @@ pub(crate) fn read_into<T: Plain>(address: GameAddr, values: &mut [T]) -> Option
     (copied == COPY_COMPLETE).then_some(())
 }
 
-/// Copies `values` to `address`. Returns `false` when a byte of the destination could not be
-/// written, and the destination may then hold a partial copy.
-pub(crate) fn write_from<T: Plain>(address: GameAddr, values: &[T]) -> bool {
-    let destination = ptr::with_exposed_provenance_mut::<c_void>(address.get());
+/// Copies `values` to the start of `dest`. A fault may leave a partial copy in the destination.
+pub(crate) fn write_from<T: Plain>(dest: WriteDest<'_>, values: &[T]) -> Result<(), WriteError> {
+    let len = size_of_val(values);
+    if len > dest.len {
+        return Err(WriteError::OutsideDestination);
+    }
+    let destination = ptr::with_exposed_provenance_mut::<c_void>(dest.start.get());
     let source = values.as_ptr().cast::<c_void>();
-    // SAFETY: `source` is valid for `size_of_val(values)` byte reads. The copy needs no valid
-    // `destination`. `try_write`'s contract has `address` name memory no Rust value owns.
-    let copied = unsafe { shim::raw::guarded_copy(destination, source, size_of_val(values)) };
-    copied == COPY_COMPLETE
+    // SAFETY: `source` is valid for `len` byte reads. The copy needs no valid `destination`. The
+    // `len` bytes lie inside `dest`, whose contract has no Rust reference cover them.
+    let copied = unsafe { shim::raw::guarded_copy(destination, source, len) };
+    if copied == COPY_COMPLETE {
+        Ok(())
+    } else {
+        Err(WriteError::Faulted { address: dest.start.get() })
+    }
 }
 
 /// The load address of the process exe's module.
@@ -122,8 +161,10 @@ mod tests {
         VirtualQuery,
     };
 
+    use std::hint::black_box;
+
     use super::{read, write_from};
-    use crate::GameAddr;
+    use crate::{GameAddr, WriteDest, WriteError, try_write, try_write_slice};
 
     /// The x64 Windows page size, which the guarded copy's page mask assumes.
     const PAGE_SIZE: usize = 4096;
@@ -163,11 +204,80 @@ mod tests {
             unsafe { VirtualAlloc(None, PAGE_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READONLY) };
         assert!(!page.is_null(), "commit a read-only page");
         let address = GameAddr::new(page.expose_provenance());
-        let wrote = write_from(address, &[u64::MAX]);
+        // SAFETY: the page is owned by this test until its release below, and no Rust reference
+        // covers it.
+        let dest = unsafe { WriteDest::new(address, PAGE_SIZE) };
+        let wrote = write_from(dest, &[u64::MAX]);
         let after = read::<u64>(address);
         // SAFETY: `page` is the base of the allocation above, and this is its one release.
         unsafe { VirtualFree(page, 0, MEM_RELEASE) }.expect("release the test page");
-        assert!(!wrote, "a write to a read-only page succeeded");
+        assert_eq!(wrote, Err(WriteError::Faulted { address: address.get() }));
         assert_eq!(after, Some(0), "the committed page still reads as zero");
+    }
+
+    /// Windows reserves the lowest 64 KiB of every process, so no write there succeeds.
+    const UNMAPPED: GameAddr = GameAddr::new(0x10);
+
+    /// A value whose eight bytes all differ, so a write of the wrong bytes shows.
+    const STORED: u64 = 0x0123_4567_89AB_CDEF;
+
+    /// Four zero words, filled only through guarded writes while `run` runs, and their final values.
+    fn written_words(run: impl FnOnce(WriteDest<'_>)) -> [u64; 4] {
+        let mut words = black_box([0_u64; 4]);
+        let start = GameAddr::new((&raw mut words).expose_provenance());
+        // SAFETY: `words` lives until this function returns, and no reference to it is live while
+        // `run` writes.
+        let dest = unsafe { WriteDest::new(start, size_of_val(&words)) };
+        run(dest);
+        black_box(words)
+    }
+
+    #[test]
+    fn try_write_stores_values_at_the_start_and_an_offset_of_a_destination() {
+        let written = written_words(|dest| {
+            assert_eq!(try_write(dest, STORED), Ok(()));
+            let second = dest.offset(size_of::<u64>()).expect("an offset inside the words");
+            assert_eq!(second.start(), dest.start().checked_add(8).expect("a test address"));
+            assert_eq!(try_write_slice(second, &[7_u64, 8, 9]), Ok(()));
+        });
+        assert_eq!(written, [STORED, 7, 8, 9]);
+    }
+
+    #[test]
+    fn a_write_or_offset_past_the_destination_end_writes_nothing() {
+        let written = written_words(|dest| {
+            let outside = Err(WriteError::OutsideDestination);
+            assert_eq!(try_write_slice(dest, &[1_u64, 2, 3, 4, 5]), outside, "five words");
+            let last = dest.offset(24).expect("the last word");
+            assert_eq!(try_write_slice(last, &[1_u32, 2, 3]), outside, "twelve bytes in eight");
+            assert_eq!(dest.offset(33), outside.map(|()| dest), "an offset past the end");
+            assert_eq!(try_write(dest.offset(32).expect("the end"), 1_u8), outside, "a byte");
+        });
+        assert_eq!(written, [0; 4]);
+        assert_eq!(
+            WriteError::OutsideDestination.to_string(),
+            "the write lies past the end of its destination"
+        );
+    }
+
+    #[test]
+    fn try_write_to_an_unmapped_destination_yields_the_fault_and_no_crash() {
+        // SAFETY: the bytes are unmapped, so no Rust reference covers them.
+        let dest = unsafe { WriteDest::new(UNMAPPED, PAGE_SIZE) };
+        let expected = Err(WriteError::Faulted { address: UNMAPPED.get() });
+        assert_eq!(try_write(dest, STORED), expected);
+        assert_eq!(try_write_slice(dest, &[1.5_f32, 2.5]), expected);
+        assert_eq!(
+            WriteError::Faulted { address: 0x10 }.to_string(),
+            "a guarded write to 0x10 faulted, so it wrote none or part of its bytes"
+        );
+    }
+
+    #[test]
+    fn an_offset_that_passes_the_end_of_the_address_space_is_outside_the_destination() {
+        let top = GameAddr::new(usize::MAX);
+        // SAFETY: the last byte of the address space is kernel memory, never a Rust value.
+        let dest = unsafe { WriteDest::new(top, 2) };
+        assert_eq!(dest.offset(1).map(WriteDest::start), Err(WriteError::OutsideDestination));
     }
 }

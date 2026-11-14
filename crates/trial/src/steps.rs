@@ -20,7 +20,7 @@ use viewer_client::frame::{Frame, ReadError};
 use crate::args::{Options, Settings};
 use crate::folder::{self, FolderError, RESULT_FILE, TRIAL_FILE};
 use crate::home::{self, HomeError};
-use crate::perf::{self, CountedLine, PerfError};
+use crate::perf::{self, PerfError, PerfWindow};
 use crate::pixels::{self, SizeError};
 use crate::png_file::{self, PngError};
 
@@ -32,6 +32,12 @@ const CAMERA_FILE: &str = "camera.txt";
 
 /// The name of the copy of the core's session log in the result folder.
 const CORE_LOG_COPY: &str = "arcane-eye-vr.log";
+
+/// The time between two reads of whether Steam reports the game running after the close.
+const STEAM_POLL: Duration = Duration::from_millis(250);
+
+/// The longest wait after the close for Steam to stop reporting the game running.
+const STEAM_CLEAR_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The exit code of a trial with a failed step, or of a trial that could not run or record its steps.
 pub(crate) const TRIAL_FAILED: u8 = 1;
@@ -86,10 +92,14 @@ pub(crate) trait Game {
     fn warm_up(&mut self, time: Duration);
     /// The game's exit status once it exited, or `None` while it runs.
     fn exit_status(&mut self) -> Result<Option<ExitStatus>, StepError>;
-    /// The `lines` perf summary lines of the core's session log after the next perf summary line it
-    /// finishes, and the camera line before each of them.
-    fn perf_window(&mut self, lines: u32) -> Result<Vec<CountedLine>, StepError>;
+    /// The `lines` perf summary lines of the core's session log after the lines the perf window
+    /// drops, the camera line before each of them, and the count of the dropped lines.
+    fn perf_window(&mut self, lines: u32) -> Result<PerfWindow, StepError>;
     fn close(&mut self) -> Result<Closed, StepError>;
+    /// Whether Steam reports the game running. A failed read is a warn line and counts as not running.
+    fn steam_reports_running(&mut self) -> bool;
+    /// Waits `time` between two reads of a state the steps poll.
+    fn pause(&mut self, time: Duration);
     /// Copies the core's session log to `to`.
     fn copy_log(&mut self, to: &Path) -> Result<(), StepError>;
 }
@@ -111,6 +121,8 @@ pub(crate) enum StepError {
     GameDir(#[from] GameDirError),
     #[error("the game's bin folder {} lacks {}", bin.display(), files.join(" and "))]
     ModMissing { bin: PathBuf, files: Vec<&'static str> },
+    #[error("could not check the mod file {}", path.display())]
+    ModCheck { path: PathBuf, source: io::Error },
     #[error(transparent)]
     Token(#[from] TokenCreateError),
     #[error(transparent)]
@@ -265,9 +277,28 @@ fn run(options: &Options, folder: &Path, game: &mut impl Game, frames: &mut impl
         return report;
     }
     run_in_game(&mut report, settings, folder, game, frames);
-    report.record_close(game.close());
+    let closed = game.close();
+    if closed.is_ok() {
+        wait_steam_cleared(game);
+    }
+    report.record_close(closed);
     report.record(Step::CopyLog, game.copy_log(&folder.join(CORE_LOG_COPY)));
     report
+}
+
+/// Reads Steam's running state until it clears. Steam keeps the state for a few seconds after the
+/// game's exit, and the check step of a trial started then fails on it. The game exited, so a state
+/// still set at the timeout is a warning and no failed step.
+fn wait_steam_cleared(game: &mut impl Game) {
+    let mut waited = Duration::ZERO;
+    while game.steam_reports_running() {
+        if waited >= STEAM_CLEAR_TIMEOUT {
+            warn!(?waited, "Steam still reports the game running after it exited");
+            return;
+        }
+        game.pause(STEAM_POLL);
+        waited = waited.saturating_add(STEAM_POLL);
+    }
 }
 
 /// Checks the settings files the command line gives, then the game.
@@ -336,9 +367,9 @@ fn while_running<G: Game>(
 /// Collects the perf window and writes `perf.txt` and `camera.txt`.
 fn perf_step(game: &mut impl Game, lines: u32, folder: &Path) -> Result<(), StepError> {
     let window = game.perf_window(lines)?;
-    let summaries: Vec<_> = window.iter().map(|line| line.summary).collect();
-    let cameras: Vec<_> = window.iter().map(|line| line.camera).collect();
-    folder::write(folder, PERF_FILE, &perf::text(&summaries))?;
+    let summaries: Vec<_> = window.lines.iter().map(|line| line.summary).collect();
+    let cameras: Vec<_> = window.lines.iter().map(|line| line.camera).collect();
+    folder::write(folder, PERF_FILE, &perf::text(&summaries, window.dropped))?;
     folder::write(folder, CAMERA_FILE, &perf::camera_text(&cameras))?;
     Ok(())
 }

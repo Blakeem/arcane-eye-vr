@@ -144,7 +144,7 @@ fn a_view_on_an_eye_proxy_renders_from_that_eye_with_the_proxied_head() {
     let head = HeadController::new(WORLD_TRANSLATE);
     let main = TestView::new(head.address().get(), &block_at(2.0));
     let mut eye_camera = eye_state(Eye::Left);
-    eye_camera.on_view_begin(main.view());
+    eye_camera.on_view_begin(main.view(), main.writes());
     let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE), Some(Eye::Left));
     camera.on_view(main.view());
     let frame = camera.end_frame(&running()).expect("an eye camera");
@@ -166,8 +166,9 @@ fn a_proxied_main_view_whose_head_position_is_unreadable_ends_its_frame_with_no_
     // 64 KiB boundary belong to no allocation, and the proxy's head position lies there.
     let pages = SharedPages::commit(PAGE_SIZE).expect("commit the test page");
     let last_word = PAGE_SIZE.checked_sub(size_of::<usize>()).expect("a page offset");
-    let controller = pages.address().checked_add(last_word).expect("a test address");
-    try_write(controller, vtable).expect("a writable controller");
+    let controller_writes = pages.destination().offset(last_word).expect("the page's last word");
+    let controller = controller_writes.start();
+    try_write(controller_writes, vtable).expect("a writable controller");
     let proxied = TestView::new(controller.get(), &block_at(1.0));
     let head = TestController::new(WORLD_TRANSLATE);
     let later = TestView::new(head.address(), &block_at(2.0));

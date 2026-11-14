@@ -10,7 +10,7 @@ use game_bindings::offsets::{
     CONTROLLER_WORLD_TRANSLATE_SLOT,
 };
 use game_bindings::render_view::ControllerCopy;
-use game_mem::{GameAddr, WriteError, try_read_array, try_write, try_write_slice};
+use game_mem::{GameAddr, WriteDest, WriteError, try_read_array, try_write, try_write_slice};
 use stereo_core::eye_camera::EyeCamera;
 
 /// The eye's world position in a proxy, three `f32` and one of padding.
@@ -62,28 +62,27 @@ pub(crate) fn head_position(proxy: GameAddr) -> Option<[f32; 3]> {
     try_read_array(proxy.checked_add(PROXY_HEAD)?)
 }
 
-/// The address of each proxy of the ring in pages that start at `base`, in the order frames take
-/// them. The pages hold [`RING_SIZE`] bytes from `base`, so no address wraps.
-pub(super) fn ring(base: GameAddr) -> [GameAddr; RING_LEN] {
-    core::array::from_fn(|index| {
-        GameAddr::new(base.get().wrapping_add(index.wrapping_mul(PROXY_SIZE)))
-    })
+/// The byte offset of each proxy of the ring in its pages, in the order frames take them. The pages
+/// hold [`RING_SIZE`] bytes, so each proxy fits them.
+pub(super) fn ring() -> [usize; RING_LEN] {
+    core::array::from_fn(|index| index.wrapping_mul(PROXY_SIZE))
 }
 
-/// Fills the proxy at `proxy` from `parts`, the vtable pointer, view matrices and slot 9 last over
-/// the copied bytes.
+/// Fills the proxy at the start of `proxy` from `parts`, the vtable pointer, view matrices and slot 9
+/// last over the copied bytes.
 ///
 /// # Errors
 ///
-/// Returns the [`WriteError`] of the first write that faulted. The proxy then holds part of `parts`.
-pub(super) fn write(proxy: GameAddr, parts: &ProxyParts<'_>) -> Result<(), WriteError> {
-    let vtable = proxy.destination(PROXY_VTABLE)?;
+/// Returns the [`WriteError`] of the first write that faulted or that `proxy` cannot hold. The proxy
+/// then holds part of `parts`.
+pub(super) fn write(proxy: WriteDest<'_>, parts: &ProxyParts<'_>) -> Result<(), WriteError> {
+    let vtable = proxy.offset(PROXY_VTABLE)?;
     try_write_slice(proxy, parts.head.bytes())?;
-    try_write(proxy, vtable.get())?;
-    try_write_slice(proxy.destination(CONTROLLER_VIEW)?, &parts.eye.view)?;
-    try_write_slice(proxy.destination(CONTROLLER_INVERSE_VIEW)?, &parts.eye.inverse)?;
-    try_write_slice(proxy.destination(PROXY_TRANSLATE)?, &parts.eye.position)?;
-    try_write_slice(proxy.destination(PROXY_HEAD)?, &parts.head_position)?;
+    try_write(proxy, vtable.start().get())?;
+    try_write_slice(proxy.offset(CONTROLLER_VIEW)?, &parts.eye.view)?;
+    try_write_slice(proxy.offset(CONTROLLER_INVERSE_VIEW)?, &parts.eye.inverse)?;
+    try_write_slice(proxy.offset(PROXY_TRANSLATE)?, &parts.eye.position)?;
+    try_write_slice(proxy.offset(PROXY_HEAD)?, &parts.head_position)?;
     try_write_slice(vtable, parts.vtable)?;
-    try_write(vtable.destination(CONTROLLER_WORLD_TRANSLATE_SLOT)?, world_translate_fn().get())
+    try_write(vtable.offset(CONTROLLER_WORLD_TRANSLATE_SLOT)?, world_translate_fn().get())
 }

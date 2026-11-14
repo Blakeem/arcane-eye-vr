@@ -34,12 +34,18 @@ pub enum GameDirError {
     LibraryList { path: PathBuf, source: io::Error },
     #[error("no library in the Steam library list {path} holds {MANIFEST}")]
     NoLibrary { path: PathBuf },
+    #[error(
+        "no library in the Steam library list {list} holds {MANIFEST}, and the check of {path} failed"
+    )]
+    LibraryCheck { list: PathBuf, path: PathBuf, source: io::Error },
     #[error("could not read the game's Steam manifest {path}")]
     Manifest { path: PathBuf, source: io::Error },
     #[error("the game's Steam manifest {path} names no install folder")]
     NoInstallDir { path: PathBuf },
-    #[error("the game exe {path} does not exist")]
+    #[error("the game exe {path} does not exist or is not a file")]
     NoExe { path: PathBuf },
+    #[error("could not check the game exe {path}")]
+    ExeCheck { path: PathBuf, source: io::Error },
 }
 
 /// A folder that held the game exe when it was checked.
@@ -51,10 +57,15 @@ impl GameDir {
     ///
     /// # Errors
     ///
-    /// Returns [`GameDirError::NoExe`] when `path` holds no game exe.
+    /// Returns [`GameDirError::NoExe`] when `path` holds no game exe, and
+    /// [`GameDirError::ExeCheck`] when the check fails for another cause, such as access denied.
     pub fn new(path: PathBuf) -> Result<Self, GameDirError> {
         let exe = exe_in(&path);
-        if exe.is_file() { Ok(Self(path)) } else { Err(GameDirError::NoExe { path: exe }) }
+        match is_file(&exe) {
+            Ok(true) => Ok(Self(path)),
+            Ok(false) => Err(GameDirError::NoExe { path: exe }),
+            Err(source) => Err(GameDirError::ExeCheck { path: exe, source }),
+        }
     }
 
     /// The game's folder in the Steam library that holds it.
@@ -88,13 +99,10 @@ impl GameDir {
             Ok(list) => list,
             Err(source) => return Err(GameDirError::LibraryList { path: list_path, source }),
         };
-        let Some(library) = vdf::values(&list, "path")
+        let libraries = vdf::values(&list, "path")
             .into_iter()
-            .map(|library| PathBuf::from(library).join(STEAMAPPS))
-            .find(|library| library.join(MANIFEST).is_file())
-        else {
-            return Err(GameDirError::NoLibrary { path: list_path });
-        };
+            .map(|library| PathBuf::from(library).join(STEAMAPPS));
+        let library = library_with_manifest(libraries, list_path)?;
         let manifest_path = library.join(MANIFEST);
         let manifest = match fs::read_to_string(&manifest_path) {
             Ok(manifest) => manifest,
@@ -109,6 +117,44 @@ impl GameDir {
 
 fn exe_in(game_dir: &Path) -> PathBuf {
     game_dir.join(EXE_DIR).join(EXE_NAME)
+}
+
+/// Whether `path` is a file. A missing entry is no file.
+///
+/// # Errors
+///
+/// Returns the I/O error of a check that fails for a cause other than a missing entry, such as
+/// access denied.
+pub fn is_file(path: &Path) -> io::Result<bool> {
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// The first of `libraries`, the `steamapps` folders the library list `list` names, that holds the
+/// game's manifest. A library whose check fails is passed over, since a list can name a drive that
+/// is not ready, and its error names the cause when no library holds the manifest.
+fn library_with_manifest(
+    libraries: impl Iterator<Item = PathBuf>,
+    list: PathBuf,
+) -> Result<PathBuf, GameDirError> {
+    let mut failed_check = None;
+    for library in libraries {
+        let manifest = library.join(MANIFEST);
+        match is_file(&manifest) {
+            Ok(true) => return Ok(library),
+            Ok(false) => {}
+            Err(source) => {
+                failed_check.get_or_insert((manifest, source));
+            }
+        }
+    }
+    match failed_check {
+        Some((path, source)) => Err(GameDirError::LibraryCheck { list, path, source }),
+        None => Err(GameDirError::NoLibrary { path: list }),
+    }
 }
 
 /// Steam's folder from `read`, the read of its registry value.
@@ -223,6 +269,42 @@ mod tests {
     }
 
     #[test]
+    fn a_library_that_cannot_be_checked_is_passed_over_for_the_next() {
+        let dir = test_dir("library-check-passed");
+        let root = dir.path();
+        // Windows rejects `?` in a file name, so the check fails with an error other than not found.
+        let (steam, bad) = (root.join("Steam"), root.join("bad?name"));
+        write_library_list(&steam, &[&bad, &steam]);
+        write(&steam.join(r"steamapps\appmanifest_1086940.acf"), MANIFEST_TEXT);
+        let game = steam.join(r"steamapps\common\Baldurs Gate 3");
+        write(&game.join(r"bin\bg3_dx11.exe"), "");
+        let found = GameDir::find_in(&steam).expect("find the game in the second library");
+        assert_eq!(found.as_path(), game);
+    }
+
+    #[test]
+    fn a_library_that_cannot_be_checked_names_the_cause_when_no_library_holds_the_manifest() {
+        let dir = test_dir("library-check-failed");
+        let root = dir.path();
+        let (steam, bad) = (root.join("Steam"), root.join("bad?name"));
+        let list = write_library_list(&steam, &[&steam, &bad]);
+        let error = GameDir::find_in(&steam).expect_err("no library holds the manifest");
+        let manifest = bad.join(r"steamapps\appmanifest_1086940.acf");
+        let GameDirError::LibraryCheck { list: error_list, path, source } = &error else {
+            panic!("a failed check, not a missing manifest: {error:?}");
+        };
+        assert_eq!((error_list, path), (&list, &manifest));
+        assert_ne!(source.kind(), std::io::ErrorKind::NotFound, "{source}");
+        let expected = format!(
+            "no library in the Steam library list {} holds appmanifest_1086940.acf, and the check \
+             of {} failed",
+            list.display(),
+            manifest.display()
+        );
+        assert_eq!(error.to_string(), expected);
+    }
+
+    #[test]
     fn a_folder_without_the_game_exe_is_an_error_that_names_the_exe_path() {
         let dir = test_dir("no-exe");
         let steam = dir.path();
@@ -236,8 +318,33 @@ mod tests {
         assert!(matches!(&given, GameDirError::NoExe { path } if *path == given_exe), "{given:?}");
         assert_eq!(
             given.to_string(),
-            format!("the game exe {} does not exist", given_exe.display())
+            format!("the game exe {} does not exist or is not a file", given_exe.display())
         );
+    }
+
+    #[test]
+    fn a_folder_named_as_the_game_exe_is_no_game_exe() {
+        let dir = test_dir("exe-folder");
+        let game = dir.path();
+        let exe = game.join(r"bin\bg3_dx11.exe");
+        fs::create_dir_all(&exe).expect("create a folder named as the exe");
+        let error = GameDir::new(game.to_path_buf()).expect_err("a folder is no exe");
+        assert!(matches!(&error, GameDirError::NoExe { path } if *path == exe), "{error:?}");
+    }
+
+    #[test]
+    fn a_game_exe_that_cannot_be_checked_is_an_error_that_keeps_the_cause() {
+        let dir = test_dir("exe-check");
+        // Windows rejects `?` in a file name, so the check fails with an error other than not found.
+        let game = dir.path().join("bad?name");
+        let exe = game.join(r"bin\bg3_dx11.exe");
+        let error = GameDir::new(game).expect_err("an invalid folder name");
+        let GameDirError::ExeCheck { path, source } = &error else {
+            panic!("a failed check, not a missing exe: {error:?}");
+        };
+        assert_eq!(*path, exe);
+        assert_ne!(source.kind(), std::io::ErrorKind::NotFound, "{source}");
+        assert_eq!(error.to_string(), format!("could not check the game exe {}", exe.display()));
     }
 
     #[test]

@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::{env, fs, io, process, ptr};
 
 use ipc_layout::launch_token::{self, LaunchToken, Mode, Status};
+use test_support::TestDir;
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HMODULE, INVALID_HANDLE_VALUE,
 };
@@ -76,15 +77,12 @@ impl Drop for TestToken {
     }
 }
 
-/// An empty folder next to the test binary, for a proxy path whose folder the test controls.
-fn test_dir(name: &str) -> PathBuf {
+/// An empty folder next to the test binary, for a proxy path whose folder the test controls. A test
+/// keeps the guard until it no longer loads a DLL from the folder.
+fn test_dir(name: &str) -> TestDir {
     let exe = env::current_exe().expect("the test binary path");
-    let dir = exe.parent().expect("the test binary folder").join("proxy-tests").join(name);
-    if dir.exists() {
-        fs::remove_dir_all(&dir).expect("remove the folder a previous run left");
-    }
-    fs::create_dir_all(&dir).expect("create the test folder");
-    dir
+    let base = exe.parent().expect("the test binary folder");
+    TestDir::new(base, "proxy-tests", name).expect("create the test folder")
 }
 
 /// The built proxy. Cargo writes it next to the test binary.
@@ -109,7 +107,8 @@ fn module_loaded(path: &Path) -> bool {
 
 #[test]
 fn no_token_mapping_starts_nothing() {
-    let proxy = test_dir("no-token").join("version.dll");
+    let dir = test_dir("no-token");
+    let proxy = dir.path().join("version.dll");
     let unused_name = format!(r"Local\arcane-eye-vr-test-{}-never-created", process::id());
     assert!(attach(Exe::Dx11, proxy, &unused_name, spawn_loader).is_none());
 }
@@ -119,7 +118,8 @@ fn a_wrong_magic_token_starts_nothing_and_stays_unchanged() {
     let mut bytes = valid_token();
     bytes[0] = b'X';
     let token = TestToken::create("wrong-magic", &bytes);
-    let proxy = test_dir("wrong-magic").join("version.dll");
+    let dir = test_dir("wrong-magic");
+    let proxy = dir.path().join("version.dll");
     assert!(attach(Exe::Dx11, proxy, &token.name(), spawn_loader).is_none());
     assert_eq!(token.bytes(), bytes);
 }
@@ -127,7 +127,8 @@ fn a_wrong_magic_token_starts_nothing_and_stays_unchanged() {
 #[test]
 fn a_token_in_another_exe_starts_nothing_and_stays_unchanged() {
     let token = TestToken::create("other-exe", &valid_token());
-    let proxy = test_dir("other-exe").join("version.dll");
+    let dir = test_dir("other-exe");
+    let proxy = dir.path().join("version.dll");
     assert!(attach(Exe::Other, proxy, &token.name(), spawn_loader).is_none());
     assert_eq!(token.bytes(), valid_token());
 }
@@ -135,7 +136,8 @@ fn a_token_in_another_exe_starts_nothing_and_stays_unchanged() {
 #[test]
 fn a_token_in_the_vulkan_exe_reports_the_wrong_renderer() {
     let token = TestToken::create("vulkan", &valid_token());
-    let proxy = test_dir("vulkan").join("version.dll");
+    let dir = test_dir("vulkan");
+    let proxy = dir.path().join("version.dll");
     assert!(attach(Exe::Vulkan, proxy, &token.name(), spawn_loader).is_none());
     assert_eq!(token.token().status(), Ok(Status::WrongRenderer));
     assert_eq!(token.token().game_pid(), 0);
@@ -144,7 +146,8 @@ fn a_token_in_the_vulkan_exe_reports_the_wrong_renderer() {
 #[test]
 fn a_missing_core_dll_reports_core_load_failed() {
     let token = TestToken::create("missing-core", &valid_token());
-    let proxy = test_dir("missing-core").join("version.dll");
+    let dir = test_dir("missing-core");
+    let proxy = dir.path().join("version.dll");
     let loader = attach(Exe::Dx11, proxy, &token.name(), spawn_loader).expect("a loader thread");
     loader.join().expect("the loader thread ends without a panic");
     assert_eq!(token.token().game_pid(), process::id());
@@ -159,13 +162,13 @@ fn loader_job(token: &TestToken, proxy_path: PathBuf) -> LoaderJob {
 fn a_started_core_leaves_the_status_at_core_loading() {
     let token = TestToken::create("core-started", &valid_token());
     let dir = test_dir("core-started");
-    let job = loader_job(&token, dir.join("version.dll"));
+    let job = loader_job(&token, dir.path().join("version.dll"));
     let mut seen = None;
     load(&job, |core_path, mode| {
         seen = Some((core_path.to_path_buf(), mode, token.token().status()));
         Ok(())
     });
-    let expected = (dir.join("arcane_eye_core.dll"), 2, Ok(Status::CoreLoading));
+    let expected = (dir.path().join("arcane_eye_core.dll"), 2, Ok(Status::CoreLoading));
     assert_eq!(seen, Some(expected), "the core path, the mode and the status during the load");
     assert_eq!(token.token().status(), Ok(Status::CoreLoading));
 }
@@ -173,7 +176,8 @@ fn a_started_core_leaves_the_status_at_core_loading() {
 #[test]
 fn a_failed_core_init_reports_core_load_failed() {
     let token = TestToken::create("init-failed", &valid_token());
-    let job = loader_job(&token, test_dir("init-failed").join("version.dll"));
+    let dir = test_dir("init-failed");
+    let job = loader_job(&token, dir.path().join("version.dll"));
     load(&job, |_core_path, _mode| Err(CoreLoadError::InitFailed(3)));
     assert_eq!(token.token().status(), Ok(Status::CoreLoadFailed));
 }
@@ -181,9 +185,10 @@ fn a_failed_core_init_reports_core_load_failed() {
 #[test]
 fn a_loader_without_a_token_still_loads_the_core() {
     let unused_name = format!(r"Local\arcane-eye-vr-test-{}-loader-no-token", process::id());
+    let dir = test_dir("loader-no-token");
     let job = LoaderJob {
         mapping_name: HSTRING::from(unused_name),
-        proxy_path: test_dir("loader-no-token").join("version.dll"),
+        proxy_path: dir.path().join("version.dll"),
         mode: 1,
     };
     let mut loaded_mode = None;
@@ -197,7 +202,8 @@ fn a_loader_without_a_token_still_loads_the_core() {
 #[test]
 fn a_loader_thread_that_fails_to_start_reports_core_load_failed() {
     let token = TestToken::create("spawn-failure", &valid_token());
-    let proxy = test_dir("spawn-failure").join("version.dll");
+    let dir = test_dir("spawn-failure");
+    let proxy = dir.path().join("version.dll");
     let refuse = |_job: LoaderJob| Err(io::Error::other("no thread for the loader"));
     assert!(attach(Exe::Dx11, proxy, &token.name(), refuse).is_none());
     assert_eq!(token.token().game_pid(), process::id());
@@ -208,11 +214,12 @@ fn a_loader_thread_that_fails_to_start_reports_core_load_failed() {
 fn a_core_dll_without_arcane_eye_init_reports_core_load_failed() {
     let dir = test_dir("no-init-export");
     // The proxy is a DLL with no arcane_eye_init export, and its DllMain starts nothing in a test binary.
-    fs::copy(built_proxy(), dir.join("arcane_eye_core.dll")).expect("copy the built proxy");
+    let core = dir.path().join("arcane_eye_core.dll");
+    fs::copy(built_proxy(), &core).expect("copy the built proxy");
     let token = TestToken::create("no-init-export", &valid_token());
-    let proxy = dir.join("version.dll");
+    let proxy = dir.path().join("version.dll");
     let loader = attach(Exe::Dx11, proxy, &token.name(), spawn_loader).expect("a loader thread");
     loader.join().expect("the loader thread ends without a panic");
-    assert!(module_loaded(&dir.join("arcane_eye_core.dll")), "the loader loaded the stand-in core");
+    assert!(module_loaded(&core), "the loader loaded the stand-in core");
     assert_eq!(token.token().status(), Ok(Status::CoreLoadFailed));
 }

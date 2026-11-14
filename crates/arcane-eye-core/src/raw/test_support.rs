@@ -1,12 +1,14 @@
 //! Fixtures for the core's tests.
 //!
 //! It holds a launch token mapping, a WARP device and swapchain on a hidden window, a debug viewer's
-//! view of the viewer header, a call of a proxy controller's slot 9 and pages with a read-only tail.
+//! view of the viewer header, a call of a proxy controller's slot 9, pages with a read-only tail and
+//! the write destinations of test memory.
 
 use std::ffi::c_void;
 use std::{mem, process, ptr};
 
-use game_mem::GameAddr;
+use game_bindings::render_view::RenderView;
+use game_mem::{GameAddr, WriteDest};
 use gfx::publish::ViewNames;
 use ipc_layout::launch_token::{self, STATUS_OFFSET};
 use ipc_layout::viewer_header::ViewerHeader;
@@ -235,9 +237,9 @@ impl ReadOnlyTail {
         let writable_len = writable_pages.checked_mul(PAGE_SIZE).expect("a test size");
         let len = writable_len.checked_add(PAGE_SIZE).expect("a test size");
         let pages = SharedPages::commit(len).expect("commit the test pages");
-        let tail = pages.address().checked_add(writable_len).expect("a test address");
+        let tail = pages.destination().offset(writable_len).expect("the tail page");
         game_mem::try_write_slice(tail, tail_words).expect("fill the tail page");
-        let tail = ptr::with_exposed_provenance::<c_void>(tail.get());
+        let tail = ptr::with_exposed_provenance::<c_void>(tail.start().get());
         let mut old = PAGE_PROTECTION_FLAGS::default();
         // SAFETY: `tail` is the last page of the pages above, which only this value uses.
         unsafe { VirtualProtect(tail, PAGE_SIZE, PAGE_READONLY, &raw mut old) }
@@ -249,4 +251,22 @@ impl ReadOnlyTail {
     pub(crate) fn read_only_start(&self) -> GameAddr {
         self.pages.address().checked_add(self.writable_len).expect("a test address")
     }
+
+    /// The pages, which a test hands to code that writes to its own pages.
+    pub(crate) fn into_pages(self) -> SharedPages {
+        self.pages
+    }
+}
+
+/// The destination of guarded writes to the `len` bytes from `start`, which are unmapped or test
+/// memory that the test reads and writes only through guarded copies.
+pub(crate) fn test_dest(start: GameAddr, len: usize) -> WriteDest<'static> {
+    // SAFETY: the tests pass unmapped bytes, or bytes they own and reach only through guarded copies,
+    // and keep them until their last write.
+    unsafe { WriteDest::new(start, len) }
+}
+
+/// The destination of the eye camera's writes to the test view `view`.
+pub(crate) fn view_writes(view: RenderView) -> WriteDest<'static> {
+    test_dest(view.address(), RenderView::WRITE_LEN)
 }

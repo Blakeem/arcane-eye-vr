@@ -1,10 +1,13 @@
 //! The perf window: the perf summary lines the core appends to its session log after a start
 //! position, their totals, and the camera lines that go with them.
 //!
-//! The window leaves out the first perf summary line the log finishes after the start, since most
-//! of the frames that line covers were presented before the start. The core logs a camera line just
-//! before the perf summary line of the same frames, so the window keeps, for each perf summary line it
-//! counts, the camera line before it or no camera when the core logged none.
+//! The window drops the first perf summary line the log finishes after the start, since most of the
+//! frames that line covers were presented before the start. Then it drops lines until one line is
+//! settled, which means its `max_us` is at most 4 times its `p50_us`, drops that line too, and counts
+//! the lines after it. The game's load pause can fall after the fixed warm-up and gives a line a
+//! maximum far above the scene's. The core logs a camera line just before the perf summary line of the
+//! same frames, so the window keeps, for each perf summary line it counts, the camera line before it or
+//! no camera when the core logged none.
 
 use std::fs::{self, File};
 use std::io::{self, Read as _, Seek as _, SeekFrom};
@@ -21,6 +24,9 @@ const POLL: Duration = Duration::from_millis(250);
 /// The `camera.txt` line for a summary line with no camera.
 const NO_CAMERA: &str = "none";
 
+/// The highest ratio of a settled line's `max_us` to its `p50_us`.
+const SETTLED_MAX_PER_P50: u32 = 4;
+
 /// Why the perf window yields no summary lines.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PerfError {
@@ -35,6 +41,12 @@ pub(crate) enum PerfError {
         path.display()
     )]
     Timeout { path: PathBuf, got: u32, expected: u32, timeout: Duration },
+    #[error(
+        "the session log {} got {dropped} perf summary lines within {timeout:?}, and none after the \
+         first settled with max_us at most {SETTLED_MAX_PER_P50} times p50_us",
+        path.display()
+    )]
+    NotSettled { path: PathBuf, dropped: u32, timeout: Duration },
 }
 
 /// The end of a session log that a reader follows: the byte position read up to, and the bytes of a
@@ -117,24 +129,53 @@ pub(crate) struct CountedLine {
     pub(crate) camera: Option<CameraLine>,
 }
 
+/// A perf window's counted lines and the count of the lines it dropped before them.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PerfWindow {
+    pub(crate) lines: Vec<CountedLine>,
+    pub(crate) dropped: u32,
+}
+
+/// What the window does with the next perf summary line it reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    /// The window drops the line, whose frames began before the start.
+    First,
+    /// The window drops each line until a settled one, which it drops too.
+    Settling,
+    Counting,
+}
+
 /// The counted lines of a perf window, fed the lines of one log read at a time.
 #[derive(Debug)]
 struct Window {
     expected: usize,
-    first_left_out: bool,
+    phase: Phase,
+    dropped: u32,
     /// The camera line since the last perf summary line, which goes with the next one.
     pending_camera: Option<CameraLine>,
     counted: Vec<CountedLine>,
 }
 
+/// Whether `summary` holds no frame interval longer than [`SETTLED_MAX_PER_P50`] times its median.
+fn is_settled(summary: &PerfSummary) -> bool {
+    summary.max <= summary.p50.saturating_mul(SETTLED_MAX_PER_P50)
+}
+
 impl Window {
     fn new(expected: usize) -> Self {
-        Self { expected, first_left_out: false, pending_camera: None, counted: Vec::new() }
+        Self {
+            expected,
+            phase: Phase::First,
+            dropped: 0,
+            pending_camera: None,
+            counted: Vec::new(),
+        }
     }
 
     /// Counts the perf summary lines of `read` up to the expected count, each with the camera line
-    /// before it, after the first perf summary line of the window, which it leaves out with its camera
-    /// line.
+    /// before it, after the first settled line after the window's first line. It drops the lines up
+    /// to that settled line and their camera lines.
     fn add(&mut self, read: Vec<WindowLine>) {
         for line in read {
             match line {
@@ -146,32 +187,48 @@ impl Window {
 
     fn count(&mut self, summary: PerfSummary) {
         let camera = self.pending_camera.take();
-        // The first perf summary line after the start holds frames from the end of the warm-up.
-        if !self.first_left_out {
-            self.first_left_out = true;
-            return;
-        }
-        if self.is_full() {
-            return;
-        }
-        self.counted.push(CountedLine { summary, camera });
+        let next = match self.phase {
+            Phase::Settling if is_settled(&summary) => Phase::Counting,
+            Phase::First | Phase::Settling => Phase::Settling,
+            Phase::Counting => {
+                if !self.is_full() {
+                    self.counted.push(CountedLine { summary, camera });
+                }
+                return;
+            }
+        };
+        self.dropped = self.dropped.saturating_add(1);
+        self.phase = next;
     }
 
     fn is_full(&self) -> bool {
         self.counted.len() >= self.expected
     }
+
+    /// The error of a window that timed out reading the log at `path`. A window that read its first
+    /// line and no settled line after it names that, and every other window names the lines it
+    /// counted.
+    fn timeout(&self, path: PathBuf, expected: u32, timeout: Duration) -> PerfError {
+        if self.phase == Phase::Settling {
+            return PerfError::NotSettled { path, dropped: self.dropped, timeout };
+        }
+        let got = u32::try_from(self.counted.len()).unwrap_or(u32::MAX);
+        PerfError::Timeout { path, got, expected, timeout }
+    }
 }
 
-/// Follows `tail` until it holds `count` perf summary lines after the first perf summary line it
-/// finishes, which it leaves out, and keeps the camera line before each counted one. Each line has
-/// `line_timeout` to arrive after the one before it, or after the start for the first.
+/// Follows `tail` until it holds `count` perf summary lines after the window's dropped lines, as the
+/// module doc states, and keeps the camera line before each counted one. The settled line has
+/// `line_timeout` to arrive after the start, and each counted line has `line_timeout` to arrive after
+/// the line before it.
 pub(crate) fn collect(
     tail: &mut LogTail,
     count: u32,
     line_timeout: Duration,
-) -> Result<Vec<CountedLine>, PerfError> {
+) -> Result<PerfWindow, PerfError> {
     let mut window = Window::new(usize::try_from(count).unwrap_or(usize::MAX));
-    let mut last_line = Instant::now();
+    let started = Instant::now();
+    let mut last_line = started;
     loop {
         let read = tail.read_lines()?;
         if !read.is_empty() {
@@ -179,13 +236,12 @@ pub(crate) fn collect(
         }
         window.add(read);
         if window.is_full() {
-            return Ok(window.counted);
+            return Ok(PerfWindow { lines: window.counted, dropped: window.dropped });
         }
-        let remaining = line_timeout.saturating_sub(last_line.elapsed());
+        let since = if window.phase == Phase::Counting { last_line } else { started };
+        let remaining = line_timeout.saturating_sub(since.elapsed());
         if remaining.is_zero() {
-            let got = u32::try_from(window.counted.len()).unwrap_or(u32::MAX);
-            let path = tail.path.clone();
-            return Err(PerfError::Timeout { path, got, expected: count, timeout: line_timeout });
+            return Err(window.timeout(tail.path.clone(), count, line_timeout));
         }
         // thread::sleep is banned for game threads. Parking waits the same, and an early wake only
         // reads early.
@@ -222,8 +278,9 @@ fn totals(summaries: &[PerfSummary]) -> Totals {
     }
 }
 
-/// The text of `perf.txt`: one line of numbers per summary line, then one line of totals.
-pub(crate) fn text(summaries: &[PerfSummary]) -> String {
+/// The text of `perf.txt`: one line of numbers per summary line, one line of totals, then the count
+/// of the lines the window dropped before them.
+pub(crate) fn text(summaries: &[PerfSummary], dropped: u32) -> String {
     let mut lines: Vec<String> = summaries
         .iter()
         .map(|summary| {
@@ -245,6 +302,7 @@ pub(crate) fn text(summaries: &[PerfSummary]) -> String {
         "total frames={} mean_us={} highest_p99_us={} highest_max_us={}\n",
         totals.frames, totals.mean_us, totals.highest_p99_us, totals.highest_max_us
     ));
+    lines.push(format!("dropped lines={dropped}\n"));
     lines.concat()
 }
 

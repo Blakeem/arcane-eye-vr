@@ -17,11 +17,11 @@ use stereo_core::eye::Eye;
 
 use super::proxy::{self, PROXY_SIZE, RING_LEN};
 use super::test_support::{HALF_IPD_M, HEAD_POSITION, HEAD_VIEW, HeadController, RIGHT, eye_state};
-use super::{EyeFault, History, Outcome, eye_of, install, last_seen_fault};
+use super::{EyeFault, EyeState, History, Outcome, eye_of, install, last_seen_fault};
 use crate::config::Config;
 use crate::install::GameCode;
 use crate::raw::SharedPages;
-use crate::raw::test_support::{PAGE_SIZE, ReadOnlyTail, call_world_translate};
+use crate::raw::test_support::{PAGE_SIZE, ReadOnlyTail, call_world_translate, view_writes};
 use crate::test_dir;
 use crate::view_camera::test_support::{TestView, WORLD_TRANSLATE, block_at};
 
@@ -57,6 +57,11 @@ fn floats<const N: usize>(address: GameAddr) -> [f32; N] {
     try_read_array(address).expect("readable floats")
 }
 
+/// What the eye camera does with `view` at its begin-recording.
+fn begin(camera: &mut EyeState, view: RenderView) -> Result<Outcome, EyeFault> {
+    camera.proxy_view(view, view_writes(view))
+}
+
 /// The proxy that `outcome` names, after checking that it is a proxied outcome with `history`.
 fn proxied(outcome: Result<Outcome, EyeFault>, history: History) -> GameAddr {
     match outcome {
@@ -70,7 +75,7 @@ fn view_ending_before(end: GameAddr, head: &HeadController) -> RenderView {
     let before = size_of::<usize>().checked_add(VIEW_READ_STATE_CONTROLLER).expect("an offset");
     let view_address = end.get().checked_sub(before).expect("a test address");
     let view = RenderView::new(GameAddr::new(view_address));
-    let read_state = at(view.address(), VIEW_READ_STATE_CONTROLLER);
+    let read_state = view_writes(view).offset(VIEW_READ_STATE_CONTROLLER).expect("the field");
     try_write(read_state, head.address().get()).expect("a writable ReadState");
     view
 }
@@ -106,7 +111,7 @@ fn the_proxy_slot_9_called_through_its_vtable_returns_the_eye_position() {
     let head = HeadController::new(WORLD_TRANSLATE);
     let view = TestView::new(head.address().get(), &block_at(0.0));
     let mut camera = eye_state(Eye::Right);
-    let proxy = proxied(camera.proxy_view(view.view()), History::Cut);
+    let proxy = proxied(begin(&mut camera, view.view()), History::Cut);
     assert_eq!(view.pointer_at(VIEW_READ_STATE_CONTROLLER), proxy.get());
     let vtable = GameAddr::new(try_read::<usize>(proxy).expect("the proxy's vtable pointer"));
     let slot_9 = try_read::<usize>(at(vtable, CONTROLLER_WORLD_TRANSLATE_SLOT)).map(GameAddr::new);
@@ -120,7 +125,7 @@ fn the_proxy_holds_the_eye_matrices_and_else_the_head_controllers_bytes_and_slot
     let head = HeadController::new(WORLD_TRANSLATE);
     let view = TestView::new(head.address().get(), &block_at(0.0));
     let mut camera = eye_state(Eye::Left);
-    let proxy = proxied(camera.proxy_view(view.view()), History::Cut);
+    let proxy = proxied(begin(&mut camera, view.view()), History::Cut);
     let bytes = try_read_bytes(proxy, CONTROLLER_SIZE).expect("the proxy's bytes");
     assert_eq!(bytes[8..CONTROLLER_VIEW], head.bytes()[8..CONTROLLER_VIEW]);
     let after_inverse = CONTROLLER_INVERSE_VIEW.checked_add(64).expect("an offset");
@@ -153,15 +158,15 @@ fn the_proxy_is_the_last_seen_controller_only_while_the_head_controller_stays() 
     let other_head = HeadController::new(WORLD_TRANSLATE);
     let view = TestView::new(head.address().get(), &block_at(0.0));
     let mut camera = eye_state(Eye::Right);
-    proxied(camera.proxy_view(view.view()), History::Cut);
+    proxied(begin(&mut camera, view.view()), History::Cut);
     assert_eq!(view.pointer_at(VIEW_LAST_SEEN_CONTROLLER), 0, "the first frame keeps the field");
     view.finish_frame(head.address().get());
     camera.end_frame();
-    let second = proxied(camera.proxy_view(view.view()), History::Kept);
+    let second = proxied(begin(&mut camera, view.view()), History::Kept);
     assert_eq!(view.pointer_at(VIEW_LAST_SEEN_CONTROLLER), second.get());
     view.finish_frame(other_head.address().get());
     camera.end_frame();
-    let third = proxied(camera.proxy_view(view.view()), History::Cut);
+    let third = proxied(begin(&mut camera, view.view()), History::Cut);
     assert_eq!(view.pointer_at(VIEW_READ_STATE_CONTROLLER), third.get());
     assert_eq!(view.pointer_at(VIEW_LAST_SEEN_CONTROLLER), second.get(), "a changed controller");
 }
@@ -172,14 +177,14 @@ fn a_frame_on_another_controller_between_two_proxied_frames_is_a_camera_cut() {
     let other = HeadController::new(OTHER_FUNCTION);
     let view = TestView::new(head.address().get(), &block_at(0.0));
     let mut camera = eye_state(Eye::Left);
-    let first = proxied(camera.proxy_view(view.view()), History::Cut);
+    let first = proxied(begin(&mut camera, view.view()), History::Cut);
     view.finish_frame(other.address().get());
     camera.end_frame();
-    assert_eq!(camera.proxy_view(view.view()), Ok(Outcome::NotMainView));
+    assert_eq!(begin(&mut camera, view.view()), Ok(Outcome::NotMainView));
     view.finish_frame(head.address().get());
     camera.end_frame();
     assert_eq!(view.pointer_at(VIEW_LAST_SEEN_CONTROLLER), other.address().get());
-    let third = proxied(camera.proxy_view(view.view()), History::Cut);
+    let third = proxied(begin(&mut camera, view.view()), History::Cut);
     assert_eq!(view.pointer_at(VIEW_LAST_SEEN_CONTROLLER), other.address().get(), "a real cut");
     assert_eq!(first.checked_add(PROXY_SIZE), Some(third), "a frame on another takes no proxy");
 }
@@ -190,11 +195,11 @@ fn only_the_first_main_view_of_a_frame_is_proxied_until_the_frame_ends() {
     let first = TestView::new(head.address().get(), &block_at(0.0));
     let second = TestView::new(head.address().get(), &block_at(0.0));
     let mut camera = eye_state(Eye::Right);
-    proxied(camera.proxy_view(first.view()), History::Cut);
-    assert_eq!(camera.proxy_view(second.view()), Ok(Outcome::NotMainView));
+    proxied(begin(&mut camera, first.view()), History::Cut);
+    assert_eq!(begin(&mut camera, second.view()), Ok(Outcome::NotMainView));
     assert_eq!(second.pointer_at(VIEW_READ_STATE_CONTROLLER), head.address().get());
     camera.end_frame();
-    proxied(camera.proxy_view(second.view()), History::Cut);
+    proxied(begin(&mut camera, second.view()), History::Cut);
 }
 
 #[test]
@@ -202,11 +207,11 @@ fn the_ring_takes_each_of_its_proxies_once_then_starts_again() {
     let head = HeadController::new(WORLD_TRANSLATE);
     let view = TestView::new(head.address().get(), &block_at(0.0));
     let mut camera = eye_state(Eye::Left);
-    let mut proxies = vec![proxied(camera.proxy_view(view.view()), History::Cut).get()];
+    let mut proxies = vec![proxied(begin(&mut camera, view.view()), History::Cut).get()];
     for _ in 0..RING_LEN {
         view.finish_frame(head.address().get());
         camera.end_frame();
-        proxies.push(proxied(camera.proxy_view(view.view()), History::Kept).get());
+        proxies.push(proxied(begin(&mut camera, view.view()), History::Kept).get());
     }
     let first = proxies[0];
     for (frame, proxy) in proxies.iter().enumerate().take(RING_LEN) {
@@ -222,8 +227,8 @@ fn a_view_with_a_null_or_another_controller_is_left_as_it_is() {
     let special = TestView::new(0, &block_at(0.0));
     let other_view = TestView::new(other.address().get(), &block_at(0.0));
     let mut camera = eye_state(Eye::Right);
-    assert_eq!(camera.proxy_view(special.view()), Ok(Outcome::NotMainView));
-    assert_eq!(camera.proxy_view(other_view.view()), Ok(Outcome::NotMainView));
+    assert_eq!(begin(&mut camera, special.view()), Ok(Outcome::NotMainView));
+    assert_eq!(begin(&mut camera, other_view.view()), Ok(Outcome::NotMainView));
     assert_eq!(special.pointer_at(VIEW_READ_STATE_CONTROLLER), 0);
     assert_eq!(other_view.pointer_at(VIEW_READ_STATE_CONTROLLER), other.address().get());
 }
@@ -232,13 +237,13 @@ fn a_view_with_a_null_or_another_controller_is_left_as_it_is() {
 fn an_unreadable_view_or_controller_is_a_fault_with_one_warning_per_period() {
     let mut camera = eye_state(Eye::Right);
     let unmapped = RenderView::new(UNMAPPED);
-    assert_eq!(camera.proxy_view(unmapped), Err(EyeFault::ReadStateUnreadable));
+    assert_eq!(begin(&mut camera, unmapped), Err(EyeFault::ReadStateUnreadable));
     let lost = TestView::new(UNMAPPED.get(), &block_at(0.0));
-    assert_eq!(camera.proxy_view(lost.view()), Err(EyeFault::ControllerUnreadable));
+    assert_eq!(begin(&mut camera, lost.view()), Err(EyeFault::ControllerUnreadable));
     assert_eq!(lost.pointer_at(VIEW_READ_STATE_CONTROLLER), UNMAPPED.get(), "the view as it was");
     let ((), text) = logged("eye-camera-fault", || {
-        camera.on_view_begin(unmapped);
-        camera.on_view_begin(unmapped);
+        camera.on_view_begin(unmapped, view_writes(unmapped));
+        camera.on_view_begin(unmapped, view_writes(unmapped));
     });
     let message = "eye camera read or write of game memory failed for this frame";
     let warnings: Vec<&str> = text.lines().filter(|line| line.contains(message)).collect();
@@ -255,7 +260,7 @@ fn an_unreadable_last_seen_field_leaves_the_view_as_it_was() {
     let pages = SharedPages::commit(VIEW_PAGES_LEN).expect("commit the test pages");
     let view = view_ending_before(at(pages.address(), VIEW_PAGES_LEN), &head);
     let mut camera = eye_state(Eye::Right);
-    assert_eq!(camera.proxy_view(view), Err(EyeFault::LastSeenUnreadable));
+    assert_eq!(begin(&mut camera, view), Err(EyeFault::LastSeenUnreadable));
     let read_state = try_read::<usize>(at(view.address(), VIEW_READ_STATE_CONTROLLER));
     assert_eq!(read_state, Some(head.address().get()), "the view as it was");
 }
@@ -268,7 +273,7 @@ fn a_failed_read_state_write_leaves_the_view_and_the_history_as_they_were() {
     let view_address = pages.read_only_start().get().checked_sub(VIEW_READ_STATE_CONTROLLER);
     let view = RenderView::new(GameAddr::new(view_address.expect("a test address")));
     let mut camera = eye_state(Eye::Left);
-    assert_eq!(camera.proxy_view(view), Err(EyeFault::ReadStateWrite));
+    assert_eq!(begin(&mut camera, view), Err(EyeFault::ReadStateWrite));
     let read_state = try_read::<usize>(pages.read_only_start());
     assert_eq!(read_state, Some(head.address().get()), "the view as it was");
     assert_eq!(camera.last, None, "a failed frame is no last proxied frame");
@@ -278,10 +283,9 @@ fn a_failed_read_state_write_leaves_the_view_and_the_history_as_they_were() {
 fn a_failed_proxy_write_leaves_the_view_and_the_history_as_they_were() {
     let head = HeadController::new(WORLD_TRANSLATE);
     let view = TestView::new(head.address().get(), &block_at(0.0));
-    let read_only = ReadOnlyTail::new(1, &[]);
     let mut camera = eye_state(Eye::Right);
-    camera.ring = [read_only.read_only_start(); RING_LEN];
-    assert_eq!(camera.proxy_view(view.view()), Err(EyeFault::ProxyWrite));
+    camera.pages = ReadOnlyTail::new(0, &[]).into_pages();
+    assert_eq!(begin(&mut camera, view.view()), Err(EyeFault::ProxyWrite));
     assert_eq!(view.pointer_at(VIEW_READ_STATE_CONTROLLER), head.address().get(), "the view");
     assert_eq!(view.pointer_at(VIEW_LAST_SEEN_CONTROLLER), 0, "the last-seen field as it was");
     assert_eq!(camera.last, None, "a failed frame is no last proxied frame");
@@ -293,7 +297,7 @@ fn a_failed_last_seen_write_points_the_read_state_back_at_the_head() {
     // The ReadState field is the last pointer of the read-write pages, and the last-seen field lies
     // in the read-only page.
     let mut camera = eye_state(Eye::Left);
-    let [first, ..] = camera.ring;
+    let first = at(camera.pages.address(), camera.ring[0]);
     // The read-only page holds the first proxy as the last-seen controller, as the engine's
     // begin-recording of the first frame would store it.
     let tail_offset = VIEW_LAST_SEEN_CONTROLLER.checked_sub(VIEW_READ_STATE_CONTROLLER + 8);
@@ -303,11 +307,12 @@ fn a_failed_last_seen_write_points_the_read_state_back_at_the_head() {
     let pages = ReadOnlyTail::new(3, &tail);
     let view = view_ending_before(pages.read_only_start(), &head);
     assert_eq!(view.last_seen_controller(), Some(first), "the last-seen field in the tail");
-    proxied(camera.proxy_view(view), History::Cut);
-    let read_state = at(view.address(), VIEW_READ_STATE_CONTROLLER);
+    proxied(begin(&mut camera, view), History::Cut);
+    let read_state = view_writes(view).offset(VIEW_READ_STATE_CONTROLLER).expect("the field");
     try_write(read_state, head.address().get()).expect("the frame sync");
+    let read_state = read_state.start();
     camera.end_frame();
-    assert_eq!(camera.proxy_view(view), Err(EyeFault::LastSeenWrite));
+    assert_eq!(begin(&mut camera, view), Err(EyeFault::LastSeenWrite));
     assert_eq!(try_read::<usize>(read_state), Some(head.address().get()), "the view as it was");
 }
 
@@ -324,13 +329,14 @@ fn the_frame_path_makes_no_heap_allocation() {
     let head = HeadController::new(WORLD_TRANSLATE);
     let view = TestView::new(head.address().get(), &block_at(0.0));
     let mut camera = eye_state(Eye::Right);
-    camera.on_view_begin(view.view());
+    camera.on_view_begin(view.view(), view.writes());
     view.finish_frame(head.address().get());
+    let unmapped = RenderView::new(UNMAPPED);
     let guard = arm_alloc_guard().expect("arm the allocation guard");
     camera.end_frame();
-    camera.on_view_begin(view.view());
+    camera.on_view_begin(view.view(), view.writes());
     camera.end_frame();
-    camera.on_view_begin(RenderView::new(UNMAPPED));
+    camera.on_view_begin(unmapped, view_writes(unmapped));
     assert_eq!(guard.count(), 0, "the eye camera's frame allocated");
     let read_state = GameAddr::new(view.pointer_at(VIEW_READ_STATE_CONTROLLER));
     let slot_9 = CameraController::new(read_state).world_translate_fn();

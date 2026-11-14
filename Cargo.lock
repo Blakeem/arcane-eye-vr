@@ -262,6 +262,7 @@ name = "proxy"
 version = "0.1.0"
 dependencies = [
  "ipc-layout",
+ "test-support",
  "thiserror",
  "windows",
 ]

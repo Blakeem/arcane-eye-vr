@@ -12,7 +12,7 @@ pub const CORE_DLL: &str = "arcane_eye_core.dll";
 pub const INIT_EXPORT: &CStr = c"arcane_eye_init";
 
 /// The signature of the init export. `mode` is the launch token's raw mode value.
-pub type InitFn = extern "C" fn(mode: u32) -> u32;
+pub type InitFn = extern "system" fn(mode: u32) -> u32;
 
 /// The code the init export returns on success. Every other code names a failure.
 pub const INIT_STARTED: u32 = 0;
