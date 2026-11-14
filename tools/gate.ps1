@@ -38,7 +38,11 @@ $StageCommands = @{
     # -EnableExit would end this script, so the finding count sets the exit code instead.
     powershell = {
         $settings = Join-Path $RepoRoot 'PSScriptAnalyzerSettings.psd1'
-        $findings = @(foreach ($dir in 'tools', '.claude/hooks') { Invoke-ScriptAnalyzer -Path (Join-Path $RepoRoot $dir) -Recurse -Settings $settings })
+        # .claude/ is not in the public repo, so a clone has no hooks folder to scan.
+        $findings = @(foreach ($dir in 'tools', '.claude/hooks') {
+                $path = Join-Path $RepoRoot $dir
+                if (Test-Path $path) { Invoke-ScriptAnalyzer -Path $path -Recurse -Settings $settings }
+            })
         $findings | Format-Table -AutoSize | Out-String | Write-Host
         $global:LASTEXITCODE = if ($findings.Count -eq 0) { 0 } else { 1 }
     }
