@@ -21,7 +21,7 @@ pub struct MainModule {
 }
 
 /// Why the main module's code ranges are unknown.
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum ModuleError {
     #[error("Windows reports no module for the process exe: {0}")]
     NoModule(#[from] windows::core::Error),

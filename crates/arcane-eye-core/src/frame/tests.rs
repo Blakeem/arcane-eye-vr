@@ -1,14 +1,17 @@
 //! Tests of the frame handler against WARP swapchains, with the session log captured.
 
+mod camera;
+
 use std::fs;
 use std::time::{Duration, Instant};
 
 use diag::logging::LogName;
+use game_bindings::camera::Camera;
 use game_bindings::state::arm_alloc_guard;
 use gfx::publish::ViewNames;
 use ipc_layout::perf_line::{self, PerfSummary};
 
-use super::{FrameReport, FrameState, on_frame, record_interval};
+use super::{FrameReport, FrameState, keep_camera, on_frame, record_interval};
 use crate::raw::{
     self,
     test_support::{FORMAT, TestSwapchain, TestViewer, test_view_names},
@@ -38,8 +41,15 @@ fn frame(state: &mut FrameState, test: &TestSwapchain) -> FrameReport {
     test.with(|address, swapchain| on_frame(state, address, swapchain)).expect("a swapchain")
 }
 
-/// A frame as `on_present_call` runs it, with the call's time given as `now`.
-fn timed_frame(state: &mut FrameState, test: &TestSwapchain, now: Instant) -> FrameReport {
+/// A frame as `on_present_call` runs it, with the call's time given as `now` and the main view
+/// camera the view camera feature gave the frame.
+fn timed_frame(
+    state: &mut FrameState,
+    test: &TestSwapchain,
+    now: Instant,
+    camera: Option<Camera>,
+) -> FrameReport {
+    keep_camera(state, camera);
     let report = frame(state, test);
     record_interval(state, now);
     report
@@ -87,7 +97,7 @@ fn the_601st_frame_logs_one_perf_summary_that_the_parser_reads() {
     let (mut state, _names) = test_state("perf-summary");
     let lines = log_lines("perf-summary", || {
         for now in call_times() {
-            timed_frame(&mut state, &test, now);
+            timed_frame(&mut state, &test, now, None);
         }
     });
     // The sorted intervals are 10 001 .. 10 600 us. Nearest ranks 300, 570 and 594.
@@ -147,10 +157,10 @@ fn the_frame_that_logs_the_perf_summary_makes_no_heap_allocation() {
     let mut allocated = None;
     let lines = log_lines("summary-allocation", || {
         for now in times {
-            timed_frame(&mut state, &test, now);
+            timed_frame(&mut state, &test, now, None);
         }
         let guard = arm_alloc_guard().expect("arm the allocation guard");
-        let report = timed_frame(&mut state, &test, last);
+        let report = timed_frame(&mut state, &test, last, None);
         allocated = Some((guard.count(), report));
     });
     assert_eq!(allocated, Some((0, FrameReport::Later)), "the summary frame allocated");

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
+use ipc_layout::camera_line::CameraLine;
 use ipc_layout::launch_token::Mode;
 
 use self::stand_in::{Exits, LOG_TEXT, StandInFrames, StandInGame};
@@ -220,6 +221,7 @@ frames=300 mean_us=17000 p50_us=16000 p95_us=17000 p99_us=18000 max_us=19000 wid
 total frames=900 mean_us=16333 highest_p99_us=18000 highest_max_us=19000
 ";
     assert_eq!(read("perf.txt"), perf_text);
+    assert_eq!(read("camera.txt"), "none\n", "a window with no camera line");
     assert_eq!(read("arcane-eye-vr.log"), LOG_TEXT);
     assert!(folder.join("frame-0001.png").is_file());
     assert!(folder.join("frame-0002.png").is_file());
@@ -227,6 +229,35 @@ total frames=900 mean_us=16333 highest_p99_us=18000 highest_max_us=19000
     assert_eq!(game.warmup, Some(Duration::from_secs(7)));
     assert_eq!(game.home.as_deref(), Some(folder.join("home").as_path()));
     assert!(folder.join("home").is_dir());
+    assert_eq!(report.exit_code(), ExitCode::SUCCESS);
+}
+
+#[test]
+fn a_window_with_a_camera_line_writes_one_line_per_summary_line_to_camera_txt() {
+    let dir = test_dir("cameras");
+    let folder = dir.path();
+    let camera = CameraLine {
+        x: 1.5,
+        y: -2.0,
+        z: 3.0,
+        fx: 0.0,
+        fy: 0.0,
+        fz: 1.0,
+        fov_y_rad: 1.25,
+        aspect: 1.5,
+        near: 0.1,
+        far: 1000.0,
+    };
+    let mut game = StandInGame::failing_at(None);
+    game.cameras = [None, Some(camera)];
+    let mut frames = StandInFrames { fail_reads: false, beating: false };
+    let (report, _printed, _result) = run_trial(folder, &mut game, &mut frames);
+    let text = fs::read_to_string(folder.join("camera.txt")).expect("read camera.txt");
+    let expected = "\
+none
+x=1.5 y=-2.0 z=3.0 fx=0.0 fy=0.0 fz=1.0 fov_y_rad=1.25 aspect=1.5 near=0.1 far=1000.0
+";
+    assert_eq!(text, expected);
     assert_eq!(report.exit_code(), ExitCode::SUCCESS);
 }
 

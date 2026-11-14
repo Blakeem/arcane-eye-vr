@@ -42,6 +42,7 @@ pub struct Context {
 // `csrc/mid_hook.cpp` asserts the same size and offsets against the vendored header.
 const _: () = assert!(size_of::<Context>() == 408);
 const _: () = assert!(offset_of!(Context, rflags) == 256);
+const _: () = assert!(offset_of!(Context, rdi) == 328);
 const _: () = assert!(offset_of!(Context, rcx) == 352);
 const _: () = assert!(offset_of!(Context, rip) == 400);
 

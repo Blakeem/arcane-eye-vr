@@ -18,6 +18,8 @@ use tracing::{info, warn};
 pub enum Feature {
     /// The mid hook at the engine's Present call site and the frame handler it runs.
     PresentHook,
+    /// The mid hook where a render view's camera is built, which reads the main view's camera.
+    ViewCamera,
 }
 
 impl Feature {
@@ -25,6 +27,7 @@ impl Feature {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PresentHook => "present-hook",
+            Self::ViewCamera => "view-camera",
         }
     }
 }
@@ -99,12 +102,16 @@ const fn next(state: FeatureState, event: Event) -> Option<FeatureState> {
 #[derive(Debug)]
 pub struct Health {
     present_hook: AtomicU8,
+    view_camera: AtomicU8,
 }
 
 impl Health {
     /// A registry with every feature pending.
     pub const fn new() -> Self {
-        Self { present_hook: AtomicU8::new(FeatureState::Pending as u8) }
+        Self {
+            present_hook: AtomicU8::new(FeatureState::Pending as u8),
+            view_camera: AtomicU8::new(FeatureState::Pending as u8),
+        }
     }
 
     pub fn state(&self, feature: Feature) -> FeatureState {
@@ -134,6 +141,7 @@ impl Health {
     const fn cell(&self, feature: Feature) -> &AtomicU8 {
         match feature {
             Feature::PresentHook => &self.present_hook,
+            Feature::ViewCamera => &self.view_camera,
         }
     }
 
@@ -198,6 +206,20 @@ mod tests {
         assert_eq!(health.state(Feature::PresentHook), FeatureState::Failed);
         health.install_ok(Feature::PresentHook);
         assert!(!health.is_running(Feature::PresentHook), "Failed is terminal");
+    }
+
+    #[test]
+    fn each_feature_keeps_its_own_state() {
+        let health = Health::new();
+        health.install_ok(Feature::PresentHook);
+        health.install_ok(Feature::ViewCamera);
+        health.panic_caught(Feature::ViewCamera);
+        assert_eq!(health.state(Feature::ViewCamera), FeatureState::Failed);
+        assert!(
+            health.is_running(Feature::PresentHook),
+            "a panic in view-camera latched present-hook"
+        );
+        assert_eq!(Feature::ViewCamera.as_str(), "view-camera");
     }
 
     #[test]

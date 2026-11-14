@@ -5,7 +5,7 @@ mod tests {
     use std::hint::black_box;
 
     use game_mem::module::main_module;
-    use game_mem::{GameAddr, try_read, try_read_bytes};
+    use game_mem::{GameAddr, try_read, try_read_array, try_read_bytes};
 
     /// Windows reserves the lowest 64 KiB of every process, so no read there succeeds.
     const UNMAPPED: GameAddr = GameAddr::new(0x10);
@@ -29,6 +29,15 @@ mod tests {
     fn try_read_returns_none_at_an_unmapped_address() {
         assert_eq!(try_read::<u64>(UNMAPPED), None);
         assert_eq!(try_read::<u8>(GameAddr::new(0)), None);
+    }
+
+    #[test]
+    fn try_read_array_returns_the_stored_values_and_rejects_unmapped_ones() {
+        let stored = black_box([1.5_f32, -2.0, 3.25]);
+        let read =
+            try_read_array::<f32, 3>(address_of(&stored)).map(|values| values.map(f32::to_bits));
+        assert_eq!(read, Some([1.5_f32.to_bits(), (-2.0_f32).to_bits(), 3.25_f32.to_bits()]));
+        assert_eq!(try_read_array::<u64, 2>(UNMAPPED), None);
     }
 
     #[test]

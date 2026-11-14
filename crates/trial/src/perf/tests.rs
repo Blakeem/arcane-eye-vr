@@ -5,9 +5,12 @@ use std::io::Write as _;
 use std::path::Path;
 use std::time::Duration;
 
+use ipc_layout::camera_line::CameraLine;
 use ipc_layout::perf_line::PerfSummary;
 
-use super::{LogTail, PerfError, Totals, Window, collect, text, totals};
+use super::{
+    CountedLine, LogTail, PerfError, Totals, Window, WindowLine, camera_text, collect, text, totals,
+};
 use crate::test_dir;
 
 const PREFIX: &str = "2026-11-13T12:35:25.951 INFO  thread=29780 arcane_eye_core::frame";
@@ -31,6 +34,34 @@ fn summary(frames: u32, mean: u64, p99: u64, max: u64) -> PerfSummary {
         width: 1920,
         height: 1080,
     }
+}
+
+/// A camera line in the session log's format, with its line ending.
+fn camera_log_line(x: f32) -> String {
+    format!(
+        "{PREFIX} msg=camera x={x} y=2 z=3 fx=0 fy=0 fz=1 fov_y_rad=1.25 aspect=1.5 near=0.1 \
+         far=1000\n"
+    )
+}
+
+fn camera(x: f32) -> CameraLine {
+    CameraLine {
+        x,
+        y: 2.0,
+        z: 3.0,
+        fx: 0.0,
+        fy: 0.0,
+        fz: 1.0,
+        fov_y_rad: 1.25,
+        aspect: 1.5,
+        near: 0.1,
+        far: 1000.0,
+    }
+}
+
+/// `summary` counted with no camera line before it.
+fn without_camera(summary: PerfSummary) -> CountedLine {
+    CountedLine { summary, camera: None }
 }
 
 fn append(path: &Path, text: &str) {
@@ -82,9 +113,9 @@ fn lines_before_the_start_position_are_left_out() {
     let first = line(600, 16_000, 20_000, 30_000);
     append(&log, &format!("{PREFIX} msg=\"saved\"\n{left_out}{first}"));
     append(&log, &line(500, 17_000, 21_000, 31_000));
-    let summaries = collect(&mut tail, 2, Duration::from_secs(5)).expect("two lines");
+    let window = collect(&mut tail, 2, Duration::from_secs(5)).expect("two lines");
     let expected = [summary(600, 16_000, 20_000, 30_000), summary(500, 17_000, 21_000, 31_000)];
-    assert_eq!(summaries, expected);
+    assert_eq!(window, expected.map(without_camera), "a window with no camera line");
 }
 
 #[test]
@@ -100,13 +131,13 @@ fn the_first_line_after_the_start_is_left_out_since_its_frames_began_before_the_
         line(600, 18_000, 22_000, 32_000),
     ];
     append(&log, &lines.concat());
-    let summaries = collect(&mut tail, 3, Duration::from_secs(5)).expect("three lines");
+    let window = collect(&mut tail, 3, Duration::from_secs(5)).expect("three lines");
     let expected = [
         summary(600, 16_000, 20_000, 30_000),
         summary(600, 17_000, 21_000, 31_000),
         summary(600, 18_000, 22_000, 32_000),
     ];
-    assert_eq!(summaries, expected);
+    assert_eq!(window, expected.map(without_camera));
 }
 
 #[test]
@@ -118,15 +149,69 @@ fn only_the_first_line_of_the_first_read_with_lines_is_left_out_when_lines_arriv
     let extra = summary(600, 19_000, 23_000, 33_000);
     let mut window = Window::new(3);
     window.add(Vec::new());
-    window.add(vec![left_out]);
-    assert_eq!(window.summaries, []);
-    window.add(vec![first]);
+    window.add(vec![WindowLine::Summary(left_out)]);
+    assert_eq!(window.counted, []);
+    window.add(vec![WindowLine::Summary(first)]);
     window.add(Vec::new());
-    assert_eq!(window.summaries, [first]);
+    assert_eq!(window.counted, [without_camera(first)]);
     assert!(!window.is_full(), "one of three lines fills the window");
-    window.add(vec![second, third, extra]);
-    assert_eq!(window.summaries, [first, second, third]);
+    let read = [second, third, extra].map(WindowLine::Summary);
+    window.add(read.to_vec());
+    assert_eq!(window.counted, [first, second, third].map(without_camera));
     assert!(window.is_full(), "three of three lines leave the window open");
+}
+
+#[test]
+fn the_window_keeps_the_camera_line_before_each_counted_summary_line() {
+    let dir = test_dir("perf-cameras");
+    let log = dir.path().join("arcane-eye-vr.log");
+    fs::write(&log, camera_log_line(-1.0)).expect("write the test log");
+    let mut tail = LogTail::at_end(&log).expect("a tail at the log's end");
+    let lines = [
+        camera_log_line(0.0),
+        line(600, 19_274, 2_000_000, 2_147_657),
+        camera_log_line(1.0),
+        line(600, 16_000, 20_000, 30_000),
+        line(600, 17_000, 21_000, 31_000),
+        camera_log_line(3.0),
+        line(600, 18_000, 22_000, 32_000),
+        camera_log_line(4.0),
+        line(600, 19_000, 23_000, 33_000),
+    ];
+    append(&log, &lines.concat());
+    let window = collect(&mut tail, 3, Duration::from_secs(5)).expect("three lines");
+    let expected = [
+        CountedLine { summary: summary(600, 16_000, 20_000, 30_000), camera: Some(camera(1.0)) },
+        without_camera(summary(600, 17_000, 21_000, 31_000)),
+        CountedLine { summary: summary(600, 18_000, 22_000, 32_000), camera: Some(camera(3.0)) },
+    ];
+    assert_eq!(window, expected, "each counted summary line with the camera line before it");
+}
+
+#[test]
+fn the_camera_text_holds_a_line_per_summary_line_or_one_none() {
+    let expected = "\
+x=1.5 y=2.0 z=3.0 fx=0.0 fy=0.0 fz=1.0 fov_y_rad=1.25 aspect=1.5 near=0.1 far=1000.0
+none
+x=-4.0 y=2.0 z=3.0 fx=0.0 fy=0.0 fz=1.0 fov_y_rad=1.25 aspect=1.5 near=0.1 far=1000.0
+";
+    assert_eq!(camera_text(&[Some(camera(1.5)), None, Some(camera(-4.0))]), expected);
+    assert_eq!(camera_text(&[None, None]), "none\n", "a window with no camera");
+    assert_eq!(camera_text(&[]), "none\n", "a window with no summary line");
+}
+
+#[test]
+fn a_camera_line_the_parser_rejects_fails_the_window() {
+    let dir = test_dir("perf-bad-camera");
+    let log = dir.path().join("arcane-eye-vr.log");
+    fs::write(&log, "").expect("write the test log");
+    let mut tail = LogTail::at_end(&log).expect("a tail at the log's end");
+    append(&log, &format!("{PREFIX} msg=camera x=1\n"));
+    let error = collect(&mut tail, 1, Duration::from_secs(5)).expect_err("a line with no y");
+    assert!(matches!(error, PerfError::CameraLine { .. }), "{error:?}");
+    let expected =
+        format!("the session log {} holds a camera line the parser rejects", log.display());
+    assert_eq!(error.to_string(), expected);
 }
 
 #[test]
@@ -149,9 +234,10 @@ fn a_line_the_core_has_not_finished_waits_for_its_line_ending() {
     let full = line(600, 16_000, 20_000, 30_000);
     let (head, rest) = full.split_at(40);
     append(&log, head);
-    assert_eq!(tail.read_summaries().expect("a read"), []);
+    assert_eq!(tail.read_lines().expect("a read"), []);
     append(&log, rest);
-    assert_eq!(tail.read_summaries().expect("a read"), [summary(600, 16_000, 20_000, 30_000)]);
+    let finished = [WindowLine::Summary(summary(600, 16_000, 20_000, 30_000))];
+    assert_eq!(tail.read_lines().expect("a read"), finished);
 }
 
 #[test]

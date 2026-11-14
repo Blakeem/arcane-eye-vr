@@ -27,11 +27,12 @@ pub(crate) fn read<T: Plain>(address: GameAddr) -> Option<T> {
     (copied == COPY_COMPLETE).then_some(value)
 }
 
-pub(crate) fn read_into(address: GameAddr, bytes: &mut [u8]) -> Option<()> {
-    let destination = bytes.as_mut_ptr().cast::<c_void>();
+pub(crate) fn read_into<T: Plain>(address: GameAddr, values: &mut [T]) -> Option<()> {
+    let destination = values.as_mut_ptr().cast::<c_void>();
     let source = ptr::with_exposed_provenance::<c_void>(address.get());
-    // SAFETY: `destination` is valid for `bytes.len()` byte writes, and the copy needs no valid `source`.
-    let copied = unsafe { shim::raw::guarded_copy(destination, source, bytes.len()) };
+    // SAFETY: `destination` is valid for `size_of_val(values)` byte writes. `Plain` types accept every
+    // bit pattern, so even a partial copy leaves valid values. The copy needs no valid `source`.
+    let copied = unsafe { shim::raw::guarded_copy(destination, source, size_of_val(values)) };
     (copied == COPY_COMPLETE).then_some(())
 }
 

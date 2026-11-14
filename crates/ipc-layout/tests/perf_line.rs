@@ -48,9 +48,11 @@ mod tests {
         let longer_message = format!("{PREFIX} msg=\"perf summary later\" {FIELDS}");
         let quoted_in_a_value =
             format!("{PREFIX} msg=\"saved\" path=\"x msg=\\\"perf summary\\\" {FIELDS}\"");
+        let bare_perf_message = format!("{PREFIX} msg=perf summary {FIELDS}");
         assert_eq!(parse_line(&first_present), Ok(None));
         assert_eq!(parse_line(&longer_message), Ok(None));
         assert_eq!(parse_line(&quoted_in_a_value), Ok(None));
+        assert_eq!(parse_line(&bare_perf_message), Ok(None));
         assert_eq!(parse_line(""), Ok(None));
     }
 

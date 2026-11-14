@@ -1,7 +1,7 @@
 //! The core DLL's unsafe edge.
 //!
-//! It holds the exports, the Present call-site hook install, the launch token's status field, and
-//! the D3D11 and DXGI calls of the frame handler.
+//! It holds the exports, the Present call-site and view camera hook installs, the launch token's
+//! status field, and the D3D11 and DXGI calls of the frame handler.
 
 #![expect(
     unsafe_code,
@@ -58,6 +58,24 @@ pub(crate) fn install_present_hook(
     // SAFETY: the signature's one match starts with `mov rax,[rcx]` and `call [rax+40h]`, 6 bytes that
     // SafetyHook relocates and that no jump in `FlipBuffers` targets. bg3-vr hooks the same address.
     // `FlipBuffers` runs on the render thread, which the render thunk's token requires.
+    let hook = unsafe { hooks::install_mid_hook(address, thunk) }?;
+    Ok(ManuallyDrop::new(hook))
+}
+
+/// Installs `thunk` as the mid hook at the camera-built site `address`.
+///
+/// `address` must be the one match of the `render_view_camera_built` signature in the loaded game exe.
+/// The hook never drops, so it stays installed for the process life on every path, and no render
+/// thread runs a freed stub.
+pub(crate) fn install_view_camera_hook(
+    address: GameAddr,
+    thunk: MidThunk,
+) -> Result<ManuallyDrop<MidHook>, HookError> {
+    // SAFETY: the signature's one match starts with `lea rdx,[rdi+2340h]`, a 7-byte instruction with no
+    // RIP-relative operand. SafetyHook's 5-byte jump moves only it, so no jump targets a moved byte past
+    // the match start. Its 14-byte fallback rejects the RIP-relative `call` at byte 12 and installs
+    // nothing. bg3-vr hooks the same address. Begin-recording runs on the render thread, which the
+    // render thunk's token requires.
     let hook = unsafe { hooks::install_mid_hook(address, thunk) }?;
     Ok(ManuallyDrop::new(hook))
 }

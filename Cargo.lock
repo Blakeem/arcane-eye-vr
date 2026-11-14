@@ -110,6 +110,7 @@ name = "game-bindings"
 version = "0.1.0"
 dependencies = [
  "diag",
+ "game-mem",
  "memchr",
  "test-support",
  "thiserror",

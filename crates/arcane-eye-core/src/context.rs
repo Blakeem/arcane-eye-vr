@@ -12,6 +12,7 @@ use hooks::{HookContext, MidHook, RenderCell};
 use crate::config::Config;
 use crate::frame::FrameState;
 use crate::raw::StatusView;
+use crate::view_camera::ViewCamera;
 
 pub(crate) struct CoreContext {
     /// Held so the log writer thread runs for the life of the context.
@@ -22,9 +23,13 @@ pub(crate) struct CoreContext {
     /// The launch token, or `None` when the launch app's mapping is gone.
     pub(crate) status: Option<StatusView>,
     pub(crate) frame: RenderCell<FrameState>,
+    pub(crate) view_camera: RenderCell<ViewCamera>,
     /// Never dropped, so the hook stays installed for the process life (see
     /// [`install_present_hook`](crate::raw::install_present_hook)).
     pub(crate) _present_hook: Option<ManuallyDrop<MidHook>>,
+    /// Never dropped, like the Present call-site hook (see
+    /// [`install_view_camera_hook`](crate::raw::install_view_camera_hook)).
+    pub(crate) _view_camera_hook: Option<ManuallyDrop<MidHook>>,
 }
 
 impl HookContext for CoreContext {

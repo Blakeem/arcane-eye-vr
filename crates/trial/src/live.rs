@@ -12,7 +12,6 @@ use diag::logging::{self, LogName};
 use diag::root::Root;
 use ipc_layout::core_init::CORE_DLL;
 use ipc_layout::launch_token::Mode;
-use ipc_layout::perf_line::PerfSummary;
 use launch::game_dir::GameDir;
 use launch::status::{self, Goal};
 use launch::stop::{self, ProcessState};
@@ -24,7 +23,7 @@ use viewer_client::header::Names;
 use viewer_client::heartbeat;
 
 use crate::args::Settings;
-use crate::perf::{self, LogTail};
+use crate::perf::{self, CountedLine, LogTail};
 use crate::steps::{Closed, Frames, Game, Step, StepError};
 
 /// The files the mod puts in the game's bin folder.
@@ -146,7 +145,7 @@ impl Game for LiveGame {
         }
     }
 
-    fn perf_window(&mut self, lines: u32) -> Result<Vec<PerfSummary>, StepError> {
+    fn perf_window(&mut self, lines: u32) -> Result<Vec<CountedLine>, StepError> {
         let mut tail = LogTail::at_end(&self.core_log()?)?;
         Ok(perf::collect(&mut tail, lines, PERF_LINE_TIMEOUT)?)
     }

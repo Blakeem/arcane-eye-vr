@@ -4,8 +4,10 @@ mod config;
 mod context;
 mod frame;
 mod init;
+mod install;
 mod present;
 mod raw;
+mod view_camera;
 mod viewer;
 
 /// A folder for test `name` next to the test binary, so a run that keeps a log file open leaves it

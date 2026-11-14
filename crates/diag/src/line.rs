@@ -5,6 +5,7 @@
 
 use std::fmt::{self, Write as _};
 
+use ipc_layout::log_fields::is_written_quoted;
 use tracing::Level;
 use tracing::field::{Field, Visit};
 
@@ -133,7 +134,7 @@ impl fmt::Write for TextBuf {
 }
 
 /// Writes each event field as ` name=value` into a line. The `message` field is written as `msg`.
-// ipc_layout::perf_line parses this form, so a change here changes that parser too.
+// The line parsers of ipc_layout read this form, so a change here changes them too.
 pub(crate) struct FieldWriter<'a> {
     pub(crate) line: &'a mut TextBuf,
 }
@@ -142,7 +143,7 @@ impl FieldWriter<'_> {
     /// Writes ` name=value`. `mark` follows the value, inside the quotes when the value is quoted.
     fn write_field(&mut self, field: &Field, value: &str, mark: &str) {
         let name = if field.name() == "message" { "msg" } else { field.name() };
-        let quoted = needs_quotes(value);
+        let quoted = is_written_quoted(value);
         self.line.push_str(" ");
         self.line.push_str(name);
         self.line.push_str("=");
@@ -188,12 +189,6 @@ impl Visit for FieldWriter<'_> {
         let mark = if scratch.cut { CUT_MARK } else { "" };
         self.write_field(field, scratch.as_str(), mark);
     }
-}
-
-/// A value with a space, quote, `=`, backslash or control character, or an empty value, is quoted.
-fn needs_quotes(value: &str) -> bool {
-    value.is_empty()
-        || value.chars().any(|c| c == ' ' || c == '"' || c == '=' || c == '\\' || c.is_control())
 }
 
 /// Each level's position is the level byte a slot stores.

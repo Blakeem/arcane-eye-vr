@@ -2,7 +2,8 @@
 //!
 //! On the first frame it takes the device and the immediate context. On every frame it tracks the
 //! swapchain, its device and its back buffer, and hands the frame to the debug viewer link. It times
-//! each call and logs the perf summary line once per window of frames.
+//! each call and logs the perf summary line once per window of frames, after the camera line of the
+//! window's newest view camera.
 //!
 //! It keeps no back-buffer reference and no swapchain reference. An extra swapchain reference keeps a
 //! swapchain the game released alive, and DXGI then refuses a new swapchain on the same window.
@@ -12,8 +13,9 @@ use std::time::{Duration, Instant};
 use diag::perf::{FrameWindow, SUMMARY_FRAMES};
 use diag::rate::{Once, RateLimit};
 use diag::{error_every, once, warn_every};
+use game_bindings::camera::Camera;
 use hooks::Registers;
-use ipc_layout::perf_line;
+use ipc_layout::{camera_line, perf_line};
 use tracing::Level;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 use windows::core::HRESULT;
@@ -45,6 +47,8 @@ pub(crate) struct FrameState {
     /// The time of the previous Present call, from which the next frame interval runs.
     last_call: Option<Instant>,
     frame_times: FrameWindow,
+    /// The newest main view camera of the current perf window, for its camera line.
+    camera: Option<Camera>,
 }
 
 /// The rate-limit state of each log call site of the frame handler.
@@ -65,9 +69,15 @@ struct Snapshot {
     back_buffer: BackBuffer,
 }
 
-/// Runs the frame work for the swapchain that `registers` hold at the Present call site.
-pub(crate) fn on_present_call(state: &mut FrameState, registers: &Registers) -> FrameReport {
+/// Runs the frame work for the swapchain that `registers` hold at the Present call site. `camera` is
+/// the main view camera of the frame, when the view camera feature read one.
+pub(crate) fn on_present_call(
+    state: &mut FrameState,
+    registers: &Registers,
+    camera: Option<Camera>,
+) -> FrameReport {
     let now = Instant::now();
+    keep_camera(state, camera);
     let frame = raw::with_present_swapchain(registers, |address, swapchain| {
         on_frame(state, address, swapchain)
     });
@@ -84,8 +94,16 @@ pub(crate) fn on_present_call(state: &mut FrameState, registers: &Registers) -> 
     report
 }
 
-/// Adds the time since the previous Present call to the frame-time window, and logs the perf summary
-/// line when that interval fills the window.
+/// Keeps `camera` as the newest camera of the perf window, when the frame has one.
+fn keep_camera(state: &mut FrameState, camera: Option<Camera>) {
+    if camera.is_some() {
+        state.camera = camera;
+    }
+}
+
+/// Adds the time since the previous Present call to the frame-time window. When that interval fills
+/// the window, logs the camera line of the window's newest camera, when it has one, then the perf
+/// summary line.
 fn record_interval(state: &mut FrameState, now: Instant) {
     let Some(previous) = state.last_call.replace(now) else {
         return;
@@ -93,6 +111,9 @@ fn record_interval(state: &mut FrameState, now: Instant) {
     let Some(times) = state.frame_times.record(now.saturating_duration_since(previous)) else {
         return;
     };
+    if let Some(camera) = state.camera.take() {
+        log_camera(&camera);
+    }
     let back_buffer = state.last.map(|snapshot| snapshot.back_buffer);
     // The window limits this line to one per SUMMARY_FRAMES frames, so it needs no rate-limit macro.
     tracing::info!(
@@ -106,6 +127,28 @@ fn record_interval(state: &mut FrameState, now: Instant) {
         height = back_buffer.map_or(0, |size| size.height),
         "{}",
         perf_line::MESSAGE
+    );
+}
+
+/// Logs the camera line. A reader pairs it with the perf summary line that follows it.
+fn log_camera(camera: &Camera) {
+    let [x, y, z] = camera.position;
+    let [fx, fy, fz] = camera.forward;
+    // The perf window limits this line to one per SUMMARY_FRAMES frames, so it needs no rate-limit
+    // macro. Debug writes an extreme f32 in exponent form, which keeps every field inside one log slot.
+    tracing::info!(
+        x = ?x,
+        y = ?y,
+        z = ?z,
+        fx = ?fx,
+        fy = ?fy,
+        fz = ?fz,
+        fov_y_rad = ?camera.fov_y_rad,
+        aspect = ?camera.aspect,
+        near = ?camera.near,
+        far = ?camera.far,
+        "{}",
+        camera_line::MESSAGE
     );
 }
 

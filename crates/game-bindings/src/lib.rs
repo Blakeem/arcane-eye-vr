@@ -2,7 +2,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod camera;
+pub mod offsets;
 pub mod pattern;
 pub mod pe;
+pub mod render_view;
 pub mod signatures;
 pub mod state;

@@ -9,6 +9,7 @@
 // layout moves.
 static_assert(sizeof(safetyhook::Context) == 408);
 static_assert(offsetof(safetyhook::Context, rflags) == 256);
+static_assert(offsetof(safetyhook::Context, rdi) == 328);
 static_assert(offsetof(safetyhook::Context, rcx) == 352);
 static_assert(offsetof(safetyhook::Context, rip) == 400);
 

@@ -54,6 +54,14 @@ pub fn try_read<T: Plain>(address: GameAddr) -> Option<T> {
     raw::read(address)
 }
 
+/// The `N` values of `T` stored from `address` on, or `None` when any of their bytes cannot be read.
+/// The copy is one guarded read and makes no heap allocation.
+pub fn try_read_array<T: Plain, const N: usize>(address: GameAddr) -> Option<[T; N]> {
+    let mut values = [T::default(); N];
+    raw::read_into(address, &mut values)?;
+    Some(values)
+}
+
 /// A copy of the `len` bytes at `address`, or `None` when any of them cannot be read or the buffer
 /// for them cannot be allocated.
 pub fn try_read_bytes(address: GameAddr, len: usize) -> Option<Vec<u8>> {

@@ -41,8 +41,31 @@ pub const DX11_PRESENT_CALL: Signature = Signature {
     rip: None,
 };
 
+/// The point inside a render view's begin-recording where the engine has built the view's `PerView` and
+/// `PerCamera` blocks. It runs on the render thread once per view per frame, and `rdi` holds the view.
+/// The first instruction is `lea rdx,[rdi+2340h]`. From bg3-vr.
+pub const RENDER_VIEW_CAMERA_BUILT: Signature = Signature {
+    name: "render_view_camera_built",
+    pattern: "48 8D 97 40 23 00 00 48 8D 4C 24 20 E8 ?? ?? ?? ?? 4C 8B C0 48 8D 97 20 28 00 00",
+    offset: 0,
+    rip: None,
+};
+
+/// The gameplay camera controller's `GetWorldTranslate` (vtable slot 9). It takes the controller in
+/// `rcx` and returns a pointer to the camera's world position as three `f32`. The bytes are
+/// `sub rsp,28h`, `mov rdx,[rcx+318h]`, `mov rcx,[rcx+320h]`, `call <rel32>`, `add rax,10h`,
+/// `add rsp,28h` and `ret`.
+pub const GET_WORLD_TRANSLATE: Signature = Signature {
+    name: "get_world_translate",
+    pattern: "48 83 EC 28 48 8B 91 18 03 00 00 48 8B 89 20 03 00 00 E8 ?? ?? ?? ?? 48 83 C0 10 48 83 \
+              C4 28 C3",
+    offset: 0,
+    rip: None,
+};
+
 /// Every signature the mod resolves at start-up and `sigcheck` checks against an exe.
-pub const SIGNATURES: &[Signature] = &[DX11_PRESENT_CALL];
+pub const SIGNATURES: &[Signature] =
+    &[DX11_PRESENT_CALL, RENDER_VIEW_CAMERA_BUILT, GET_WORLD_TRANSLATE];
 
 /// Why a signature yields no address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]

@@ -7,13 +7,14 @@ use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::Duration;
 
+use ipc_layout::camera_line::CameraLine;
 use ipc_layout::perf_line::PerfSummary;
 use launch::checks::GameRunning;
 use launch::status::WaitError;
 use launch::stop::StopError;
 use viewer_client::frame::{Frame, PixelFormat, ReadError};
 
-use crate::perf::PerfError;
+use crate::perf::{CountedLine, PerfError};
 use crate::steps::{Closed, Frames, Game, Step, StepError};
 
 pub(super) const LOG_TEXT: &str = "the core's session log\n";
@@ -51,6 +52,8 @@ pub(super) struct StandInGame {
     pub(super) warmup: Option<Duration>,
     /// The root folder the start step gave the game.
     pub(super) home: Option<PathBuf>,
+    /// The camera of each of the perf window's two summary lines.
+    pub(super) cameras: [Option<CameraLine>; 2],
 }
 
 impl StandInGame {
@@ -63,6 +66,7 @@ impl StandInGame {
             ran: Vec::new(),
             warmup: None,
             home: None,
+            cameras: [None; 2],
         }
     }
 
@@ -106,7 +110,7 @@ impl Game for StandInGame {
         }
     }
 
-    fn perf_window(&mut self, lines: u32) -> Result<Vec<PerfSummary>, StepError> {
+    fn perf_window(&mut self, lines: u32) -> Result<Vec<CountedLine>, StepError> {
         let timeout = PerfError::Timeout {
             path: PathBuf::from(r"C:\logs\arcane-eye-vr.log"),
             got: 1,
@@ -115,7 +119,9 @@ impl Game for StandInGame {
         };
         self.step(Step::Perf, timeout.into())?;
         let count = usize::try_from(lines).unwrap_or(usize::MAX);
-        Ok([summary(600, 16_000), summary(300, 17_000)].into_iter().take(count).collect())
+        let summaries = [summary(600, 16_000), summary(300, 17_000)];
+        let counted = summaries.into_iter().zip(self.cameras);
+        Ok(counted.map(|(summary, camera)| CountedLine { summary, camera }).take(count).collect())
     }
 
     fn close(&mut self) -> Result<Closed, StepError> {

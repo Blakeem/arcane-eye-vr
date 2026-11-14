@@ -30,6 +30,10 @@ impl Registers {
     pub const fn rcx(&self) -> usize {
         self.0.rcx
     }
+
+    pub const fn rdi(&self) -> usize {
+        self.0.rdi
+    }
 }
 
 /// A mid hook callback, as [`render_mid_hook!`](crate::render_mid_hook) defines it.

@@ -8,7 +8,6 @@ use std::process::{ExitCode, ExitStatus};
 use std::time::{Duration, Instant};
 
 use diag::error_chain;
-use ipc_layout::perf_line::PerfSummary;
 use launch::checks::{GameRunning, RuntimeError};
 use launch::direct::StartError;
 use launch::game_dir::GameDirError;
@@ -21,12 +20,15 @@ use viewer_client::frame::{Frame, ReadError};
 use crate::args::{Options, Settings};
 use crate::folder::{self, FolderError, RESULT_FILE, TRIAL_FILE};
 use crate::home::{self, HomeError};
-use crate::perf::{self, PerfError};
+use crate::perf::{self, CountedLine, PerfError};
 use crate::pixels::{self, SizeError};
 use crate::png_file::{self, PngError};
 
 /// The name of the perf window's totals in the result folder.
 const PERF_FILE: &str = "perf.txt";
+
+/// The name of the perf window's camera lines in the result folder.
+const CAMERA_FILE: &str = "camera.txt";
 
 /// The name of the copy of the core's session log in the result folder.
 const CORE_LOG_COPY: &str = "arcane-eye-vr.log";
@@ -85,8 +87,8 @@ pub(crate) trait Game {
     /// The game's exit status once it exited, or `None` while it runs.
     fn exit_status(&mut self) -> Result<Option<ExitStatus>, StepError>;
     /// The `lines` perf summary lines of the core's session log after the next perf summary line it
-    /// finishes.
-    fn perf_window(&mut self, lines: u32) -> Result<Vec<PerfSummary>, StepError>;
+    /// finishes, and the camera line before each of them.
+    fn perf_window(&mut self, lines: u32) -> Result<Vec<CountedLine>, StepError>;
     fn close(&mut self) -> Result<Closed, StepError>;
     /// Copies the core's session log to `to`.
     fn copy_log(&mut self, to: &Path) -> Result<(), StepError>;
@@ -331,10 +333,13 @@ fn while_running<G: Game>(
     }
 }
 
-/// Collects the perf window and writes `perf.txt`.
+/// Collects the perf window and writes `perf.txt` and `camera.txt`.
 fn perf_step(game: &mut impl Game, lines: u32, folder: &Path) -> Result<(), StepError> {
-    let summaries = game.perf_window(lines)?;
+    let window = game.perf_window(lines)?;
+    let summaries: Vec<_> = window.iter().map(|line| line.summary).collect();
+    let cameras: Vec<_> = window.iter().map(|line| line.camera).collect();
     folder::write(folder, PERF_FILE, &perf::text(&summaries))?;
+    folder::write(folder, CAMERA_FILE, &perf::camera_text(&cameras))?;
     Ok(())
 }
 
