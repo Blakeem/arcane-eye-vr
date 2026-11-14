@@ -34,12 +34,13 @@ fn config(second_view: SecondView) -> Config {
     Config { settings: Settings::default(), dev: DevFlags { stereo } }
 }
 
-/// A record whose address, id and request id all derive from `id`.
+/// An environment whose target address, ids and request id all derive from `id`. The active and the
+/// target record both hold `id`, as the game's setter leaves them.
 fn environment(id: i32) -> Environment {
     let offset = usize::try_from(id).expect("a test id");
-    let record = GameAddr::new(0x5000).checked_add(offset).expect("a test address");
+    let target = GameAddr::new(0x6000).checked_add(offset).expect("a test address");
     let request = id.checked_add(100).expect("a test request id");
-    Environment { record, id: Some(id), request }
+    Environment { active_id: Some(id), target, target_id: Some(id), request }
 }
 
 /// A main view's content with every value set.
@@ -114,7 +115,8 @@ fn a_retry_is_due_at_first_and_again_one_second_after_an_attempt() {
 #[test]
 fn a_main_view_without_a_controller_scene_or_environment_is_unset() {
     let eye = set_main();
-    let missing = Environment { record: GameAddr::new(0), id: None, request: -1 };
+    let missing =
+        Environment { active_id: None, target: GameAddr::new(0), target_id: None, request: -1 };
     let unsets: [fn(&mut ViewContent, Environment); 5] = [
         |main, _| main.controller = GameAddr::new(0),
         |main, _| main.scene = GameAddr::new(0),
@@ -144,7 +146,7 @@ fn an_eye_view_is_ready_only_when_its_four_values_equal_the_main_views() {
     other_lighting.lighting = environment(23);
     assert_eq!(readiness(&main, &other_lighting), Readiness::NeedsSetUp);
     let mut same_ids = main;
-    same_ids.atmosphere.record = GameAddr::new(0x9000);
+    same_ids.atmosphere.target = GameAddr::new(0x9000);
     same_ids.split_index = 1;
     assert_eq!(readiness(&main, &same_ids), Readiness::Ready, "records and guards do not count");
 }

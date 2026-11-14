@@ -12,10 +12,10 @@ use crate::offsets::{
     CONTROLLER_SIZE, CONTROLLER_VIEW, CONTROLLER_VTABLE_SLOTS, CONTROLLER_WORLD_TRANSLATE_SLOT,
     ENVIRONMENT_RECORD_ID, PER_CAMERA_FAR, PER_CAMERA_NEAR, PER_CAMERA_POSITION,
     PER_CAMERA_PROJECTION, PER_CAMERA_VIEW, SCENE_ACTIVE, VIEW_ATMOSPHERE, VIEW_ATMOSPHERE_LOCK,
-    VIEW_ATMOSPHERE_REQUEST, VIEW_JOB_CONTEXT, VIEW_LAST_SEEN_CONTROLLER, VIEW_LIGHTING,
-    VIEW_LIGHTING_LOCK, VIEW_LIGHTING_REQUEST, VIEW_OCCLUSION, VIEW_PER_CAMERA,
-    VIEW_READ_STATE_CONTROLLER, VIEW_SCENE, VIEW_SPLIT_INDEX, VIEW_SPLIT_SIDE, VIEW_STAGE_ARRAY,
-    VIEW_STAGE_OWNER, VIEW_WRITE_STATE_CONTROLLER, VIEW_WRITE_STATE_ENABLED,
+    VIEW_ATMOSPHERE_REQUEST, VIEW_ATMOSPHERE_TARGET, VIEW_JOB_CONTEXT, VIEW_LAST_SEEN_CONTROLLER,
+    VIEW_LIGHTING, VIEW_LIGHTING_LOCK, VIEW_LIGHTING_REQUEST, VIEW_LIGHTING_TARGET, VIEW_OCCLUSION,
+    VIEW_PER_CAMERA, VIEW_READ_STATE_CONTROLLER, VIEW_SCENE, VIEW_SPLIT_INDEX, VIEW_SPLIT_SIDE,
+    VIEW_STAGE_ARRAY, VIEW_STAGE_OWNER, VIEW_WRITE_STATE_CONTROLLER, VIEW_WRITE_STATE_ENABLED,
 };
 
 /// A render view, by its address in the game process.
@@ -58,13 +58,17 @@ pub struct ViewParts {
     pub job_context: GameAddr,
 }
 
-/// An atmosphere or lighting record of a render view and the view's request id for it.
+/// The active record id, the target record and the request id of a render view's atmosphere or
+/// lighting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Environment {
-    /// The record, or address 0 when the view has none.
-    pub record: GameAddr,
-    /// The record's id, or `None` when the record is null.
-    pub id: Option<i32>,
+    /// The active record's id, or `None` when the view has no active record.
+    pub active_id: Option<i32>,
+    /// The target record, which the setter copies its source into, or address 0 when the view has
+    /// none.
+    pub target: GameAddr,
+    /// The target record's id, or `None` when the target record is null.
+    pub target_id: Option<i32>,
     /// The view's request id, -1 when it names no request.
     pub request: i32,
 }
@@ -187,8 +191,16 @@ impl RenderView {
             controller: self.pointer(VIEW_WRITE_STATE_CONTROLLER)?,
             scene,
             scene_active,
-            atmosphere: self.environment(VIEW_ATMOSPHERE, VIEW_ATMOSPHERE_REQUEST)?,
-            lighting: self.environment(VIEW_LIGHTING, VIEW_LIGHTING_REQUEST)?,
+            atmosphere: self.environment(
+                VIEW_ATMOSPHERE,
+                VIEW_ATMOSPHERE_TARGET,
+                VIEW_ATMOSPHERE_REQUEST,
+            )?,
+            lighting: self.environment(
+                VIEW_LIGHTING,
+                VIEW_LIGHTING_TARGET,
+                VIEW_LIGHTING_REQUEST,
+            )?,
             split_index: try_read::<u8>(self.0.checked_add(VIEW_SPLIT_INDEX)?)?,
             atmosphere_lock: try_read::<u8>(self.0.checked_add(VIEW_ATMOSPHERE_LOCK)?)?,
             lighting_lock: try_read::<u8>(self.0.checked_add(VIEW_LIGHTING_LOCK)?)?,
@@ -230,14 +242,26 @@ impl RenderView {
         try_read::<usize>(self.0.checked_add(offset)?).map(GameAddr::new)
     }
 
-    fn environment(self, record_offset: usize, request_offset: usize) -> Option<Environment> {
-        let record = self.pointer(record_offset)?;
+    fn environment(
+        self,
+        active_offset: usize,
+        target_offset: usize,
+        request_offset: usize,
+    ) -> Option<Environment> {
+        let (_, active_id) = self.environment_record(active_offset)?;
+        let (target, target_id) = self.environment_record(target_offset)?;
+        let request = try_read::<i32>(self.0.checked_add(request_offset)?)?;
+        Some(Environment { active_id, target, target_id, request })
+    }
+
+    /// The environment record pointer at `offset` and the record's id, `None` for a null record.
+    fn environment_record(self, offset: usize) -> Option<(GameAddr, Option<i32>)> {
+        let record = self.pointer(offset)?;
         let id = match record.get() {
             0 => None,
             _ => Some(try_read::<i32>(record.checked_add(ENVIRONMENT_RECORD_ID)?)?),
         };
-        let request = try_read::<i32>(self.0.checked_add(request_offset)?)?;
-        Some(Environment { record, id, request })
+        Some((record, id))
     }
 }
 

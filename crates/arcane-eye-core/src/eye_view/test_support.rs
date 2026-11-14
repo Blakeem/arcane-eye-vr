@@ -1,8 +1,7 @@
-//! A pipeline, a frame, views, a level and a controller built in the test process's memory, and stand-in
-//! game calls that record their arguments.
+//! A pipeline, a frame, views, a level and a controller built in the test process's memory.
 //!
 //! The objects hold the title screen state the research measured: a main view with a controller, an
-//! active scene, an atmosphere and a lighting, a special view and a level. The eye view is the view
+//! active scene, active and target atmosphere and lighting records, a special view and a level. The eye view is the view
 //! the stand-in `CreatePlayerView` returns. It is already in the frame's view list and holds its
 //! stage record, as the game's add-view leaves it.
 
@@ -11,15 +10,16 @@ use game_bindings::offsets::{
     LEVEL_ENVIRONMENT, LEVEL_ENVIRONMENT_IDS, LEVEL_MANAGER_LEVEL, LEVEL_SCENE, OCCLUSION_ENABLED,
     PIPELINE_MAIN_VIEW, PIPELINE_SETUP_SLOT, PIPELINE_SPECIAL_VIEW,
     PLAYER_MANAGER_CREATE_VIEW_SLOT, SCENE_ACTIVE, STAGE_RESOURCES_RECORD_COUNT,
-    STAGE_RESOURCES_RECORDS, VIEW_ATMOSPHERE, VIEW_ATMOSPHERE_REQUEST, VIEW_JOB_CONTEXT,
-    VIEW_LIGHTING, VIEW_LIGHTING_REQUEST, VIEW_OCCLUSION, VIEW_SCENE, VIEW_STAGE_ARRAY,
-    VIEW_STAGE_OWNER, VIEW_WRITE_STATE_CONTROLLER,
+    STAGE_RESOURCES_RECORDS, VIEW_ATMOSPHERE, VIEW_ATMOSPHERE_REQUEST, VIEW_ATMOSPHERE_TARGET,
+    VIEW_JOB_CONTEXT, VIEW_LIGHTING, VIEW_LIGHTING_REQUEST, VIEW_LIGHTING_TARGET, VIEW_OCCLUSION,
+    VIEW_SCENE, VIEW_STAGE_ARRAY, VIEW_STAGE_OWNER, VIEW_WRITE_STATE_CONTROLLER,
 };
 use game_bindings::pipeline::{Pipeline, RenderFrame};
 use game_bindings::render_view::RenderView;
-use game_mem::{GameAddr, Plain, WriteDest, try_read, try_write};
+use game_mem::{GameAddr, Plain, try_read, try_write};
 
-use super::engine::{Addresses, CreateCalls, GameMemory, Held, SetUpCalls};
+use super::engine::{Addresses, Held};
+use super::recorder::Recorder;
 use crate::raw::test_support::test_dest;
 
 /// `CreatePlayerView`'s address in the test world. No code runs there.
@@ -28,10 +28,10 @@ pub(crate) const CREATE_PLAYER_VIEW: GameAddr = GameAddr::new(0x7FF6_0000_1000);
 /// The game pipeline setup's address in the test world. No code runs there.
 pub(crate) const PIPELINE_SETUP: GameAddr = GameAddr::new(0x7FF6_0000_2000);
 
-/// The main view's atmosphere id.
+/// The id of the main view's active and target atmosphere records.
 pub(crate) const ATMOSPHERE_ID: i32 = 11;
 
-/// The main view's lighting id.
+/// The id of the main view's active and target lighting records.
 pub(crate) const LIGHTING_ID: i32 = 22;
 
 /// The main view's atmosphere and lighting request ids.
@@ -99,8 +99,14 @@ pub(crate) struct World {
     pub(crate) environment_ids: Block,
     pub(crate) id_pool: Block,
     pub(crate) scene: Block,
+    /// The main view's active atmosphere record.
     pub(crate) atmosphere: Block,
+    /// The main view's active lighting record.
     pub(crate) lighting: Block,
+    /// The main view's target atmosphere record.
+    pub(crate) atmosphere_target: Block,
+    /// The main view's target lighting record.
+    pub(crate) lighting_target: Block,
     pub(crate) main_occlusion: Block,
     pub(crate) eye_occlusion: Block,
     pub(crate) controller: Block,
@@ -137,16 +143,23 @@ impl World {
             scene: Block::new(0x10),
             atmosphere: Block::new(0x10),
             lighting: Block::new(0x10),
+            atmosphere_target: Block::new(0x10),
+            lighting_target: Block::new(0x10),
             main_occlusion: Block::new(0x90),
             eye_occlusion: Block::new(0x90),
             controller: Block::new(0x10),
             view_objects: [0, 1, 2, 3, 4, 5].map(|_| Block::new(0x10)),
         };
-        world.link_globals_and_vtables();
-        world.link_views();
-        world.link_frame(&[world.main.address(), world.eye.address(), world.special.address()]);
-        world.link_level();
+        world.link();
         world
+    }
+
+    /// Points every global, view, frame and level field at its object, as `new` leaves them.
+    pub(crate) fn link(&self) {
+        self.link_globals_and_vtables();
+        self.link_views();
+        self.link_frame(&[self.main.address(), self.eye.address(), self.special.address()]);
+        self.link_level();
     }
 
     fn link_globals_and_vtables(&self) {
@@ -174,10 +187,14 @@ impl World {
         self.scene.set(SCENE_ACTIVE, 1_u8);
         self.atmosphere.set(ENVIRONMENT_RECORD_ID, ATMOSPHERE_ID);
         self.lighting.set(ENVIRONMENT_RECORD_ID, LIGHTING_ID);
+        self.atmosphere_target.set(ENVIRONMENT_RECORD_ID, ATMOSPHERE_ID);
+        self.lighting_target.set(ENVIRONMENT_RECORD_ID, LIGHTING_ID);
         self.main.set(VIEW_WRITE_STATE_CONTROLLER, self.controller.address().get());
         self.main.set(VIEW_SCENE, self.scene.address().get());
         self.main.set(VIEW_ATMOSPHERE, self.atmosphere.address().get());
         self.main.set(VIEW_LIGHTING, self.lighting.address().get());
+        self.main.set(VIEW_ATMOSPHERE_TARGET, self.atmosphere_target.address().get());
+        self.main.set(VIEW_LIGHTING_TARGET, self.lighting_target.address().get());
         self.main.set(VIEW_ATMOSPHERE_REQUEST, ATMOSPHERE_REQUEST);
         self.main.set(VIEW_LIGHTING_REQUEST, LIGHTING_REQUEST);
         self.main.set(VIEW_OCCLUSION, self.main_occlusion.address().get());
@@ -253,147 +270,5 @@ impl World {
     /// The occlusion enabled byte of the main view and of the eye view.
     pub(crate) fn occlusion_bytes(&self) -> (u8, u8) {
         (self.main_occlusion.get(OCCLUSION_ENABLED), self.eye_occlusion.get(OCCLUSION_ENABLED))
-    }
-}
-
-/// A game call with its arguments, as the stand-in recorded it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Call {
-    MainFrame {
-        pipeline: GameAddr,
-    },
-    CreatePlayerView {
-        manager: GameAddr,
-        frame: GameAddr,
-    },
-    /// The pipeline setup, with the view's split-screen index at the call.
-    PipelineSetup {
-        pipeline: GameAddr,
-        view: GameAddr,
-        split_index: u8,
-    },
-    SetCamera {
-        view: GameAddr,
-        controller: GameAddr,
-    },
-    SetScene {
-        view: GameAddr,
-        scene: GameAddr,
-    },
-    AttachLevelAtmosphere {
-        view: GameAddr,
-        id: GameAddr,
-        request: i32,
-    },
-    AttachLevelLighting {
-        view: GameAddr,
-        id: GameAddr,
-        request: i32,
-    },
-    ReleaseId {
-        list: GameAddr,
-        id: i32,
-    },
-    SetAtmosphere {
-        view: GameAddr,
-        record: GameAddr,
-        request: i32,
-    },
-    SetLighting {
-        view: GameAddr,
-        record: GameAddr,
-        request: i32,
-    },
-    SetViewport {
-        view: GameAddr,
-        scale: [f32; 2],
-        offset: [f32; 2],
-    },
-}
-
-/// Stand-in game calls. Each records its call and makes no other change, except that the level
-/// atmosphere attach writes `level_request` into its request id, as the game may.
-pub(crate) struct Recorder {
-    pub(crate) calls: Vec<Call>,
-    /// What the main frame getter returns.
-    pub(crate) frame: GameAddr,
-    /// What `CreatePlayerView` returns.
-    pub(crate) created: GameAddr,
-    pub(crate) level_request: i32,
-}
-
-impl Recorder {
-    fn record(&mut self, call: Call) {
-        self.calls.push(call);
-    }
-
-    /// The recorded calls, which the next call starts afresh.
-    pub(crate) fn take(&mut self) -> Vec<Call> {
-        let calls = self.calls.clone();
-        self.calls.clear();
-        calls
-    }
-}
-
-impl GameMemory for Recorder {
-    fn writes(&self, address: GameAddr, len: usize) -> WriteDest<'_> {
-        test_dest(address, len)
-    }
-}
-
-impl CreateCalls for Recorder {
-    fn main_frame(&mut self, pipeline: Pipeline) -> GameAddr {
-        self.record(Call::MainFrame { pipeline: pipeline.address() });
-        self.frame
-    }
-
-    fn create_player_view(&mut self, manager: GameAddr, frame: RenderFrame) -> GameAddr {
-        self.record(Call::CreatePlayerView { manager, frame: frame.address() });
-        self.created
-    }
-
-    fn pipeline_setup(&mut self, pipeline: Pipeline, view: RenderView) {
-        let split_index = view.content().map_or(u8::MAX, |content| content.split_index);
-        let (pipeline, view) = (pipeline.address(), view.address());
-        self.record(Call::PipelineSetup { pipeline, view, split_index });
-    }
-}
-
-impl SetUpCalls for Recorder {
-    fn main_frame(&mut self, pipeline: Pipeline) -> GameAddr {
-        CreateCalls::main_frame(self, pipeline)
-    }
-
-    fn set_camera(&mut self, view: RenderView, controller: GameAddr) {
-        self.record(Call::SetCamera { view: view.address(), controller });
-    }
-
-    fn set_scene(&mut self, view: RenderView, scene: GameAddr) {
-        self.record(Call::SetScene { view: view.address(), scene });
-    }
-
-    fn attach_level_atmosphere(&mut self, view: RenderView, id: GameAddr, request: &mut i32) {
-        self.record(Call::AttachLevelAtmosphere { view: view.address(), id, request: *request });
-        *request = self.level_request;
-    }
-
-    fn attach_level_lighting(&mut self, view: RenderView, id: GameAddr, request: &mut i32) {
-        self.record(Call::AttachLevelLighting { view: view.address(), id, request: *request });
-    }
-
-    fn release_id(&mut self, list: GameAddr, id: &mut i32) {
-        self.record(Call::ReleaseId { list, id: *id });
-    }
-
-    fn set_atmosphere(&mut self, view: RenderView, record: GameAddr, request: &mut i32) {
-        self.record(Call::SetAtmosphere { view: view.address(), record, request: *request });
-    }
-
-    fn set_lighting(&mut self, view: RenderView, record: GameAddr, request: &mut i32) {
-        self.record(Call::SetLighting { view: view.address(), record, request: *request });
-    }
-
-    fn set_viewport(&mut self, view: RenderView, scale: [f32; 2], offset: [f32; 2]) {
-        self.record(Call::SetViewport { view: view.address(), scale, offset });
     }
 }

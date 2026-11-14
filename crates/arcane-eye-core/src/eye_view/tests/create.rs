@@ -13,7 +13,8 @@ use game_mem::GameAddr;
 use super::super::create::{CreateGuard, create};
 use super::super::decide::RETRY_PERIOD;
 use super::super::engine::Addresses;
-use super::super::test_support::{Call, Recorder, World};
+use super::super::recorder::{Call, Recorder};
+use super::super::test_support::World;
 use super::super::{EyeView, RenderState};
 
 const UNMAPPED: usize = 0x10;

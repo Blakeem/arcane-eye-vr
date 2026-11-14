@@ -22,7 +22,7 @@ use game_mem::{GameAddr, WriteDest, try_read};
 use hooks::{GameThread, HookError, MidHook, MidThunk, RenderThread};
 
 use crate::eye_view::EyeViewError;
-use crate::eye_view::engine::{Addresses, CreateCalls, GameMemory, SetUpCalls};
+use crate::eye_view::engine::{Addresses, Apply, CreateCalls, GameMemory, SetUpCalls};
 use crate::install::{GameCode, InstallError};
 
 type MainFrameFn = extern "system" fn(pipeline: usize) -> usize;
@@ -39,8 +39,7 @@ type SetViewportFn =
 /// The blend time the environment calls take, as the game's set-player-view-scene passes it.
 const NO_BLEND: f32 = 0.0;
 
-/// The flag byte the environment calls and `SetCamera` take, as the game's scene setup passes it to
-/// the level attaches and its level unload to `SetCamera`.
+/// The flag byte `SetCamera` takes, as the game's level unload passes it.
 const NO_FLAG: u8 = 0;
 
 /// The game functions the eye view feature calls, each at its address in the loaded game exe.
@@ -231,12 +230,24 @@ impl SetUpCalls for GameCalls<'_> {
         set_scene(view.address().get(), scene.get());
     }
 
-    fn attach_level_atmosphere(&mut self, view: RenderView, id: GameAddr, request: &mut i32) {
-        environment(self.fns.attach_level_atmosphere, view, id, request);
+    fn attach_level_atmosphere(
+        &mut self,
+        view: RenderView,
+        id: GameAddr,
+        request: &mut i32,
+        apply: Apply,
+    ) {
+        environment(self.fns.attach_level_atmosphere, view, id, request, apply);
     }
 
-    fn attach_level_lighting(&mut self, view: RenderView, id: GameAddr, request: &mut i32) {
-        environment(self.fns.attach_level_lighting, view, id, request);
+    fn attach_level_lighting(
+        &mut self,
+        view: RenderView,
+        id: GameAddr,
+        request: &mut i32,
+        apply: Apply,
+    ) {
+        environment(self.fns.attach_level_lighting, view, id, request, apply);
     }
 
     fn release_id(&mut self, list: GameAddr, id: &mut i32) {
@@ -245,12 +256,24 @@ impl SetUpCalls for GameCalls<'_> {
         release(list.get(), id);
     }
 
-    fn set_atmosphere(&mut self, view: RenderView, record: GameAddr, request: &mut i32) {
-        environment(self.fns.set_atmosphere, view, record, request);
+    fn set_atmosphere(
+        &mut self,
+        view: RenderView,
+        record: GameAddr,
+        request: &mut i32,
+        apply: Apply,
+    ) {
+        environment(self.fns.set_atmosphere, view, record, request, apply);
     }
 
-    fn set_lighting(&mut self, view: RenderView, record: GameAddr, request: &mut i32) {
-        environment(self.fns.set_lighting, view, record, request);
+    fn set_lighting(
+        &mut self,
+        view: RenderView,
+        record: GameAddr,
+        request: &mut i32,
+        apply: Apply,
+    ) {
+        environment(self.fns.set_lighting, view, record, request, apply);
     }
 
     fn set_viewport(&mut self, view: RenderView, scale: [f32; 2], offset: [f32; 2]) {
@@ -261,13 +284,19 @@ impl SetUpCalls for GameCalls<'_> {
     }
 }
 
-/// Calls one of the four environment functions, which share one signature, with no blend and no
-/// flag.
-fn environment(function_address: usize, view: RenderView, source: GameAddr, request: &mut i32) {
+/// Calls one of the four environment functions, which share one signature, with no blend time and
+/// the flag byte of `apply`.
+fn environment(
+    function_address: usize,
+    view: RenderView,
+    source: GameAddr,
+    request: &mut i32,
+    apply: Apply,
+) {
     // SAFETY: `function_address` is the match of `view_attach_level_atmosphere`,
     // `view_attach_level_lighting`, `view_set_atmosphere` or `view_set_lighting`, which all take a
     // view, a source pointer, an `i32` pointer, an `f32` and a byte. The feature checked the view's
-    // lock bytes and the source pointer.
+    // lock bytes and that the source is not null, and read a setter's source record id first.
     let call = unsafe { function::<EnvironmentFn>(function_address) };
-    call(view.address().get(), source.get(), request, NO_BLEND, NO_FLAG);
+    call(view.address().get(), source.get(), request, NO_BLEND, apply.flag());
 }

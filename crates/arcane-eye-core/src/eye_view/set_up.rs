@@ -11,7 +11,7 @@ use game_bindings::render_view::{Environment, RenderView, ViewContent};
 use game_mem::{GameAddr, try_read};
 
 use super::decide::{Observed, Stale, readiness};
-use super::engine::{Addresses, Held, SetUpCalls};
+use super::engine::{Addresses, Apply, Held, SetUpCalls};
 
 /// The request id that names no request, which the game's own scene setup passes to the level
 /// attaches.
@@ -49,6 +49,10 @@ pub(crate) enum SetUpGuard {
     AtmosphereLocked,
     #[error("the eye view's lighting lock is set")]
     LightingLocked,
+    #[error("the main view's atmosphere target is null")]
+    NoMainAtmosphereTarget,
+    #[error("the main view's lighting target is null")]
+    NoMainLightingTarget,
 }
 
 /// The content of the main view and of the eye view in one frame.
@@ -120,14 +124,15 @@ pub(crate) fn observe(
     Ok(Update { observed, main, contents: Some(contents) })
 }
 
-/// One environment step pair: the level attach (step 10 or 11) and the main view's record (step 12
-/// or 13).
+/// One environment step pair: the level attach (step 10 or 11) and the main view's target record
+/// (step 12 or 13).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct EnvironmentSteps {
     /// The level's environment id that the attach takes.
     level_id: GameAddr,
-    /// The main view's record that the setter takes.
-    record: GameAddr,
+    /// The main view's target record that the setter takes. The main view's active record holds
+    /// default fog layers, and only its target holds the level's.
+    target: GameAddr,
     /// The main view's request id that the setter stores. The renderer picks a view's environment
     /// probe by its atmosphere request id, so -1 would leave the eye view with no probe.
     request: i32,
@@ -172,8 +177,8 @@ pub(crate) fn plan(addresses: &Addresses, contents: &Contents) -> Result<SetUpPl
         plan.camera = Some(main.controller);
     }
     let needs_scene = eye.scene != main.scene;
-    let needs_atmosphere = eye.atmosphere.id != main.atmosphere.id;
-    let needs_lighting = eye.lighting.id != main.lighting.id;
+    let needs_atmosphere = eye.atmosphere.active_id != main.atmosphere.active_id;
+    let needs_lighting = eye.lighting.active_id != main.lighting.active_id;
     if !(needs_scene || needs_atmosphere || needs_lighting) {
         return Ok(plan);
     }
@@ -188,12 +193,18 @@ pub(crate) fn plan(addresses: &Addresses, contents: &Contents) -> Result<SetUpPl
         if eye.atmosphere_lock != 0 {
             return Err(SetUpGuard::AtmosphereLocked);
         }
+        if main.atmosphere.target_id.is_none() {
+            return Err(SetUpGuard::NoMainAtmosphereTarget);
+        }
         plan.atmosphere = Some(environment_steps(&level, LEVEL_ATMOSPHERE_ID, &main.atmosphere)?);
         plan.release_list = Some(release_list(addresses)?);
     }
     if needs_lighting {
         if eye.lighting_lock != 0 {
             return Err(SetUpGuard::LightingLocked);
+        }
+        if main.lighting.target_id.is_none() {
+            return Err(SetUpGuard::NoMainLightingTarget);
         }
         plan.lighting = Some(environment_steps(&level, LEVEL_LIGHTING_ID, &main.lighting)?);
     }
@@ -210,7 +221,7 @@ pub(crate) fn run(calls: &mut impl SetUpCalls, eye: RenderView, plan: &SetUpPlan
     }
     if let Some(steps) = plan.atmosphere {
         let mut level_request = NO_REQUEST;
-        calls.attach_level_atmosphere(eye, steps.level_id, &mut level_request);
+        calls.attach_level_atmosphere(eye, steps.level_id, &mut level_request, Apply::AfterBlend);
         if level_request != NO_REQUEST
             && let Some(list) = plan.release_list
         {
@@ -219,15 +230,16 @@ pub(crate) fn run(calls: &mut impl SetUpCalls, eye: RenderView, plan: &SetUpPlan
     }
     if let Some(steps) = plan.lighting {
         let mut level_request = NO_REQUEST;
-        calls.attach_level_lighting(eye, steps.level_id, &mut level_request);
+        calls.attach_level_lighting(eye, steps.level_id, &mut level_request, Apply::AfterBlend);
     }
+    // The level attaches start a blend, which would delay an `AfterBlend` source to a later tick.
     if let Some(steps) = plan.atmosphere {
         let mut request = steps.request;
-        calls.set_atmosphere(eye, steps.record, &mut request);
+        calls.set_atmosphere(eye, steps.target, &mut request, Apply::AtOnce);
     }
     if let Some(steps) = plan.lighting {
         let mut request = steps.request;
-        calls.set_lighting(eye, steps.record, &mut request);
+        calls.set_lighting(eye, steps.target, &mut request, Apply::AtOnce);
     }
 }
 
@@ -247,7 +259,7 @@ fn environment_steps(
     }
     let level_id =
         level.environment_ids.checked_add(id_offset).ok_or(SetUpGuard::NoLevelEnvironment)?;
-    Ok(EnvironmentSteps { level_id, record: main.record, request: main.request })
+    Ok(EnvironmentSteps { level_id, target: main.target, request: main.request })
 }
 
 fn release_list(addresses: &Addresses) -> Result<GameAddr, SetUpGuard> {

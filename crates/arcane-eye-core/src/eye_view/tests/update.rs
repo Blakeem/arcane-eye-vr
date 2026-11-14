@@ -5,16 +5,17 @@ use std::time::Instant;
 
 use game_bindings::offsets::{
     FRAME_VIEW_COUNT, ID_POOL_RELEASE_LIST, LEVEL_ATMOSPHERE_ID, LEVEL_ENVIRONMENT_IDS,
-    LEVEL_LIGHTING_ID, LEVEL_SCENE, PIPELINE_MAIN_VIEW, VIEW_ATMOSPHERE_LOCK, VIEW_LIGHTING_LOCK,
-    VIEW_OCCLUSION, VIEW_SCENE, VIEW_SPLIT_INDEX, VIEW_SPLIT_SIDE, VIEW_WRITE_STATE_CONTROLLER,
-    VIEW_WRITE_STATE_ENABLED,
+    LEVEL_LIGHTING_ID, LEVEL_SCENE, PIPELINE_MAIN_VIEW, VIEW_ATMOSPHERE_LOCK,
+    VIEW_ATMOSPHERE_TARGET, VIEW_LIGHTING_LOCK, VIEW_LIGHTING_TARGET, VIEW_OCCLUSION, VIEW_SCENE,
+    VIEW_SPLIT_INDEX, VIEW_SPLIT_SIDE, VIEW_WRITE_STATE_CONTROLLER, VIEW_WRITE_STATE_ENABLED,
 };
 use game_bindings::state::arm_alloc_guard;
 use game_mem::GameAddr;
 
 use super::super::decide::RETRY_PERIOD;
 use super::super::place::{Placement, eye_place, main_place};
-use super::super::test_support::{ATMOSPHERE_REQUEST, Call, LIGHTING_REQUEST, Recorder, World};
+use super::super::recorder::{Call, Recorder};
+use super::super::test_support::{ATMOSPHERE_REQUEST, LIGHTING_REQUEST, World};
 use super::super::{EyeView, Layout, RenderState};
 use diag::health::{Feature, Health};
 
@@ -68,17 +69,29 @@ fn a_fresh_eye_view_gets_steps_8_to_13_in_order_then_the_full_frame() {
         main_frame(&world),
         Call::SetCamera { view: eye, controller: world.controller.address() },
         Call::SetScene { view: eye, scene: world.scene.address() },
-        Call::AttachLevelAtmosphere { view: eye, id: at(ids, LEVEL_ATMOSPHERE_ID), request: -1 },
-        Call::AttachLevelLighting { view: eye, id: at(ids, LEVEL_LIGHTING_ID), request: -1 },
+        Call::AttachLevelAtmosphere {
+            view: eye,
+            id: at(ids, LEVEL_ATMOSPHERE_ID),
+            request: -1,
+            flag: 0,
+        },
+        Call::AttachLevelLighting {
+            view: eye,
+            id: at(ids, LEVEL_LIGHTING_ID),
+            request: -1,
+            flag: 0,
+        },
         Call::SetAtmosphere {
             view: eye,
-            record: world.atmosphere.address(),
+            record: world.atmosphere_target.address(),
             request: ATMOSPHERE_REQUEST,
+            flag: 1,
         },
         Call::SetLighting {
             view: eye,
-            record: world.lighting.address(),
+            record: world.lighting_target.address(),
             request: LIGHTING_REQUEST,
+            flag: 1,
         },
     ];
     expected.extend(placed(&world, Placement::FullFrame));
@@ -117,10 +130,12 @@ fn a_step_whose_value_already_matches_makes_no_call() {
 
 #[test]
 fn a_failed_set_up_guard_makes_no_set_up_call_and_waits_one_second() {
-    let cases: [(&str, Change); 6] = [
+    let cases: [(&str, Change); 8] = [
         ("split index", |world| world.eye.set(VIEW_SPLIT_INDEX, 1_u8)),
         ("atmosphere lock", |world| world.eye.set(VIEW_ATMOSPHERE_LOCK, 1_u8)),
         ("lighting lock", |world| world.eye.set(VIEW_LIGHTING_LOCK, 1_u8)),
+        ("no atmosphere target", |world| world.main.set(VIEW_ATMOSPHERE_TARGET, 0_usize)),
+        ("no lighting target", |world| world.main.set(VIEW_LIGHTING_TARGET, 0_usize)),
         ("level scene", |world| world.level.set(LEVEL_SCENE, 0x20_usize)),
         ("no level environment", |world| world.environment.set(LEVEL_ENVIRONMENT_IDS, 0_usize)),
         ("no id pool", |world| world.id_pool_global.set(0, 0_usize)),
@@ -134,10 +149,13 @@ fn a_failed_set_up_guard_makes_no_set_up_call_and_waits_one_second() {
         let mut expected = vec![main_frame(&world)];
         expected.extend(placed(&world, Placement::FullFrame));
         assert_eq!(update(&view, &world, &mut recorder, start), expected, "{name}");
+        world.link();
         world.eye.set(VIEW_SPLIT_INDEX, 0_u8);
         world.eye.set(VIEW_ATMOSPHERE_LOCK, 0_u8);
         world.eye.set(VIEW_LIGHTING_LOCK, 0_u8);
         assert_eq!(update(&view, &world, &mut recorder, start), expected, "{name} waits");
+        let retry = update(&view, &world, &mut recorder, start + RETRY_PERIOD);
+        assert_ne!(retry, expected, "{name} sets up after the wait");
     }
 }
 
@@ -282,9 +300,11 @@ fn a_stale_eye_view_is_forgotten_and_the_main_view_gets_the_entire_frame() {
 
 #[test]
 fn a_failed_read_makes_no_call_after_the_main_frame_and_keeps_the_eye_view() {
-    let cases: [(&str, Change); 2] = [
+    let cases: [(&str, Change); 4] = [
         ("view list", |world| world.frame.set(FRAME_VIEW_COUNT, u32::MAX)),
         ("eye content", |world| world.eye.set(VIEW_SCENE, UNMAPPED)),
+        ("main atmosphere target", |world| world.main.set(VIEW_ATMOSPHERE_TARGET, UNMAPPED)),
+        ("main lighting target", |world| world.main.set(VIEW_LIGHTING_TARGET, UNMAPPED)),
     ];
     for (name, break_world) in cases {
         let world = World::new();

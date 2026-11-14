@@ -105,14 +105,14 @@ pub(crate) fn readiness(main: &ViewContent, eye: &ViewContent) -> Readiness {
     let main_set = main.controller.get() != 0
         && main.scene.get() != 0
         && main.scene_active != 0
-        && main.atmosphere.id.is_some()
-        && main.lighting.id.is_some();
+        && main.atmosphere.active_id.is_some()
+        && main.lighting.active_id.is_some();
     if !main_set {
         return Readiness::MainUnset;
     }
     let same = eye.controller == main.controller
         && eye.scene == main.scene
-        && eye.atmosphere.id == main.atmosphere.id
-        && eye.lighting.id == main.lighting.id;
+        && eye.atmosphere.active_id == main.atmosphere.active_id
+        && eye.lighting.active_id == main.lighting.active_id;
     if same { Readiness::Ready } else { Readiness::NeedsSetUp }
 }

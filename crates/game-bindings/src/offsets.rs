@@ -102,12 +102,19 @@ pub const VIEW_SPLIT_INDEX: usize = 0x2268;
 /// The split-screen side of a render view, one `i32`. 0 is the left half and 1 the right half.
 pub const VIEW_SPLIT_SIDE: usize = 0x226C;
 
+/// The target atmosphere record pointer of a render view. The atmosphere setter copies its source
+/// record into this record.
+pub const VIEW_ATMOSPHERE_TARGET: usize = 0x2880;
+
 /// The atmosphere request id of a render view, one `i32`, which the atmosphere setter stores. The
 /// renderer's cull stage picks the view's environment probe by it.
 pub const VIEW_ATMOSPHERE_REQUEST: usize = 0x2888;
 
 /// The active atmosphere record pointer of a render view.
 pub const VIEW_ATMOSPHERE: usize = 0x28A0;
+
+/// The target lighting record pointer of a render view, in the role of [`VIEW_ATMOSPHERE_TARGET`].
+pub const VIEW_LIGHTING_TARGET: usize = 0x28B8;
 
 /// The lighting request id of a render view, one `i32`, which the lighting setter stores.
 pub const VIEW_LIGHTING_REQUEST: usize = 0x28C0;

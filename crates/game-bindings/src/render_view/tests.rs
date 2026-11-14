@@ -9,9 +9,10 @@ use crate::offsets::{
     CONTROLLER_SIZE, CONTROLLER_VIEW, CONTROLLER_VTABLE_SLOTS, CONTROLLER_WORLD_TRANSLATE_SLOT,
     ENVIRONMENT_RECORD_ID, PER_CAMERA_FAR, PER_CAMERA_NEAR, PER_CAMERA_POSITION,
     PER_CAMERA_PROJECTION, PER_CAMERA_VIEW, SCENE_ACTIVE, VIEW_ATMOSPHERE, VIEW_ATMOSPHERE_LOCK,
-    VIEW_ATMOSPHERE_REQUEST, VIEW_JOB_CONTEXT, VIEW_LAST_SEEN_CONTROLLER, VIEW_LIGHTING_LOCK,
-    VIEW_LIGHTING_REQUEST, VIEW_OCCLUSION, VIEW_PER_CAMERA, VIEW_READ_STATE_CONTROLLER, VIEW_SCENE,
-    VIEW_SPLIT_INDEX, VIEW_STAGE_ARRAY, VIEW_STAGE_OWNER, VIEW_WRITE_STATE_CONTROLLER,
+    VIEW_ATMOSPHERE_REQUEST, VIEW_ATMOSPHERE_TARGET, VIEW_JOB_CONTEXT, VIEW_LAST_SEEN_CONTROLLER,
+    VIEW_LIGHTING_LOCK, VIEW_LIGHTING_REQUEST, VIEW_LIGHTING_TARGET, VIEW_OCCLUSION,
+    VIEW_PER_CAMERA, VIEW_READ_STATE_CONTROLLER, VIEW_SCENE, VIEW_SPLIT_INDEX, VIEW_STAGE_ARRAY,
+    VIEW_STAGE_OWNER, VIEW_WRITE_STATE_CONTROLLER,
 };
 
 /// Windows reserves the lowest 64 KiB of every process, so no read there succeeds.
@@ -145,14 +146,16 @@ fn a_view_yields_its_content_with_the_scene_byte_and_the_environment_and_request
     let mut scene = vec![0_u8; 0x10];
     scene[SCENE_ACTIVE] = 1;
     let scene = black_box(scene);
-    let mut atmosphere = vec![0_u8; 0x10];
-    put(&mut atmosphere, ENVIRONMENT_RECORD_ID, &17_i32.to_ne_bytes());
-    let atmosphere = black_box(atmosphere);
+    let atmosphere = black_box(record(17));
+    let atmosphere_target = black_box(record(18));
+    let lighting_target = black_box(record(23));
     let mut view = vec![0_u8; VIEW_LEN];
     put(&mut view, VIEW_WRITE_STATE_CONTROLLER, &CONTROLLER.to_ne_bytes());
     put(&mut view, VIEW_SCENE, &address_of(&scene).get().to_ne_bytes());
     put(&mut view, VIEW_ATMOSPHERE, &address_of(&atmosphere).get().to_ne_bytes());
+    put(&mut view, VIEW_ATMOSPHERE_TARGET, &address_of(&atmosphere_target).get().to_ne_bytes());
     put(&mut view, VIEW_ATMOSPHERE_REQUEST, &33_i32.to_ne_bytes());
+    put(&mut view, VIEW_LIGHTING_TARGET, &address_of(&lighting_target).get().to_ne_bytes());
     put(&mut view, VIEW_LIGHTING_REQUEST, &(-1_i32).to_ne_bytes());
     view[VIEW_SPLIT_INDEX] = 1;
     view[VIEW_ATMOSPHERE_LOCK] = 2;
@@ -162,8 +165,18 @@ fn a_view_yields_its_content_with_the_scene_byte_and_the_environment_and_request
         controller: GameAddr::new(CONTROLLER),
         scene: address_of(&scene),
         scene_active: 1,
-        atmosphere: Environment { record: address_of(&atmosphere), id: Some(17), request: 33 },
-        lighting: Environment { record: GameAddr::new(0), id: None, request: -1 },
+        atmosphere: Environment {
+            active_id: Some(17),
+            target: address_of(&atmosphere_target),
+            target_id: Some(18),
+            request: 33,
+        },
+        lighting: Environment {
+            active_id: None,
+            target: address_of(&lighting_target),
+            target_id: Some(23),
+            request: -1,
+        },
         split_index: 1,
         atmosphere_lock: 2,
         lighting_lock: 3,
@@ -177,4 +190,24 @@ fn a_null_scene_reads_as_an_inactive_scene() {
     let view = black_box(vec![0_u8; VIEW_LEN]);
     let content = RenderView::new(address_of(&view)).content().expect("a readable view");
     assert_eq!((content.scene, content.scene_active), (GameAddr::new(0), 0));
+}
+
+#[test]
+fn a_null_target_record_has_no_id_and_an_unmapped_one_yields_no_content() {
+    let null_targets = black_box(vec![0_u8; VIEW_LEN]);
+    let content = RenderView::new(address_of(&null_targets)).content().expect("a readable view");
+    assert_eq!((content.atmosphere.target_id, content.lighting.target_id), (None, None));
+    for target_offset in [VIEW_ATMOSPHERE_TARGET, VIEW_LIGHTING_TARGET] {
+        let mut view = vec![0_u8; VIEW_LEN];
+        put(&mut view, target_offset, &UNMAPPED.get().to_ne_bytes());
+        let view = black_box(view);
+        assert_eq!(RenderView::new(address_of(&view)).content(), None, "{target_offset:#X}");
+    }
+}
+
+/// An environment record whose id is `id`.
+fn record(id: i32) -> Vec<u8> {
+    let mut record = vec![0_u8; 0x10];
+    put(&mut record, ENVIRONMENT_RECORD_ID, &id.to_ne_bytes());
+    record
 }
