@@ -145,7 +145,8 @@ fn open_status(token_name: &str) -> Option<StatusView> {
 mod tests {
     use super::{InitError, InitStatus, guarded, open_status, run, start};
     use crate::context::CoreContext;
-    use crate::raw::test_support::{TestMapping, test_dir};
+    use crate::raw::test_support::TestMapping;
+    use crate::test_dir::TestDir;
     use diag::health::{Feature, FeatureState};
     use diag::logging::{LogError, LogName};
     use game_bindings::state::{self, StateError};
@@ -155,8 +156,8 @@ mod tests {
 
     #[test]
     fn start_writes_the_start_line_to_the_session_log() {
-        let dir = test_dir("start");
-        let core = start(Mode::DesktopStereo, &dir).expect("start");
+        let dir = TestDir::new("start");
+        let core = start(Mode::DesktopStereo, dir.path()).expect("start");
         let file_path = core.log.file_path().to_path_buf();
         core.log.shutdown().expect("the writer ends cleanly");
         let text = fs::read_to_string(&file_path).expect("read the session log");
@@ -167,15 +168,15 @@ mod tests {
         assert!(line.contains(" mode=desktop-stereo "), "{line}");
         let escaped_path = file_path.display().to_string().replace('\\', "\\\\");
         assert!(line.ends_with(&format!(" log_file=\"{escaped_path}\"")), "{line}");
-        assert_eq!(file_path, dir.join("arcane-eye-vr.log"));
-        fs::remove_dir_all(&dir).expect("remove the test folder");
+        assert_eq!(file_path, dir.path().join("arcane-eye-vr.log"));
     }
 
     /// The only test that sets the process-wide subscriber and fills the slot, since each takes one
     /// value per process. The test exe holds no Present call site, so the run reports status 12.
     #[test]
     fn second_run_returns_already_running_and_a_taken_subscriber_maps_to_code_3() {
-        let dir = test_dir("second-run");
+        let folder = TestDir::new("second-run");
+        let dir = folder.path().to_path_buf();
         let mapping = TestMapping::create("second-run");
         run(1, || Ok(dir.clone()), &mapping.name).expect("the first run starts the core");
         assert_eq!(mapping.status(), Status::SignatureFailure as u32);
@@ -194,7 +195,8 @@ mod tests {
 
     #[test]
     fn an_unknown_mode_fails_with_code_6_and_starts_nothing() {
-        let dir = test_dir("unknown-mode");
+        let folder = TestDir::new("unknown-mode");
+        let dir = folder.path().join("logs");
         let mapping = TestMapping::create("unknown-mode");
         let result = run(7, || Ok(dir.clone()), &mapping.name);
         assert!(matches!(result, Err(InitError::Mode(UnknownMode(7)))), "{result:?}");
@@ -207,15 +209,14 @@ mod tests {
 
     #[test]
     fn failed_init_logs_its_code_and_cause_through_the_current_subscriber() {
-        let dir = test_dir("failure-line");
-        let logging = diag::logging::start(&dir, LogName::Core).expect("start logging");
+        let dir = TestDir::new("failure-line");
+        let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
         let code = dispatcher::with_default(&logging.dispatch, || {
             guarded(|| Err(InitError::AlreadyRunning))
         });
         let file_path = logging.handle.file_path().to_path_buf();
         logging.handle.shutdown().expect("the writer ends cleanly");
         let text = fs::read_to_string(&file_path).expect("read the session log");
-        fs::remove_dir_all(&dir).expect("remove the test folder");
         assert_eq!(code, 1);
         let line = text.lines().next().expect("the failure line");
         assert!(line.contains(" WARN  "), "{line}");
@@ -227,15 +228,14 @@ mod tests {
 
     #[test]
     fn a_token_that_fails_to_open_reports_no_status_and_logs_its_cause() {
-        let dir = test_dir("status-open-failure");
-        let logging = diag::logging::start(&dir, LogName::Core).expect("start logging");
+        let dir = TestDir::new("status-open-failure");
+        let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
         let status = dispatcher::with_default(&logging.dispatch, || {
             open_status(r"NoSuchNamespace\arcane-eye-vr-launch")
         });
         let file_path = logging.handle.file_path().to_path_buf();
         logging.handle.shutdown().expect("the writer ends cleanly");
         let text = fs::read_to_string(&file_path).expect("read the session log");
-        fs::remove_dir_all(&dir).expect("remove the test folder");
         assert!(status.is_none(), "a token that failed to open");
         let line = text.lines().next().expect("the failure line");
         assert!(line.contains(" WARN  "), "{line}");

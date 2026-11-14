@@ -15,5 +15,9 @@ thiserror.workspace = true
 tracing.workspace = true
 viewer-client = { path = "../viewer-client" }
 
+[dev-dependencies.windows]
+workspace = true
+features = ["Win32_System_Threading"]
+
 [lints]
 workspace = true

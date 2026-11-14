@@ -11,8 +11,9 @@ use ipc_layout::perf_line::{self, PerfSummary};
 use super::{FrameReport, FrameState, on_frame, record_interval};
 use crate::raw::{
     self,
-    test_support::{FORMAT, TestSwapchain, TestViewer, test_dir, test_view_names},
+    test_support::{FORMAT, TestSwapchain, TestViewer, test_view_names},
 };
+use crate::test_dir::TestDir;
 use crate::viewer::ViewerLink;
 
 /// A frame state whose viewer link uses names of its own, and those names.
@@ -24,13 +25,12 @@ fn test_state(test: &str) -> (FrameState, ViewNames) {
 
 /// Runs `frames` under a session log of its own and returns the log's lines.
 fn log_lines(name: &str, frames: impl FnOnce()) -> Vec<String> {
-    let dir = test_dir(name);
-    let logging = diag::logging::start(&dir, LogName::Core).expect("start logging");
+    let dir = TestDir::new(name);
+    let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
     tracing::dispatcher::with_default(&logging.dispatch, frames);
     let file_path = logging.handle.file_path().to_path_buf();
     logging.handle.shutdown().expect("the writer ends cleanly");
     let text = fs::read_to_string(&file_path).expect("read the session log");
-    fs::remove_dir_all(&dir).expect("remove the test folder");
     text.lines().map(str::to_owned).collect()
 }
 

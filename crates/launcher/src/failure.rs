@@ -1,9 +1,9 @@
 //! Every way a launch fails. The player reads each message in a message box, so it names the cause
 //! and the fix.
 
-use std::error::Error;
 use std::time::Duration;
 
+use diag::error_chain::chain;
 use diag::logging::LogError;
 use ipc_layout::launch_token::{Status, TokenError};
 use launch::checks::{GameRunning, RuntimeError};
@@ -166,21 +166,9 @@ fn timeout_text(timeout: Duration) -> String {
     format!("{count} {unit}{plural}")
 }
 
-/// `error` and each error below it, joined by ": ", since a message box shows no source chain.
-fn chain(error: &dyn Error) -> String {
-    let mut text = error.to_string();
-    let mut source = error.source();
-    while let Some(cause) = source {
-        text.push_str(": ");
-        text.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    text
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Failure, chain, timeout_text};
+    use super::{Failure, timeout_text};
     use diag::logging::LogError;
     use ipc_layout::launch_token::{Status, TokenError};
     use launch::checks::{GameRunning, RuntimeError};
@@ -201,11 +189,6 @@ mod tests {
         assert!(matches!(Failure::from(TokenCreateError::Exists), Failure::TokenExists));
         let create = TokenCreateError::Create(windows::core::Error::empty());
         assert!(matches!(Failure::from(create), Failure::TokenCreate(_)));
-    }
-
-    #[test]
-    fn chain_joins_each_cause_below_the_error() {
-        assert_eq!(chain(&log_error()), r"could not create the log folder C:\logs: access denied");
     }
 
     #[test]

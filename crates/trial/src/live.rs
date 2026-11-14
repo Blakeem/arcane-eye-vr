@@ -150,20 +150,7 @@ impl Game for LiveGame {
 
     fn close(&mut self) -> Result<Closed, StepError> {
         let pid = self.game()?.child.id();
-        match stop::close(pid, CLOSE_TIMEOUT) {
-            Ok(ProcessState::Exited) => Ok(Closed::Exited),
-            Ok(ProcessState::Running) => {
-                stop::end(pid)?;
-                Ok(Closed::Forced { waited: CLOSE_TIMEOUT })
-            }
-            Err(error) => {
-                // The game may still run, so it is ended before the close step fails.
-                if let Err(end_error) = stop::end(pid) {
-                    warn!(pid, error = %end_error, "the game could not be ended after a failed close");
-                }
-                Err(error.into())
-            }
-        }
+        close_game(pid, CLOSE_TIMEOUT)
     }
 
     fn copy_log(&mut self, to: &Path) -> Result<(), StepError> {
@@ -171,6 +158,25 @@ impl Game for LiveGame {
         match fs::copy(&from, to) {
             Ok(_bytes) => Ok(()),
             Err(source) => Err(StepError::Copy { from, to: to.to_path_buf(), source }),
+        }
+    }
+}
+
+/// Asks the game process `pid` to close, waits up to `timeout` for it to exit and ends it when it
+/// still runs.
+fn close_game(pid: u32, timeout: Duration) -> Result<Closed, StepError> {
+    match stop::close(pid, timeout) {
+        Ok(ProcessState::Exited) => Ok(Closed::Exited),
+        Ok(ProcessState::Running) => {
+            stop::end(pid)?;
+            Ok(Closed::Forced { waited: timeout })
+        }
+        Err(error) => {
+            // The game may still run, so it is ended before the close step fails.
+            if let Err(end_error) = stop::end(pid) {
+                warn!(pid, error = %end_error, "the game could not be ended after a failed close");
+            }
+            Err(error.into())
         }
     }
 }
@@ -226,91 +232,4 @@ fn wait(time: Duration) {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::env;
-    use std::fs;
-    use std::path::Path;
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant, SystemTime};
-
-    use super::{LiveGame, MOD_FILES, Started, core_log_in, missing_files, wait};
-    use crate::args::Settings;
-    use crate::steps::{Closed, Game, Step, StepError};
-    use crate::test_dir::TestDir;
-
-    #[test]
-    fn a_step_whose_earlier_step_did_not_pass_names_that_step() {
-        let mut game = LiveGame::new(&Settings::default());
-        assert!(matches!(game.start(), Err(StepError::Needs(Step::Check))));
-        assert!(matches!(game.wait_first_present(), Err(StepError::Needs(Step::Token))));
-        assert!(matches!(game.exit_status(), Err(StepError::Needs(Step::Start))));
-        assert!(matches!(game.perf_window(1), Err(StepError::Needs(Step::Start))));
-        assert!(matches!(game.close(), Err(StepError::Needs(Step::Start))));
-        let copy = game.copy_log(Path::new("copy.log"));
-        assert!(matches!(copy, Err(StepError::Needs(Step::Start))));
-        let message = StepError::Needs(Step::Check).to_string();
-        assert_eq!(message, "the check step did not pass first");
-    }
-
-    #[test]
-    fn a_game_that_exited_reports_its_exit_status_and_passes_the_close() {
-        // This test binary with a filter that matches no test exits at once with code 0.
-        let mut child = Command::new(env::current_exe().expect("the test binary path"))
-            .args(["--exact", "no-such-test"])
-            .stdout(Stdio::null())
-            .spawn()
-            .expect("start the stand-in game");
-        child.wait().expect("the stand-in game's exit");
-        let mut game = LiveGame::new(&Settings::default());
-        game.game = Some(Started { child, at: SystemTime::now() });
-        let status = game.exit_status().expect("an exit status").expect("an exited game");
-        assert_eq!(status.code(), Some(0));
-        assert!(matches!(game.close(), Ok(Closed::Exited)));
-    }
-
-    #[test]
-    fn a_bin_folder_lacking_a_mod_file_names_each_missing_file() {
-        let dir = TestDir::new("mod-files");
-        let bin = dir.path();
-        assert_eq!(missing_files(bin, &MOD_FILES), ["version.dll", "arcane_eye_core.dll"]);
-        fs::write(bin.join("version.dll"), "").expect("write the proxy stand-in");
-        assert_eq!(missing_files(bin, &MOD_FILES), ["arcane_eye_core.dll"]);
-        fs::create_dir(bin.join("arcane_eye_core.dll")).expect("a folder in the core's place");
-        assert_eq!(missing_files(bin, &MOD_FILES), ["arcane_eye_core.dll"]);
-        fs::remove_dir(bin.join("arcane_eye_core.dll")).expect("remove the folder");
-        fs::write(bin.join("arcane_eye_core.dll"), "").expect("write the core stand-in");
-        assert_eq!(missing_files(bin, &MOD_FILES), [""; 0]);
-    }
-
-    #[test]
-    fn a_core_log_written_before_the_game_started_is_no_core_log() {
-        let dir = TestDir::new("core-log");
-        let log_dir = dir.path();
-        let started = SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(10)).expect("a time");
-        let earlier = SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(9)).expect("a time");
-        let in_empty_folder = core_log_in(log_dir, 7, started);
-        let log = fs::File::create(log_dir.join("arcane-eye-vr.log")).expect("create a core log");
-        log.set_modified(earlier).expect("set the write time");
-        let beside_earlier_session = core_log_in(log_dir, 7, started);
-        log.set_modified(started).expect("set the write time");
-        let beside_this_session = core_log_in(log_dir, 7, started).expect("this session's log");
-        drop(log);
-        for result in [in_empty_folder, beside_earlier_session] {
-            let error = result.expect_err("no session log of this game");
-            assert!(matches!(&error, StepError::NoCoreLog { log_dir: named } if named == log_dir));
-            let expected = format!(
-                "the core wrote no session log in {} after the game started",
-                log_dir.display()
-            );
-            assert_eq!(error.to_string(), expected);
-        }
-        assert_eq!(beside_this_session, log_dir.join("arcane-eye-vr.log"));
-    }
-
-    #[test]
-    fn a_wait_lasts_at_least_its_time() {
-        let started = Instant::now();
-        wait(Duration::from_millis(30));
-        assert!(started.elapsed() >= Duration::from_millis(30));
-    }
-}
+mod tests;

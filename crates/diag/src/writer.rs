@@ -190,18 +190,18 @@ mod tests {
     use super::{Clock, SESSION_CAP_BYTES, Session};
     use crate::raw;
     use crate::ring::{LogRing, SLOT_COUNT};
+    use crate::test_dir::TestDir;
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    /// A session that writes to a new file named `name` in the temporary folder.
-    fn session(name: &str) -> (Session, PathBuf) {
-        capped_session(name, SESSION_CAP_BYTES)
+    /// A session that writes to a new file in `dir`, and the file's path.
+    fn session(dir: &TestDir) -> (Session, PathBuf) {
+        capped_session(dir, SESSION_CAP_BYTES)
     }
 
     /// A session as [`session`] makes it, which skips lines below warn after `cap` bytes.
-    fn capped_session(name: &str, cap: u64) -> (Session, PathBuf) {
-        let path =
-            std::env::temp_dir().join(format!("arcane-eye-diag-{}-{name}.log", std::process::id()));
+    fn capped_session(dir: &TestDir, cap: u64) -> (Session, PathBuf) {
+        let path = dir.path().join("session.log");
         let file = fs::File::create(&path).expect("create the test log");
         (Session::new(file, Clock::now(), cap), path)
     }
@@ -210,7 +210,6 @@ mod tests {
     fn finish(session: Session, path: &Path) -> Vec<String> {
         drop(session);
         let text = fs::read_to_string(path).expect("read the test log");
-        fs::remove_file(path).expect("remove the test log");
         let message = |line: &str| {
             let after_thread =
                 line.split_once(" thread=").and_then(|(_, rest)| rest.split_once(' '));
@@ -225,7 +224,8 @@ mod tests {
 
     #[test]
     fn drain_reports_lapped_lines_once_then_writes_the_rest() {
-        let (mut session, path) = session("lapped");
+        let dir = TestDir::new("lapped");
+        let (mut session, path) = session(&dir);
         let ring = LogRing::new();
         for _ in 0..SLOT_COUNT + 3 {
             ring.push(0, 2, 9, b"t msg=x");
@@ -244,7 +244,8 @@ mod tests {
 
     #[test]
     fn drain_stops_at_a_pending_line_and_resumes_there_once_it_is_published() {
-        let (mut session, path) = session("pending");
+        let dir = TestDir::new("pending");
+        let (mut session, path) = session(&dir);
         let ring = LogRing::new();
         let held = ring.push_held(0, 2, 9, b"t msg=first");
         ring.push(0, 2, 9, b"t msg=second");
@@ -259,7 +260,8 @@ mod tests {
 
     #[test]
     fn drain_counts_a_dropped_line_into_a_lost_line_before_the_next_line() {
-        let (mut session, path) = session("dropped");
+        let dir = TestDir::new("dropped");
+        let (mut session, path) = session(&dir);
         let ring = LogRing::new();
         let _held = ring.push_held(0, 2, 9, b"t msg=held");
         for _ in 1..SLOT_COUNT {
@@ -279,7 +281,8 @@ mod tests {
 
     #[test]
     fn a_session_past_its_cap_reports_it_once_then_writes_only_warn_and_error_lines() {
-        let (mut session, path) = capped_session("cap", 1);
+        let dir = TestDir::new("cap");
+        let (mut session, path) = capped_session(&dir, 1);
         let ring = LogRing::new();
         let (debug, info, warn, error) = (1, 2, 3, 4);
         ring.push(0, info, 9, b"t msg=first");

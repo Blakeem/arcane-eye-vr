@@ -116,29 +116,20 @@ pub(crate) fn rotate(dir: &Path, log: LogName) -> Result<(), RotateError> {
 mod tests {
     use super::{fallback_path, prune_fallbacks, rotate, session_path};
     use crate::logging::LogName;
+    use crate::test_dir::TestDir;
     use std::fs;
     use std::os::windows::fs::OpenOptionsExt as _;
-    use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("arcane-eye-diag-{}-{name}", std::process::id()));
-        if dir.exists() {
-            fs::remove_dir_all(&dir).expect("remove the test folder a previous run left");
-        }
-        fs::create_dir_all(&dir).expect("create the test folder");
-        dir
-    }
 
     #[test]
     fn rotation_keeps_four_previous_sessions() {
-        let dir = temp_dir("rotate-full");
+        let folder = TestDir::new("rotate-full");
+        let dir = folder.path();
         for (index, text) in ["s0", "s1", "s2", "s3", "s4"].into_iter().enumerate() {
             let index = u32::try_from(index).expect("small index");
-            fs::write(session_path(&dir, LogName::Core, index), text).expect("write a session log");
+            fs::write(session_path(dir, LogName::Core, index), text).expect("write a session log");
         }
-        rotate(&dir, LogName::Core).expect("rotate");
+        rotate(dir, LogName::Core).expect("rotate");
         assert!(!dir.join("arcane-eye-vr.log").exists());
         let kept: Vec<String> = (1..=4)
             .map(|index| {
@@ -147,58 +138,57 @@ mod tests {
             .collect();
         assert_eq!(kept, ["s0", "s1", "s2", "s3"]);
         assert!(!dir.join("arcane-eye-vr.5.log").exists());
-        fs::remove_dir_all(&dir).expect("remove the test folder");
     }
 
     #[test]
     fn rotation_skips_missing_sessions() {
-        let dir = temp_dir("rotate-gaps");
+        let folder = TestDir::new("rotate-gaps");
+        let dir = folder.path();
         fs::write(dir.join("arcane-eye-vr.log"), "s0").expect("write");
         fs::write(dir.join("arcane-eye-vr.2.log"), "s2").expect("write");
-        rotate(&dir, LogName::Core).expect("rotate");
+        rotate(dir, LogName::Core).expect("rotate");
         assert_eq!(fs::read_to_string(dir.join("arcane-eye-vr.1.log")).expect("read"), "s0");
         assert!(!dir.join("arcane-eye-vr.2.log").exists());
         assert_eq!(fs::read_to_string(dir.join("arcane-eye-vr.3.log")).expect("read"), "s2");
-        fs::remove_dir_all(&dir).expect("remove the test folder");
     }
 
     #[test]
     fn rotation_of_a_locked_session_log_names_both_files() {
-        let dir = temp_dir("rotate-locked");
+        let folder = TestDir::new("rotate-locked");
+        let dir = folder.path();
         let base = dir.join("arcane-eye-vr.log");
         fs::write(&base, "s0").expect("write");
         let lock = fs::OpenOptions::new().read(true).share_mode(0).open(&base).expect("lock");
-        let error = rotate(&dir, LogName::Core).expect_err("a locked log cannot move");
+        let error = rotate(dir, LogName::Core).expect_err("a locked log cannot move");
         drop(lock);
         assert_eq!(error.from, base);
         assert_eq!(error.to, dir.join("arcane-eye-vr.1.log"));
-        fs::remove_dir_all(&dir).expect("remove the test folder");
     }
 
     #[test]
     fn rotation_onto_a_locked_oldest_log_stops_and_names_it() {
-        let dir = temp_dir("rotate-locked-oldest");
+        let folder = TestDir::new("rotate-locked-oldest");
+        let dir = folder.path();
         for index in [0, 3, 4] {
-            fs::write(session_path(&dir, LogName::Core, index), format!("s{index}"))
-                .expect("write");
+            fs::write(session_path(dir, LogName::Core, index), format!("s{index}")).expect("write");
         }
         let oldest = dir.join("arcane-eye-vr.4.log");
         let lock = fs::OpenOptions::new().read(true).share_mode(0).open(&oldest).expect("lock");
-        let error = rotate(&dir, LogName::Core).expect_err("a locked target cannot be replaced");
+        let error = rotate(dir, LogName::Core).expect_err("a locked target cannot be replaced");
         drop(lock);
         assert_eq!(error.from, dir.join("arcane-eye-vr.3.log"));
         assert_eq!(error.to, oldest);
         assert_eq!(fs::read_to_string(dir.join("arcane-eye-vr.log")).expect("read"), "s0");
         assert_eq!(fs::read_to_string(&oldest).expect("read"), "s4");
-        fs::remove_dir_all(&dir).expect("remove the test folder");
     }
 
     #[test]
     fn prune_removes_only_the_oldest_fallback_logs_past_four() {
-        let dir = temp_dir("prune");
+        let folder = TestDir::new("prune");
+        let dir = folder.path();
         for process_id in 1..=6_u32 {
             let file =
-                fs::File::create(fallback_path(&dir, LogName::Core, process_id)).expect("create");
+                fs::File::create(fallback_path(dir, LogName::Core, process_id)).expect("create");
             let seconds = Duration::from_secs(u64::from(process_id));
             let written = SystemTime::UNIX_EPOCH.checked_add(seconds).expect("a valid time");
             file.set_modified(written).expect("set the write time");
@@ -212,25 +202,24 @@ mod tests {
         for name in others {
             fs::write(dir.join(name), "other").expect("write");
         }
-        prune_fallbacks(&dir, LogName::Core).expect("prune");
+        prune_fallbacks(dir, LogName::Core).expect("prune");
         let kept: Vec<bool> =
-            (1..=6).map(|id| fallback_path(&dir, LogName::Core, id).exists()).collect();
+            (1..=6).map(|id| fallback_path(dir, LogName::Core, id).exists()).collect();
         assert_eq!(kept, [false, false, true, true, true, true]);
         assert!(others.iter().all(|name| dir.join(name).exists()));
-        fs::remove_dir_all(&dir).expect("remove the test folder");
     }
 
     #[test]
     fn launcher_log_rotates_its_own_files_and_leaves_the_core_log() {
-        let dir = temp_dir("rotate-launcher");
+        let folder = TestDir::new("rotate-launcher");
+        let dir = folder.path();
         fs::write(dir.join("arcane-eye-vr.log"), "core").expect("write");
         fs::write(dir.join("arcane-eye-vr-launcher.log"), "launcher").expect("write");
-        rotate(&dir, LogName::Launcher).expect("rotate");
+        rotate(dir, LogName::Launcher).expect("rotate");
         let core = fs::read_to_string(dir.join("arcane-eye-vr.log")).expect("read");
         let launcher = fs::read_to_string(dir.join("arcane-eye-vr-launcher.1.log")).expect("read");
         let core_rotated = dir.join("arcane-eye-vr.1.log").exists();
-        let fallback = fallback_path(&dir, LogName::Launcher, 7);
-        fs::remove_dir_all(&dir).expect("remove the test folder");
+        let fallback = fallback_path(dir, LogName::Launcher, 7);
         assert_eq!((core.as_str(), launcher.as_str()), ("core", "launcher"));
         assert!(!core_rotated, "the launcher's rotation moved the core log");
         assert_eq!(fallback, dir.join("arcane-eye-vr-launcher.pid7.log"));

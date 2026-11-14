@@ -1,10 +1,9 @@
 //! Fixtures for the core's tests.
 //!
-//! It holds a launch token mapping, a WARP device and swapchain on a hidden window, a debug viewer's
-//! view of the viewer header, and a test folder.
+//! It holds a launch token mapping, a WARP device and swapchain on a hidden window, and a debug
+//! viewer's view of the viewer header.
 
-use std::path::PathBuf;
-use std::{fs, process, ptr};
+use std::{process, ptr};
 
 use gfx::publish::ViewNames;
 use ipc_layout::launch_token::{self, STATUS_OFFSET};
@@ -30,17 +29,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{HSTRING, Interface as _, w};
 
 use super::StatusView;
-
-/// A folder next to the test binary, so a run that keeps a log file open leaves it in `target/`.
-pub(crate) fn test_dir(name: &str) -> PathBuf {
-    let exe = std::env::current_exe().expect("the test binary path");
-    let dir =
-        exe.parent().expect("the test binary folder").join("arcane-eye-core-tests").join(name);
-    if dir.exists() {
-        fs::remove_dir_all(&dir).expect("remove the test folder a previous run left");
-    }
-    dir
-}
 
 /// A zero-filled launch token mapping under a name only this test process uses, closed on drop.
 pub(crate) struct TestMapping {

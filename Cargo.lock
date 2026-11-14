@@ -361,6 +361,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "viewer-client",
+ "windows",
 ]
 
 [[package]]

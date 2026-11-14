@@ -1,6 +1,10 @@
 //! Session logging end to end: events through the ring layer reach the session log file.
 
 #[cfg(test)]
+#[path = "../src/test_dir.rs"]
+mod test_dir;
+
+#[cfg(test)]
 mod tests {
     use std::fmt;
     use std::fs;
@@ -11,14 +15,7 @@ mod tests {
     use diag::logging::{LogError, LogName};
     use tracing::{debug, info, warn};
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("arcane-eye-diag-it-{}-{name}", std::process::id()));
-        if dir.exists() {
-            fs::remove_dir_all(&dir).expect("remove the test folder a previous run left");
-        }
-        dir
-    }
+    use crate::test_dir::TestDir;
 
     /// Opens `path` with no share, so a rename, removal or second open of it fails.
     fn lock(path: &Path) -> fs::File {
@@ -37,13 +34,12 @@ mod tests {
     }
 
     fn log_lines(name: &str, emit: impl FnOnce()) -> Vec<String> {
-        let dir = temp_dir(name);
-        let logging = diag::logging::start(&dir, LogName::Core).expect("start logging");
+        let dir = TestDir::new(name);
+        let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
         tracing::dispatcher::with_default(&logging.dispatch, emit);
         let file_path = logging.handle.file_path().to_path_buf();
         logging.handle.shutdown().expect("the writer ends cleanly");
         let text = fs::read_to_string(&file_path).expect("read the session log");
-        fs::remove_dir_all(&dir).expect("remove the test folder");
         text.lines().map(str::to_owned).collect()
     }
 
@@ -91,20 +87,19 @@ mod tests {
 
     #[test]
     fn locked_session_log_moves_the_session_to_its_own_file_with_a_warn_line() {
-        let dir = temp_dir("locked");
-        fs::create_dir_all(&dir).expect("create the test folder");
+        let folder = TestDir::new("locked");
+        let dir = folder.path();
         let base = dir.join("arcane-eye-vr.log");
         fs::write(&base, "previous session").expect("write the previous session log");
         let base_lock = lock(&base);
         let logging =
-            diag::logging::start(&dir, LogName::Core).expect("a locked log does not stop logging");
+            diag::logging::start(dir, LogName::Core).expect("a locked log does not stop logging");
         tracing::dispatcher::with_default(&logging.dispatch, || info!("after"));
         let file_path = logging.handle.file_path().to_path_buf();
         logging.handle.shutdown().expect("the writer ends cleanly");
         drop(base_lock);
         let text = fs::read_to_string(&file_path).expect("read the session log");
         let previous = fs::read_to_string(&base).expect("read the previous session log");
-        fs::remove_dir_all(&dir).expect("remove the test folder");
         assert_eq!(file_path, dir.join(format!("arcane-eye-vr.pid{}.log", std::process::id())));
         assert_eq!(previous, "previous session");
         let lines: Vec<&str> = text.lines().collect();
@@ -123,19 +118,18 @@ mod tests {
 
     #[test]
     fn reused_process_id_appends_to_its_older_fallback_log() {
-        let dir = temp_dir("reused-pid");
-        fs::create_dir_all(&dir).expect("create the test folder");
+        let folder = TestDir::new("reused-pid");
+        let dir = folder.path();
         let base = dir.join("arcane-eye-vr.log");
         fs::write(&base, "previous session").expect("write the previous session log");
         let fallback = dir.join(format!("arcane-eye-vr.pid{}.log", std::process::id()));
         fs::write(&fallback, "older session\n").expect("write the older fallback log");
         let base_lock = lock(&base);
         let logging =
-            diag::logging::start(&dir, LogName::Core).expect("a locked log does not stop logging");
+            diag::logging::start(dir, LogName::Core).expect("a locked log does not stop logging");
         logging.handle.shutdown().expect("the writer ends cleanly");
         drop(base_lock);
         let text = fs::read_to_string(&fallback).expect("read the fallback log");
-        fs::remove_dir_all(&dir).expect("remove the test folder");
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.first(), Some(&"older session"), "{text}");
         assert!(lines.get(1).is_some_and(|line| line.contains("rotation failed")), "{text}");
@@ -143,10 +137,11 @@ mod tests {
 
     #[test]
     fn second_session_in_the_same_folder_leaves_the_live_log_in_place() {
-        let dir = temp_dir("live");
-        let first = diag::logging::start(&dir, LogName::Core).expect("start the first session");
+        let folder = TestDir::new("live");
+        let dir = folder.path();
+        let first = diag::logging::start(dir, LogName::Core).expect("start the first session");
         let second =
-            diag::logging::start(&dir, LogName::Core).expect("a live log does not stop logging");
+            diag::logging::start(dir, LogName::Core).expect("a live log does not stop logging");
         tracing::dispatcher::with_default(&first.dispatch, || info!("first"));
         let first_path = first.handle.file_path().to_path_buf();
         let second_path = second.handle.file_path().to_path_buf();
@@ -154,7 +149,6 @@ mod tests {
         second.handle.shutdown().expect("the second writer ends cleanly");
         let text = fs::read_to_string(&first_path).expect("read the first session log");
         let rotated = dir.join("arcane-eye-vr.1.log").exists();
-        fs::remove_dir_all(&dir).expect("remove the test folder");
         assert_eq!(first_path, dir.join("arcane-eye-vr.log"));
         assert_eq!(second_path, dir.join(format!("arcane-eye-vr.pid{}.log", std::process::id())));
         assert!(!rotated, "the live log was renamed");
@@ -163,12 +157,12 @@ mod tests {
 
     #[test]
     fn a_reader_finds_the_fallback_log_the_process_wrote_or_else_the_current_log() {
-        let dir = temp_dir("session-file");
-        fs::create_dir_all(&dir).expect("create the test folder");
+        let folder = TestDir::new("session-file");
+        let dir = folder.path();
         let started = SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(10)).expect("a time");
         let earlier = SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(9)).expect("a time");
         let session_file =
-            |log, process_id| diag::logging::session_file(&dir, log, process_id, started);
+            |log, process_id| diag::logging::session_file(dir, log, process_id, started);
         let in_empty_folder = session_file(LogName::Core, 7);
         let current = fs::File::create(dir.join("arcane-eye-vr.log")).expect("create a log");
         current.set_modified(earlier).expect("set the write time");
@@ -189,7 +183,6 @@ mod tests {
         trial.set_modified(started).expect("set the write time");
         let trial_log = session_file(LogName::Trial, 7);
         drop((current, other, own, trial));
-        fs::remove_dir_all(&dir).expect("remove the test folder");
         assert_eq!(in_empty_folder, None);
         assert_eq!(beside_stale_current, None);
         assert_eq!(beside_live_current, Some(dir.join("arcane-eye-vr.log")));
@@ -201,19 +194,18 @@ mod tests {
 
     #[test]
     fn locked_stale_fallback_log_is_a_warn_line_that_names_it() {
-        let dir = temp_dir("prune-locked");
-        fs::create_dir_all(&dir).expect("create the test folder");
-        write_fallback_logs(&dir);
+        let folder = TestDir::new("prune-locked");
+        let dir = folder.path();
+        write_fallback_logs(dir);
         let oldest = dir.join("arcane-eye-vr.pid1.log");
         let oldest_lock = lock(&oldest);
-        let logging = diag::logging::start(&dir, LogName::Core)
-            .expect("a failed prune does not stop logging");
+        let logging =
+            diag::logging::start(dir, LogName::Core).expect("a failed prune does not stop logging");
         let file_path = logging.handle.file_path().to_path_buf();
         logging.handle.shutdown().expect("the writer ends cleanly");
         drop(oldest_lock);
         let text = fs::read_to_string(&file_path).expect("read the session log");
         let oldest_stays = oldest.exists();
-        fs::remove_dir_all(&dir).expect("remove the test folder");
         assert_eq!(file_path, dir.join("arcane-eye-vr.log"));
         assert!(oldest_stays);
         let path_field = format!("path=\"{}\"", oldest.display().to_string().replace('\\', "\\\\"));
@@ -224,20 +216,19 @@ mod tests {
 
     #[test]
     fn rotation_failure_is_the_first_line_when_the_prune_also_fails() {
-        let dir = temp_dir("both-locked");
-        fs::create_dir_all(&dir).expect("create the test folder");
-        write_fallback_logs(&dir);
+        let folder = TestDir::new("both-locked");
+        let dir = folder.path();
+        write_fallback_logs(dir);
         let base = dir.join("arcane-eye-vr.log");
         fs::write(&base, "previous session").expect("write the previous session log");
         let base_lock = lock(&base);
         let oldest_lock = lock(&dir.join("arcane-eye-vr.pid1.log"));
-        let logging = diag::logging::start(&dir, LogName::Core)
+        let logging = diag::logging::start(dir, LogName::Core)
             .expect("failed start steps do not stop logging");
         let file_path = logging.handle.file_path().to_path_buf();
         logging.handle.shutdown().expect("the writer ends cleanly");
         drop((base_lock, oldest_lock));
         let text = fs::read_to_string(&file_path).expect("read the session log");
-        fs::remove_dir_all(&dir).expect("remove the test folder");
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2, "{text}");
         assert!(lines.first().is_some_and(|line| line.contains("rotation failed")), "{text}");
@@ -246,19 +237,18 @@ mod tests {
 
     #[test]
     fn locked_fallback_log_fails_with_the_fallback_path() {
-        let dir = temp_dir("fallback-locked");
-        fs::create_dir_all(&dir).expect("create the test folder");
+        let folder = TestDir::new("fallback-locked");
+        let dir = folder.path();
         let base = dir.join("arcane-eye-vr.log");
         fs::write(&base, "previous session").expect("write the previous session log");
         let fallback = dir.join(format!("arcane-eye-vr.pid{}.log", std::process::id()));
         fs::write(&fallback, "older session\n").expect("write the older fallback log");
         let base_lock = lock(&base);
         let fallback_lock = lock(&fallback);
-        let error = diag::logging::start(&dir, LogName::Core)
+        let error = diag::logging::start(dir, LogName::Core)
             .err()
             .expect("a locked fallback log stops logging");
         drop((base_lock, fallback_lock));
-        fs::remove_dir_all(&dir).expect("remove the test folder");
         let LogError::Create { path: failed, .. } = &error else {
             panic!("expected a session log error: {error:?}");
         };
@@ -283,16 +273,26 @@ mod tests {
 
     #[test]
     fn log_folder_that_is_a_file_fails_with_the_folder_path() {
-        let path =
-            std::env::temp_dir().join(format!("arcane-eye-diag-it-{}-file", std::process::id()));
+        let folder = TestDir::new("file");
+        let path = folder.path().join("logs");
         fs::write(&path, "not a folder").expect("write a file where the folder goes");
         let error =
             diag::logging::start(&path, LogName::Core).err().expect("a file is not a log folder");
-        fs::remove_file(&path).expect("remove the test file");
         let LogError::CreateDir { path: failed, .. } = &error else {
             panic!("expected a folder error: {error:?}");
         };
         assert_eq!(failed, &path);
+    }
+
+    #[test]
+    fn missing_log_folder_is_created() {
+        let folder = TestDir::new("missing");
+        let log_dir = folder.path().join("logs");
+        let logging = diag::logging::start(&log_dir, LogName::Core).expect("start logging");
+        let file_path = logging.handle.file_path().to_path_buf();
+        logging.handle.shutdown().expect("the writer ends cleanly");
+        assert_eq!(file_path, log_dir.join("arcane-eye-vr.log"));
+        assert!(file_path.is_file(), "the session log was not created");
     }
 
     #[test]

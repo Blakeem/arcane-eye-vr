@@ -30,10 +30,7 @@ use tracing::{dispatcher, error};
 use crate::args::{ArgsError, Options, USAGE};
 use crate::folder::FolderError;
 use crate::live::{LiveFrames, LiveGame};
-use crate::steps::TrialError;
-
-/// The exit code of a trial that could not run or record its steps.
-const TRIAL_FAILED: u8 = 1;
+use crate::steps::{TRIAL_FAILED, TrialError};
 
 /// The exit code of a bad command line.
 const USAGE_FAILED: u8 = 2;

@@ -1,6 +1,10 @@
 //! The allocation guard through the debug global allocator in `state.rs`.
 
 #[cfg(test)]
+#[path = "support/test_dir.rs"]
+mod test_dir;
+
+#[cfg(test)]
 mod tests {
     use std::fs;
     use std::hint::black_box;
@@ -10,6 +14,8 @@ mod tests {
     use diag::alloc_guard::AllocGuardError;
     use diag::logging::LogName;
     use game_bindings::state::arm_alloc_guard;
+
+    use crate::test_dir::TestDir;
 
     /// One test runs every check in turn, since the process holds one armed-thread state, and two
     /// tests that arm on parallel threads fail with `AlreadyArmed`.
@@ -55,12 +61,8 @@ mod tests {
     }
 
     fn enabled_ring_layer_event_allocates_nothing() {
-        let dir =
-            std::env::temp_dir().join(format!("arcane-eye-alloc-guard-{}", std::process::id()));
-        if dir.exists() {
-            fs::remove_dir_all(&dir).expect("remove the test folder a previous run left");
-        }
-        let logging = diag::logging::start(&dir, LogName::Core).expect("start logging");
+        let dir = TestDir::new("ring-layer");
+        let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
         let count = tracing::dispatcher::with_default(&logging.dispatch, || {
             emit(0);
             let guard = arm_alloc_guard().expect("arm");
@@ -70,7 +72,6 @@ mod tests {
         let file_path = logging.handle.file_path().to_path_buf();
         logging.handle.shutdown().expect("the writer ends cleanly");
         let text = fs::read_to_string(file_path).expect("read the session log");
-        fs::remove_dir_all(&dir).expect("remove the test folder");
         assert_eq!(count, 0);
         assert!(
             text.contains("msg=\"eye done\" frame=1 eye=left"),

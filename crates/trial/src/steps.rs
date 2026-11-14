@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{ExitCode, ExitStatus};
 use std::time::Duration;
 
+use diag::error_chain;
 use diag::logging::LogError;
 use ipc_layout::perf_line::PerfSummary;
 use launch::checks::{GameRunning, RuntimeError};
@@ -30,8 +31,8 @@ const PERF_FILE: &str = "perf.txt";
 /// The name of the copy of the core's session log in the result folder.
 const CORE_LOG_COPY: &str = "arcane-eye-vr.log";
 
-/// The exit code of a trial with a failed step.
-const STEP_FAILED: u8 = 1;
+/// The exit code of a trial with a failed step, or of a trial that could not run or record its steps.
+pub(crate) const TRIAL_FAILED: u8 = 1;
 
 /// One step of a trial, in the order the steps run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -206,7 +207,7 @@ impl Report {
 
     /// 0 when every step passed and 1 when a step failed.
     pub(crate) fn exit_code(&self) -> ExitCode {
-        if self.passed() { ExitCode::SUCCESS } else { ExitCode::from(STEP_FAILED) }
+        if self.passed() { ExitCode::SUCCESS } else { ExitCode::from(TRIAL_FAILED) }
     }
 
     /// The text of `result.txt`: one line per step that ran, then the outcome.
@@ -337,14 +338,7 @@ fn capture_step(frames: &mut impl Frames, count: u32, folder: &Path) -> Result<(
 /// `error` and each error below it, joined by ": " on one line, since `result.txt` holds one line
 /// per step.
 pub(crate) fn cause(error: &dyn Error) -> String {
-    let mut text = error.to_string();
-    let mut source = error.source();
-    while let Some(below) = source {
-        text.push_str(": ");
-        text.push_str(&below.to_string());
-        source = below.source();
-    }
-    text.replace(['\r', '\n'], " ")
+    error_chain::chain(error).replace(['\r', '\n'], " ")
 }
 
 #[cfg(test)]

@@ -1,16 +1,21 @@
 //! The rate-limited log macros end to end: what reaches the session log from a burst of events.
 
 #[cfg(test)]
+#[path = "../src/test_dir.rs"]
+mod test_dir;
+
+#[cfg(test)]
 mod tests {
     use std::fs;
     use std::hint;
-    use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
     use diag::logging::LogName;
     use diag::rate::{Once, RateLimit};
     use diag::{error_every, once, warn_every};
     use tracing::Level;
+
+    use crate::test_dir::TestDir;
 
     /// Long enough that three back-to-back events fall inside one period.
     const PERIOD: Duration = Duration::from_millis(200);
@@ -23,23 +28,13 @@ mod tests {
         first: Once,
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("arcane-eye-rate-it-{}-{name}", std::process::id()));
-        if dir.exists() {
-            fs::remove_dir_all(&dir).expect("remove the test folder a previous run left");
-        }
-        dir
-    }
-
     fn log_lines(name: &str, emit: impl FnOnce()) -> Vec<String> {
-        let dir = temp_dir(name);
-        let logging = diag::logging::start(&dir, LogName::Core).expect("start logging");
+        let dir = TestDir::new(name);
+        let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
         tracing::dispatcher::with_default(&logging.dispatch, emit);
         let file_path = logging.handle.file_path().to_path_buf();
         logging.handle.shutdown().expect("the writer ends cleanly");
         let text = fs::read_to_string(&file_path).expect("read the session log");
-        fs::remove_dir_all(&dir).expect("remove the test folder");
         text.lines().map(str::to_owned).collect()
     }
 

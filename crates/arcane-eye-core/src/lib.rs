@@ -5,4 +5,6 @@ mod frame;
 mod init;
 mod present;
 mod raw;
+#[cfg(test)]
+mod test_dir;
 mod viewer;
