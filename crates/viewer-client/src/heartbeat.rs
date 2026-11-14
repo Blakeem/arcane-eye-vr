@@ -71,25 +71,25 @@ mod tests {
     use super::{Beater, spawn};
     use crate::fixture::{CoreMapping, LAYOUT_VERSION_OFFSET};
     use crate::header::{HeaderReadError, read_header};
-    use ipc_layout::viewer_header::{HeaderError, TextureInfo, ViewerHeader};
+    use ipc_layout::viewer_header::{HeaderError, LAYOUT_VERSION, TextureInfo, ViewerHeader};
     use std::thread;
     use std::time::{Duration, Instant};
 
     #[test]
     fn a_header_of_another_layout_version_fails_and_gets_no_heartbeat() {
-        let header = ViewerHeader::new(TextureInfo::default(), 3, 9);
+        let header = ViewerHeader::new(TextureInfo::default(), 3, 9, 11);
         let core = CoreMapping::create("layout", &header).expect("the core's mapping");
-        core.write_word(LAYOUT_VERSION_OFFSET, 2).expect("write the layout version");
+        core.write_word(LAYOUT_VERSION_OFFSET, 1).expect("write the layout version");
         let mut beater = Beater::new(core.name.clone());
         beater.beat();
         assert_eq!(core.heartbeat(), 0, "a heartbeat written into another layout");
         let mut slot = None;
-        let failed = read_header(&mut slot, &core.name).map(|_read| ()).expect_err("layout 2");
-        let HeaderReadError::Layout(HeaderError::LayoutVersion { found: 2 }) = &failed else {
+        let failed = read_header(&mut slot, &core.name).map(|_read| ()).expect_err("layout 1");
+        let HeaderReadError::Layout(HeaderError::LayoutVersion { found: 1 }) = &failed else {
             panic!("a layout version error, not {failed:?}");
         };
-        assert!(failed.to_string().contains("layout version is 2"), "{failed}");
-        core.write_word(LAYOUT_VERSION_OFFSET, 1).expect("write the layout version");
+        assert!(failed.to_string().contains("layout version is 1"), "{failed}");
+        core.write_word(LAYOUT_VERSION_OFFSET, LAYOUT_VERSION).expect("write the layout version");
         beater.beat();
         let (_view, read) = read_header(&mut slot, &core.name).expect("a header of this layout");
         assert_eq!((read.generation(), read.frame(), core.heartbeat()), (3, 9, 1));
@@ -97,7 +97,7 @@ mod tests {
 
     #[test]
     fn the_heartbeat_thread_advances_the_heartbeat_on_its_own() {
-        let header = ViewerHeader::new(TextureInfo::default(), 1, 1);
+        let header = ViewerHeader::new(TextureInfo::default(), 1, 1, 1);
         let core = CoreMapping::create("thread", &header).expect("the core's mapping");
         spawn(core.name.clone()).expect("start the heartbeat thread");
         let deadline = Instant::now().checked_add(Duration::from_secs(5)).expect("a test time");

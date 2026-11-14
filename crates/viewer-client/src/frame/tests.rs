@@ -1,5 +1,7 @@
 //! The frame read against a header and a texture a WARP device shares in the core's place.
 
+mod region;
+
 use std::time::{Duration, Instant};
 
 use ipc_layout::viewer_header::{
@@ -12,7 +14,7 @@ use windows::Win32::Graphics::Dxgi::Common::{
 };
 use windows::core::HSTRING;
 
-use super::{Frame, FrameReader, PixelFormat, ReadError};
+use super::{Frame, FrameReader, PixelFormat, ReadError, retry_wait};
 use crate::GpuError;
 use crate::fixture::{
     CoreMapping, CoreTexture, LAYOUT_VERSION_OFFSET, MISSING_LUID, share, test_name,
@@ -64,7 +66,7 @@ fn publish(test: &str, width: u32, format: DXGI_FORMAT, pixels: &[[u8; 4]]) -> C
     let names = names(test);
     let texture = share(&names.texture, width, format, pixels).expect("share the core's texture");
     let info = texture_info(texture.luid, width, format, pixels);
-    let header = ViewerHeader::new(info, 1, OPEN_FRAME);
+    let header = ViewerHeader::new(info, 1, OPEN_FRAME, OPEN_FRAME);
     let mapping = CoreMapping::create(test, &header).expect("the core's mapping");
     Core { mapping, texture }
 }
@@ -175,10 +177,10 @@ fn a_missing_header_is_a_missing_core() {
 #[test]
 fn a_header_of_another_layout_version_is_a_layout_error() {
     let core = publish("frame-layout", 2, DXGI_FORMAT_R8G8B8A8_UNORM, &COUNTING);
-    core.mapping.write_word(LAYOUT_VERSION_OFFSET, 2).expect("write the layout version");
+    core.mapping.write_word(LAYOUT_VERSION_OFFSET, 1).expect("write the layout version");
     let mut reader = FrameReader::new(names("frame-layout"));
-    let error = reader.read(READ_WAIT).map(|_frame| ()).expect_err("v2");
-    let expected = HeaderError::LayoutVersion { found: 2 };
+    let error = reader.read(READ_WAIT).map(|_frame| ()).expect_err("v1");
+    let expected = HeaderError::LayoutVersion { found: 1 };
     assert!(
         matches!(error, ReadError::Header(HeaderReadError::Layout(found)) if found == expected),
         "{error:?}"
@@ -189,7 +191,8 @@ fn a_header_of_another_layout_version_is_a_layout_error() {
 fn a_header_naming_an_unknown_adapter_is_no_adapter() {
     let info =
         TextureInfo { adapter_luid: MISSING_LUID, width: 2, height: 1, ..TextureInfo::default() };
-    let _core = CoreMapping::create("no-adapter", &ViewerHeader::new(info, 1, 1)).expect("mapping");
+    let header = ViewerHeader::new(info, 1, 1, 1);
+    let _core = CoreMapping::create("no-adapter", &header).expect("mapping");
     let error = FrameReader::new(names("no-adapter")).read(READ_WAIT).map(|_frame| ());
     let error = error.expect_err("no such adapter");
     assert!(matches!(error, ReadError::Gpu(GpuError::NoAdapter(_))), "{error:?}");
@@ -222,7 +225,8 @@ fn a_texture_name_nothing_shares_is_retried_until_the_timeout_and_then_a_failed_
 fn a_header_with_no_texture_waits_and_opens_nothing() {
     // A width of 0 that reached the device step would fail on the missing adapter instead.
     let info = TextureInfo { adapter_luid: MISSING_LUID, ..TextureInfo::default() };
-    let _core = CoreMapping::create("no-texture-yet", &ViewerHeader::new(info, 0, 0)).expect("map");
+    let header = ViewerHeader::new(info, 0, 0, 0);
+    let _core = CoreMapping::create("no-texture-yet", &header).expect("map");
     let wait = Duration::from_millis(50);
     let error = FrameReader::new(names("no-texture-yet")).read(wait).map(|_frame| ());
     let error = error.expect_err("no texture yet");
@@ -236,12 +240,13 @@ fn a_header_naming_another_adapter_drops_the_device_and_the_opened_texture() {
     let opened = reader.read(Duration::ZERO).map(|_frame| ()).expect_err("the counter at open");
     assert!(matches!(opened, ReadError::Timeout(_)), "{opened:?}");
     let moved = texture_info(MISSING_LUID, 2, DXGI_FORMAT_R8G8B8A8_UNORM, &COUNTING);
-    let moved = ViewerHeader::new(moved, 1, OPEN_FRAME + 1);
+    let moved = ViewerHeader::new(moved, 1, OPEN_FRAME + 1, OPEN_FRAME + 1);
     core.mapping.write_header(&moved).expect("name another adapter");
     let error = reader.read(READ_WAIT).map(|_frame| ()).expect_err("no such adapter");
     assert!(matches!(error, ReadError::Gpu(GpuError::NoAdapter(_))), "{error:?}");
     let back = texture_info(core.texture.luid, 2, DXGI_FORMAT_R8G8B8A8_UNORM, &COUNTING);
-    core.mapping.write_header(&ViewerHeader::new(back, 1, OPEN_FRAME + 1)).expect("name it back");
+    let back = ViewerHeader::new(back, 1, OPEN_FRAME + 1, OPEN_FRAME + 1);
+    core.mapping.write_header(&back).expect("name it back");
     // A texture kept from before the move would return this counter as a new frame.
     let reopened = reader.read(Duration::ZERO).map(|_frame| ()).expect_err("the counter at open");
     assert!(matches!(reopened, ReadError::Timeout(_)), "{reopened:?}");
@@ -260,7 +265,8 @@ fn a_new_generation_reopens_the_texture_at_its_new_size_and_format() {
     let format = DXGI_FORMAT_B8G8R8A8_UNORM;
     let second = share(&names("generation").texture, 3, format, &pixels).expect("share anew");
     let info = texture_info(second.luid, 3, format, &pixels);
-    mapping.write_header(&ViewerHeader::new(info, 2, OPEN_FRAME + 1)).expect("a new generation");
+    let renewed = ViewerHeader::new(info, 2, OPEN_FRAME + 1, OPEN_FRAME + 1);
+    mapping.write_header(&renewed).expect("a new generation");
     // The old texture, still open in the reader, would return this counter as a new frame.
     let reopened = reader.read(Duration::ZERO).map(|_frame| ()).expect_err("the counter at open");
     assert!(matches!(reopened, ReadError::Timeout(_)), "{reopened:?}");
@@ -298,4 +304,13 @@ fn each_supported_dxgi_format_maps_to_its_pixel_format_and_others_to_none() {
     for format in [DXGI_FORMAT_B8G8R8X8_UNORM_SRGB, DXGI_FORMAT_R16G16B16A16_FLOAT] {
         assert_eq!(PixelFormat::from_dxgi(format), None, "{format:?}");
     }
+}
+
+#[test]
+fn a_failed_open_retries_after_5_ms_even_when_the_read_looks_again_at_once() {
+    let at_once = Duration::ZERO;
+    assert_eq!(retry_wait(Some(&GpuError::Abandoned), at_once), Duration::from_millis(5));
+    assert_eq!(retry_wait(None, at_once), Duration::ZERO);
+    let header_poll = Duration::from_millis(5);
+    assert_eq!(retry_wait(None, header_poll), header_poll);
 }

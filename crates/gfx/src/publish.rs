@@ -2,12 +2,14 @@
 //!
 //! On each frame the publisher reads the viewer's heartbeat from the viewer header. It holds a shared
 //! texture and copies into it only while the heartbeat advanced within [`STALE_AFTER`], so with no
-//! viewer the frame costs one read of the header.
+//! viewer the frame costs one read of the header. It counts every frame it handles, so the present
+//! number of each published frame shows the frames it did not publish.
 
 use std::time::Instant;
 
 use ipc_layout::viewer_header::{
-    self, Acquire, EyeRect, FRAME_OFFSET, STALE_AFTER, TextureInfo, ViewerHeader, WIDTH_OFFSET,
+    self, Acquire, EyeRect, FRAME_OFFSET, PRESENT_OFFSET, STALE_AFTER, TextureInfo, ViewerHeader,
+    WIDTH_OFFSET,
 };
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D};
 use windows::core::{HRESULT, HSTRING};
@@ -151,6 +153,10 @@ pub struct Publisher {
     shared: Shared,
     generation: u32,
     frame: u32,
+    /// The count of frames handled so far, published or not.
+    presents: u32,
+    /// The present number of the last published frame.
+    published_present: u32,
 }
 
 impl Publisher {
@@ -163,30 +169,34 @@ impl Publisher {
     /// Returns [`SetupError`] when the mapping cannot be created or mapped.
     pub fn create(names: &ViewNames) -> Result<Self, SetupError> {
         let header = HeaderView::create(&names.mapping)?;
-        let (texture, generation, frame, heartbeat) =
-            match ViewerHeader::decode(&header.read_words()) {
-                Ok(earlier) => {
-                    // The earlier texture is gone. Only its width changes, as in a drop.
-                    let texture = TextureInfo { width: 0, ..earlier.texture() };
-                    (texture, earlier.generation(), earlier.frame(), earlier.heartbeat())
-                }
-                Err(_new_mapping) => (TextureInfo::default(), 0, 0, 0),
-            };
-        header.write_words(ViewerHeader::new(texture, generation, frame).core_words());
+        let (start, heartbeat) = match ViewerHeader::decode(&header.read_words()) {
+            Ok(earlier) => {
+                // The earlier texture is gone. Only its width changes, as in a drop.
+                let texture = TextureInfo { width: 0, ..earlier.texture() };
+                let (generation, frame) = (earlier.generation(), earlier.frame());
+                let start = ViewerHeader::new(texture, generation, frame, earlier.present());
+                (start, earlier.heartbeat())
+            }
+            Err(_new_mapping) => (ViewerHeader::new(TextureInfo::default(), 0, 0, 0), 0),
+        };
+        header.write_words(start.core_words());
         Ok(Self {
             header,
             texture_name: HSTRING::from(&names.texture),
             heartbeat: Heartbeat::new(heartbeat),
             shared: Shared::None,
-            generation,
-            frame,
+            generation: start.generation(),
+            frame: start.frame(),
+            presents: start.present(),
+            published_present: start.present(),
         })
     }
 
     /// Publishes one frame read at `now`. `source` yields the back buffer and runs only while a viewer
     /// runs. `context` is the immediate context of `device`, and the back buffer belongs to `device`.
     ///
-    /// The back buffer reference drops before this returns. The keyed mutex is never held on return.
+    /// Every call counts as one present, also one that publishes nothing. The back buffer reference
+    /// drops before this returns. The keyed mutex is never held on return.
     ///
     /// # Errors
     ///
@@ -198,6 +208,7 @@ impl Publisher {
         context: &ID3D11DeviceContext,
         source: impl FnOnce() -> Result<ID3D11Texture2D, HRESULT>,
     ) -> Result<Outcome, PublishError> {
+        self.presents = self.presents.wrapping_add(1);
         if !self.viewer_runs(now) {
             self.drop_shared();
             return Ok(Outcome::NoViewer);
@@ -215,6 +226,8 @@ impl Publisher {
         match after_acquire(Acquire::from_code(shared.acquire().0))? {
             AfterAcquire::Copy => {
                 shared.copy_from(context, &source, &desc);
+                // Under the keyed mutex, so a reader that holds it reads the copied frame's number.
+                self.header.write_words([(PRESENT_OFFSET, self.presents)]);
                 let released = shared.release();
                 self.finish_copy(released)
             }
@@ -237,6 +250,7 @@ impl Publisher {
             return Err(PublishError { step: Step::Release, code });
         }
         self.frame = self.frame.wrapping_add(1);
+        self.published_present = self.presents;
         self.header.write_words([(FRAME_OFFSET, self.frame)]);
         Ok(Outcome::Published)
     }
@@ -282,7 +296,8 @@ impl Publisher {
             format: key.format.0.cast_unsigned(),
             eyes: [EyeRect::full(key.width, key.height); 2],
         };
-        let header = ViewerHeader::new(texture, self.generation, self.frame);
+        let header =
+            ViewerHeader::new(texture, self.generation, self.frame, self.published_present);
         self.header.write_words(header.core_words());
         self.shared = Shared::Ready(shared);
         Ok(())

@@ -1,20 +1,26 @@
 //! The D3D11 and DXGI calls that create a device on the core's adapter, open the shared texture,
-//! copy it under its keyed mutex and read a copy back to memory.
+//! copy it or one region of it under its keyed mutex and read a copy back to memory. `gpu/rows.rs`
+//! cuts the mapped rows to the kept pixels.
 
-use std::slice;
+mod rows;
+
+use std::num::NonZeroU32;
 
 use ipc_layout::viewer_header::{Acquire, AdapterLuid, MUTEX_KEY, SHARED_ACCESS};
 use windows::Win32::Foundation::{E_POINTER, HMODULE, LUID};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_FLAG, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
-    D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device,
-    ID3D11Device1, ID3D11DeviceContext, ID3D11Texture2D,
+    D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_FLAG, D3D11_MAP_READ,
+    D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+    D3D11CreateDevice, ID3D11Device, ID3D11Device1, ID3D11DeviceContext, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory4, IDXGIKeyedMutex,
 };
 use windows::core::{HRESULT, HSTRING, Interface as _};
+
+use self::rows::kept_rows;
+use crate::region::Region;
 
 /// How long a copy waits for the core to release the shared texture before it gives up on this try.
 const ACQUIRE_WAIT_MS: u32 = 2;
@@ -38,9 +44,11 @@ pub enum GpuError {
     /// `AcquireSync` returned `WAIT_ABANDONED`, which leaves the shared texture inconsistent.
     #[error("the core exited while holding the shared texture's keyed mutex")]
     Abandoned,
-    /// A copy's textures do not both belong to the copying device, or differ in size or format.
+    /// A copy's textures do not both belong to the copying device or differ in format, the target
+    /// differs in size from the copied region, or the region does not lie inside the shared texture.
     #[error(
-        "the copy target is not a texture of the copying device with the shared texture's size and format"
+        "the copy target is not a texture of the copying device with the copied region's size and \
+         the shared texture's format, or the region is not inside the shared texture"
     )]
     TargetMismatch,
     /// The frame's rows overflow a memory size, or `Map` gave rows shorter than a frame row.
@@ -189,28 +197,79 @@ impl Device {
         shared: &SharedTexture,
         target: &ID3D11Texture2D,
     ) -> Result<Copied, GpuError> {
+        let (width, height) = shared.size();
+        self.check_target(shared, target, Region::entire(width, height))?;
+        let copied = shared.under_mutex(|| {
+            // SAFETY: both textures belong to this device and have the same size and format,
+            // checked above.
+            unsafe { self.context.CopyResource(target, &shared.texture) };
+        })?;
+        Ok(if copied.is_some() { Copied::NewFrame } else { Copied::CoreBusy })
+    }
+
+    /// Copies `region` of `shared` into the top left corner of `target`, a texture of this device
+    /// with the region's size and the shared texture's format, under the keyed mutex. `while_held`
+    /// runs after the copy and before the release, so it reads state the core writes only while it
+    /// holds the keyed mutex.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError::TargetMismatch`] when `region` does not lie inside `shared`, `shared` or
+    /// `target` belongs to another device, or `target` differs in size from `region` or in format
+    /// from `shared`. Returns another [`GpuError`] when the keyed mutex was abandoned or a mutex call
+    /// failed. The shared texture then has to be opened again. Returns `Ok(None)` when the core held
+    /// the keyed mutex past the wait.
+    pub fn copy_region<R>(
+        &self,
+        shared: &SharedTexture,
+        target: &ID3D11Texture2D,
+        region: Region,
+        while_held: impl FnOnce() -> R,
+    ) -> Result<Option<R>, GpuError> {
+        self.check_target(shared, target, region)?;
+        let Some((right, bottom)) = region.end() else {
+            return Err(GpuError::TargetMismatch);
+        };
+        let source_box =
+            D3D11_BOX { left: region.x, top: region.y, front: 0, right, bottom, back: 1 };
+        shared.under_mutex(|| {
+            // SAFETY: both textures belong to this device and share a format, and the box lies
+            // inside the source and has the target's size, checked above.
+            unsafe {
+                self.context.CopySubresourceRegion(
+                    target,
+                    0,
+                    0,
+                    0,
+                    0,
+                    &shared.texture,
+                    0,
+                    Some(&raw const source_box),
+                );
+            }
+            while_held()
+        })
+    }
+
+    /// Checks that `region` lies inside `shared`, that `target` has the region's size and the shared
+    /// texture's format, and that both textures belong to this device.
+    fn check_target(
+        &self,
+        shared: &SharedTexture,
+        target: &ID3D11Texture2D,
+        region: Region,
+    ) -> Result<(), GpuError> {
         let mut target_desc = D3D11_TEXTURE2D_DESC::default();
         // SAFETY: `target` is live, and `target_desc` is a writable descriptor.
         unsafe { target.GetDesc(&raw mut target_desc) };
+        let (width, height) = shared.size();
         let same_shape = (target_desc.Width, target_desc.Height, target_desc.Format)
-            == (shared.desc.Width, shared.desc.Height, shared.desc.Format);
-        if !same_shape || !self.owns(&shared.texture) || !self.owns(target) {
+            == (region.width, region.height, shared.desc.Format);
+        let fits = region.lies_inside(width, height);
+        if !fits || !same_shape || !self.owns(&shared.texture) || !self.owns(target) {
             return Err(GpuError::TargetMismatch);
         }
-        let acquire_sync = shared.mutex.vtable().AcquireSync;
-        // SAFETY: the vtable entry belongs to the live mutex, which is passed as its `this`. The raw
-        // call keeps the wait codes, which the `windows` crate turns into `Ok(())`.
-        let code = unsafe { acquire_sync(shared.mutex.as_raw(), MUTEX_KEY, ACQUIRE_WAIT_MS) };
-        if !acquired(code)? {
-            return Ok(Copied::CoreBusy);
-        }
-        // SAFETY: both textures belong to this device and have the same size and format, checked
-        // above.
-        unsafe { self.context.CopyResource(target, &shared.texture) };
-        // SAFETY: the mutex was acquired above with `MUTEX_KEY`.
-        let released = unsafe { shared.mutex.ReleaseSync(MUTEX_KEY) };
-        GpuError::check("releasing the keyed mutex", released)?;
-        Ok(Copied::NewFrame)
+        Ok(())
     }
 
     fn owns(&self, texture: &ID3D11Texture2D) -> bool {
@@ -219,9 +278,14 @@ impl Device {
         device.is_ok_and(|device| device == self.d3d)
     }
 
-    /// Creates a texture the CPU can read, with the size and format of `shared`.
-    pub(crate) fn create_staging(&self, shared: &SharedTexture) -> Result<Staging, GpuError> {
+    /// Creates a texture the CPU can read, with the format of `shared` and `size` in pixels.
+    pub(crate) fn create_staging(
+        &self,
+        shared: &SharedTexture,
+        size: (u32, u32),
+    ) -> Result<Staging, GpuError> {
         let mut desc = shared.desc;
+        (desc.Width, desc.Height) = size;
         desc.Usage = D3D11_USAGE_STAGING;
         desc.BindFlags = 0;
         desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0.cast_unsigned();
@@ -232,12 +296,17 @@ impl Device {
             unsafe { self.d3d.CreateTexture2D(&raw const desc, None, Some(&raw mut texture)) };
         GpuError::check("creating the staging texture", made)?;
         let texture = GpuError::created("creating the staging texture", texture)?;
-        Ok(Staging { texture, size: (desc.Width, desc.Height) })
+        Ok(Staging { texture, size })
     }
 
-    /// Reads the first subresource of `staging` as rows of 4-byte pixels with no row padding. The
-    /// call waits for the copy into `staging` to finish.
-    pub(crate) fn read_back(&self, staging: &Staging) -> Result<Vec<u8>, GpuError> {
+    /// Reads every `step`-th pixel of every `step`-th row of the first subresource of `staging`,
+    /// starting at the top left pixel, as rows of 4-byte pixels with no row padding. The call waits
+    /// for the copy into `staging` to finish.
+    pub(crate) fn read_back(
+        &self,
+        staging: &Staging,
+        step: NonZeroU32,
+    ) -> Result<Vec<u8>, GpuError> {
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         // SAFETY: the staging texture has CPU read access and is not mapped, and `mapped` is
         // writable.
@@ -245,41 +314,11 @@ impl Device {
             self.context.Map(&staging.texture, 0, D3D11_MAP_READ, 0, Some(&raw mut mapped))
         };
         GpuError::check("mapping the staging texture", map)?;
-        let pixels = unpadded_rows(&mapped, staging.size);
+        let pixels = kept_rows(&mapped, staging.size, step);
         // SAFETY: the staging texture was mapped above, and no slice of its memory outlives this.
         unsafe { self.context.Unmap(&staging.texture, 0) };
         pixels
     }
-}
-
-/// The bytes of a mapped `size` texture of 4-byte pixels, each row cut to its pixels.
-fn unpadded_rows(mapped: &D3D11_MAPPED_SUBRESOURCE, size: (u32, u32)) -> Result<Vec<u8>, GpuError> {
-    let (width, height) = size;
-    let size_error = || GpuError::FrameSize { width, height, row_pitch: mapped.RowPitch };
-    let row_pitch = mapped.RowPitch as usize;
-    let rows = height as usize;
-    let Some(row_bytes) = (width as usize).checked_mul(BYTES_PER_PIXEL as usize) else {
-        return Err(size_error());
-    };
-    let Some(total) = row_bytes.checked_mul(rows) else {
-        return Err(size_error());
-    };
-    if row_pitch < row_bytes {
-        return Err(size_error());
-    }
-    let base = mapped.pData.cast::<u8>().cast_const();
-    let mut pixels = Vec::with_capacity(total);
-    for row in 0..rows {
-        let Some(offset) = row.checked_mul(row_pitch) else {
-            return Err(size_error());
-        };
-        // SAFETY: `Map` gave `rows` rows `row_pitch` bytes apart, each holding at least `row_bytes`
-        // bytes, which stay mapped until the caller unmaps them.
-        pixels.extend_from_slice(unsafe {
-            slice::from_raw_parts(base.wrapping_add(offset), row_bytes)
-        });
-    }
-    Ok(pixels)
 }
 
 /// A texture shared by name, its keyed mutex and its descriptor.
@@ -298,9 +337,26 @@ impl SharedTexture {
     pub const fn size(&self) -> (u32, u32) {
         (self.desc.Width, self.desc.Height)
     }
+
+    /// Runs `copy` while this process holds the keyed mutex, or returns `None` when the core held
+    /// it past the wait.
+    fn under_mutex<R>(&self, copy: impl FnOnce() -> R) -> Result<Option<R>, GpuError> {
+        let acquire_sync = self.mutex.vtable().AcquireSync;
+        // SAFETY: the vtable entry belongs to the live mutex, which is passed as its `this`. The raw
+        // call keeps the wait codes, which the `windows` crate turns into `Ok(())`.
+        let code = unsafe { acquire_sync(self.mutex.as_raw(), MUTEX_KEY, ACQUIRE_WAIT_MS) };
+        if !acquired(code)? {
+            return Ok(None);
+        }
+        let copied = copy();
+        // SAFETY: the mutex was acquired above with `MUTEX_KEY`.
+        let released = unsafe { self.mutex.ReleaseSync(MUTEX_KEY) };
+        GpuError::check("releasing the keyed mutex", released)?;
+        Ok(Some(copied))
+    }
 }
 
-/// A texture of the size and format of a shared texture that the CPU can read.
+/// A texture of the format of a shared texture that the CPU can read.
 pub(crate) struct Staging {
     texture: ID3D11Texture2D,
     size: (u32, u32),
@@ -309,6 +365,10 @@ pub(crate) struct Staging {
 impl Staging {
     pub(crate) const fn texture(&self) -> &ID3D11Texture2D {
         &self.texture
+    }
+
+    pub(crate) const fn size(&self) -> (u32, u32) {
+        self.size
     }
 }
 

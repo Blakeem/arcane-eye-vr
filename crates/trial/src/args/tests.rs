@@ -1,12 +1,14 @@
 //! The command line against arguments written by hand.
 
 use std::ffi::OsString;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use ipc_layout::launch_token::Mode;
+use viewer_client::region::Region;
 
-use super::{ArgsError, Options, Settings, TrialName, USAGE, parse};
+use super::{ArgsError, Burst, Options, Settings, TrialName, USAGE, parse};
 
 fn args(list: &[&str]) -> Vec<OsString> {
     list.iter().map(OsString::from).collect()
@@ -16,6 +18,10 @@ fn name(text: &str) -> TrialName {
     TrialName(text.to_owned())
 }
 
+fn step(step: u32) -> NonZeroU32 {
+    NonZeroU32::new(step).expect("a nonzero step")
+}
+
 #[test]
 fn a_name_alone_takes_every_default() {
     let expected = Settings {
@@ -23,6 +29,7 @@ fn a_name_alone_takes_every_default() {
         warmup: Duration::from_secs(20),
         perf_lines: 3,
         captures: 1,
+        burst: Burst { frames: 0, region: None, step: step(1) },
         out: PathBuf::from("trial-results"),
         game_dir: None,
         player_file: None,
@@ -55,12 +62,20 @@ fn each_option_sets_its_setting() {
         r"C:\trials\left.toml",
         "--settings-file",
         r"C:\trials\ipd 60.toml",
+        "--burst-step",
+        "3",
+        "--burst-region",
+        "1920,0,1920,2160",
+        "--burst-frames",
+        "300",
     ]);
+    let region = Region { x: 1920, y: 0, width: 1920, height: 2160 };
     let expected = Settings {
         mode: Mode::Vr,
         warmup: Duration::ZERO,
         perf_lines: 5,
         captures: 9999,
+        burst: Burst { frames: 300, region: Some(region), step: step(3) },
         out: PathBuf::from(r"C:\results"),
         game_dir: Some(PathBuf::from(r"D:\Games\Baldurs Gate 3")),
         player_file: Some(PathBuf::from(r"C:\trials\ipd 60.toml")),
@@ -143,6 +158,81 @@ fn a_number_outside_its_range_is_an_error_that_names_the_range() {
 }
 
 #[test]
+fn the_burst_frames_and_step_take_each_bound_and_reject_the_number_past_it() {
+    let with = |option: &str, value: &str| {
+        parse(args(&["--name", "a", "--burst-frames", "1", option, value]))
+    };
+    let frames = |value: &str| parse(args(&["--name", "a", "--burst-frames", value]));
+    let burst = |line: Result<Options, ArgsError>| line.map(|options| options.settings.burst);
+    let default = Burst { frames: 0, region: None, step: step(1) };
+    let one_frame = Burst { frames: 1, ..default };
+    assert_eq!(burst(frames("0")), Ok(default));
+    assert_eq!(burst(frames("2000")), Ok(Burst { frames: 2000, ..default }));
+    assert_eq!(burst(with("--burst-step", "1")), Ok(one_frame));
+    assert_eq!(burst(with("--burst-step", "16")), Ok(Burst { step: step(16), ..one_frame }));
+    let out_of_range = |option: &'static str, value: &str, min: u64, max: u64| {
+        Err(ArgsError::OutOfRange { option, value: value.to_owned(), min, max })
+    };
+    assert_eq!(frames("2001"), out_of_range("--burst-frames", "2001", 0, 2000));
+    assert_eq!(frames("-1"), out_of_range("--burst-frames", "-1", 0, 2000));
+    assert_eq!(with("--burst-step", "0"), out_of_range("--burst-step", "0", 1, 16));
+    assert_eq!(with("--burst-step", "17"), out_of_range("--burst-step", "17", 1, 16));
+    assert_eq!(with("--burst-step", "two"), out_of_range("--burst-step", "two", 1, 16));
+}
+
+#[test]
+fn a_burst_region_is_four_whole_numbers_with_a_width_and_a_height_above_0() {
+    let region = |value: &str| {
+        let line = parse(args(&["--name", "a", "--burst-frames", "1", "--burst-region", value]));
+        line.map(|options| options.settings.burst.region)
+    };
+    let corner = Region { x: 0, y: 0, width: 1, height: 1 };
+    assert_eq!(region("0,0,1,1"), Ok(Some(corner)));
+    let largest = Region { x: u32::MAX, y: u32::MAX, width: u32::MAX, height: u32::MAX };
+    assert_eq!(region("4294967295,4294967295,4294967295,4294967295"), Ok(Some(largest)));
+    for bad in [
+        "",
+        "1,2,3",
+        "1,2,3,4,5",
+        "1,2,0,4",
+        "1,2,3,0",
+        "-1,2,3,4",
+        "1, 2,3,4",
+        "1.5,2,3,4",
+        "1;2;3;4",
+        "a,b,c,d",
+        "1,2,3,4294967296",
+    ] {
+        assert_eq!(region(bad), Err(ArgsError::BadRegion(bad.to_owned())), "{bad}");
+    }
+    let message = ArgsError::BadRegion("1,2,3".to_owned()).to_string();
+    assert_eq!(
+        message,
+        "--burst-region takes <x>,<y>,<width>,<height> in whole pixels, with a width and a \
+         height above 0, not \"1,2,3\""
+    );
+}
+
+#[test]
+fn a_burst_region_or_step_without_burst_frames_above_0_is_an_error_that_names_it() {
+    let without = |option: &'static str| Err(ArgsError::BurstWithoutFrames(option));
+    let region = ["--burst-region", "0,0,1,1"];
+    let stepped = ["--burst-step", "2"];
+    let line = |options: &[&str]| parse(args(&[&["--name", "a"][..], options].concat()));
+    let no_frames = ["--burst-frames", "0"];
+    let one_frame = ["--burst-frames", "1"];
+    assert_eq!(line(&region), without("--burst-region"));
+    assert_eq!(line(&stepped), without("--burst-step"));
+    assert_eq!(line(&["--burst-step", "1"]), without("--burst-step"));
+    assert_eq!(line(&[&region[..], &no_frames[..]].concat()), without("--burst-region"));
+    let burst = line(&[&stepped[..], &one_frame[..]].concat());
+    let burst = burst.map(|options| options.settings.burst);
+    assert_eq!(burst, Ok(Burst { frames: 1, region: None, step: step(2) }));
+    let message = ArgsError::BurstWithoutFrames("--burst-step").to_string();
+    assert_eq!(message, "trial got --burst-step, which needs --burst-frames above 0");
+}
+
+#[test]
 fn the_usage_names_every_option() {
     let options = [
         "--name",
@@ -150,6 +240,9 @@ fn the_usage_names_every_option() {
         "--warmup-secs",
         "--perf-lines",
         "--captures",
+        "--burst-frames",
+        "--burst-region",
+        "--burst-step",
         "--out",
         "--game-dir",
         "--settings-file",

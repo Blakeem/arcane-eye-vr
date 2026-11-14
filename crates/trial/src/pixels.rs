@@ -3,7 +3,7 @@
 use viewer_client::frame::{Frame, PixelFormat};
 
 /// The bytes of one pixel in every format the frame read supports.
-const FRAME_PIXEL_BYTES: usize = 4;
+pub(crate) const FRAME_PIXEL_BYTES: usize = 4;
 
 /// The bits of one color channel of `R10G10B10A2_UNORM`.
 const CHANNEL_10_MASK: u32 = 0x3FF;

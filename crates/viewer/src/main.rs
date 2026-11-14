@@ -289,11 +289,11 @@ mod tests {
     #[test]
     fn a_missing_header_waits_for_the_game_and_another_layout_shows_its_error() {
         assert_eq!(header_status(&HeaderReadError::Missing), Status::NoCore);
-        let layout = HeaderReadError::Layout(HeaderError::LayoutVersion { found: 2 });
+        let layout = HeaderReadError::Layout(HeaderError::LayoutVersion { found: 1 });
         let Status::Failed(message) = header_status(&layout) else {
             panic!("a failed status for {layout:?}");
         };
-        assert!(message.contains("layout version is 2"), "{message}");
+        assert!(message.contains("layout version is 1"), "{message}");
     }
 
     #[test]

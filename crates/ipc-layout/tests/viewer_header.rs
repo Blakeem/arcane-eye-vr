@@ -4,7 +4,7 @@
 mod tests {
     use ipc_layout::viewer_header::{
         Acquire, AdapterLuid, EyeRect, FRAME_OFFSET, GENERATION_OFFSET, HEARTBEAT_OFFSET,
-        HeaderError, SIZE, TextureInfo, ViewerHeader, WIDTH_OFFSET, WORDS,
+        HeaderError, PRESENT_OFFSET, SIZE, TextureInfo, ViewerHeader, WIDTH_OFFSET, WORDS,
     };
 
     /// A LUID low part whose four bytes differ, so a swapped byte order shows.
@@ -13,6 +13,8 @@ mod tests {
     const LUID_HIGH_BITS: u32 = 0xFFFF_FFFE;
     /// A frame counter whose four bytes differ.
     const FRAME: u32 = 0x0102_0304;
+    /// A present number whose four bytes differ from each other and from the frame counter's.
+    const PRESENT: u32 = 0x0506_0708;
 
     fn texture() -> TextureInfo {
         TextureInfo {
@@ -32,13 +34,14 @@ mod tests {
         assert_eq!(GENERATION_OFFSET, 60);
         assert_eq!(FRAME_OFFSET, 64);
         assert_eq!(HEARTBEAT_OFFSET, 68);
+        assert_eq!(PRESENT_OFFSET, 72);
     }
 
     #[test]
     fn encode_writes_each_field_at_its_layout_word() {
-        let words = ViewerHeader::new(texture(), 7, FRAME).encode();
+        let words = ViewerHeader::new(texture(), 7, FRAME, PRESENT).encode();
         assert_eq!(words[0].to_le_bytes(), *b"B3SV");
-        assert_eq!(words[1], 1, "layout version 1");
+        assert_eq!(words[1], 2, "layout version 2");
         assert_eq!(words[2], LUID_LOW, "adapter LUID low part");
         assert_eq!(words[3], LUID_HIGH_BITS, "adapter LUID high part -2");
         assert_eq!(words[4..7], [1920, 1080, 28], "width, height and format");
@@ -47,12 +50,13 @@ mod tests {
         assert_eq!(words[15], 7, "generation");
         assert_eq!(words[16], FRAME, "frame");
         assert_eq!(words[17], 0, "heartbeat");
-        assert_eq!(words[18..], [0; 14], "reserved");
+        assert_eq!(words[18], PRESENT, "present number");
+        assert_eq!(words[19..], [0; 13], "reserved");
     }
 
     #[test]
     fn decode_reads_back_what_encode_wrote_and_the_heartbeat_the_viewer_wrote() {
-        let header = ViewerHeader::new(texture(), 3, 99);
+        let header = ViewerHeader::new(texture(), 3, 99, 120);
         let mut words = header.encode();
         assert_eq!(ViewerHeader::decode(&words), Ok(header));
         words[17] = 41;
@@ -61,22 +65,23 @@ mod tests {
         assert_eq!(decoded.texture(), texture());
         assert_eq!(decoded.generation(), 3);
         assert_eq!(decoded.frame(), 99);
+        assert_eq!(decoded.present(), 120);
     }
 
     #[test]
     fn decode_rejects_a_new_mapping_and_another_layout_version() {
         let zeroed = ViewerHeader::decode(&[0; WORDS]);
         assert_eq!(zeroed, Err(HeaderError::Magic { found: 0 }));
-        let mut words = ViewerHeader::new(TextureInfo::default(), 0, 0).encode();
-        words[1] = 2;
-        let error = ViewerHeader::decode(&words).expect_err("layout version 2");
-        assert_eq!(error, HeaderError::LayoutVersion { found: 2 });
-        assert_eq!(error.to_string(), "the viewer header's layout version is 2, not 1");
+        let mut words = ViewerHeader::new(TextureInfo::default(), 0, 0, 0).encode();
+        words[1] = 1;
+        let error = ViewerHeader::decode(&words).expect_err("layout version 1");
+        assert_eq!(error, HeaderError::LayoutVersion { found: 1 });
+        assert_eq!(error.to_string(), "the viewer header's layout version is 1, not 2");
     }
 
     #[test]
     fn core_words_cover_every_word_but_the_heartbeat_in_ascending_order() {
-        let header = ViewerHeader::new(texture(), 5, 6);
+        let header = ViewerHeader::new(texture(), 5, 6, 8);
         let words = header.encode();
         let written: Vec<(usize, u32)> = header.core_words().collect();
         assert_eq!(written.len(), WORDS - 1);

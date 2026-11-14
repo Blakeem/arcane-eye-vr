@@ -52,20 +52,28 @@ pub(crate) fn write(folder: &Path, file: &str, text: &str) -> Result<(), FolderE
     }
 }
 
-/// The text of `trial.txt`: the name, the mode, each option's value and the mod version.
+/// The text of `trial.txt`: the name, the mode, each option's value and the mod version. The burst
+/// region reads as the command line writes it.
 pub(crate) fn trial_text(options: &Options) -> String {
     let settings = &options.settings;
     let game_dir = path_or(settings.game_dir.as_deref(), "found through Steam");
     let player_file = path_or(settings.player_file.as_deref(), "none");
     let dev_file = path_or(settings.dev_file.as_deref(), "none");
+    let burst = &settings.burst;
+    let burst_region =
+        burst.region.map_or_else(|| "entire frame".to_owned(), |region| region.to_string());
     format!(
-        "name: {}\nmode: {}\nwarmup-secs: {}\nperf-lines: {}\ncaptures: {}\nout: {}\ngame-dir: {}\n\
-         settings-file: {}\ndev-file: {}\nmod-version: {}\n",
+        "name: {}\nmode: {}\nwarmup-secs: {}\nperf-lines: {}\ncaptures: {}\nburst-frames: {}\n\
+         burst-region: {}\nburst-step: {}\nout: {}\ngame-dir: {}\nsettings-file: {}\n\
+         dev-file: {}\nmod-version: {}\n",
         options.name.as_str(),
         settings.mode.as_str(),
         settings.warmup.as_secs(),
         settings.perf_lines,
         settings.captures,
+        burst.frames,
+        burst_region,
+        burst.step,
         settings.out.display(),
         game_dir,
         player_file,
@@ -125,13 +133,15 @@ const fn is_leap(year: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::num::NonZeroU32;
     use std::path::PathBuf;
     use std::time::Duration;
 
     use ipc_layout::launch_token::Mode;
+    use viewer_client::region::Region;
 
     use super::{FolderError, create, trial_text, utc_stamp};
-    use crate::args::{Options, Settings, TrialName};
+    use crate::args::{Burst, Options, Settings, TrialName};
     use crate::test_dir;
 
     fn stamp(seconds: u64) -> String {
@@ -181,11 +191,14 @@ mod tests {
 
     #[test]
     fn the_trial_text_names_every_option_and_the_mod_version() {
+        let region = Region { x: 1920, y: 0, width: 1920, height: 2160 };
+        let step = NonZeroU32::new(2).expect("a nonzero step");
         let settings = Settings {
             mode: Mode::Vr,
             warmup: Duration::from_secs(30),
             perf_lines: 4,
             captures: 2,
+            burst: Burst { frames: 300, region: Some(region), step },
             out: PathBuf::from(r"C:\results"),
             game_dir: Some(PathBuf::from(r"D:\Games\Baldurs Gate 3")),
             player_file: Some(PathBuf::from(r"C:\trials\ipd-60.toml")),
@@ -193,14 +206,17 @@ mod tests {
         };
         let name = TrialName::new("menu").expect("a valid name");
         let expected = format!(
-            "name: menu\nmode: vr\nwarmup-secs: 30\nperf-lines: 4\ncaptures: 2\nout: C:\\results\n\
+            "name: menu\nmode: vr\nwarmup-secs: 30\nperf-lines: 4\ncaptures: 2\n\
+             burst-frames: 300\nburst-region: 1920,0,1920,2160\nburst-step: 2\nout: C:\\results\n\
              game-dir: D:\\Games\\Baldurs Gate 3\nsettings-file: C:\\trials\\ipd-60.toml\n\
              dev-file: C:\\trials\\left.toml\nmod-version: {}\n",
             env!("CARGO_PKG_VERSION")
         );
         assert_eq!(trial_text(&Options { name: name.clone(), settings }), expected);
         let steam = trial_text(&Options { name, settings: Settings::default() });
-        let defaults = "\nout: trial-results\ngame-dir: found through Steam\nsettings-file: none\ndev-file: none\n";
+        let defaults = "\nburst-frames: 0\nburst-region: entire frame\nburst-step: 1\n\
+                        out: trial-results\ngame-dir: found through Steam\nsettings-file: none\n\
+                        dev-file: none\n";
         assert!(steam.contains(defaults), "{steam}");
     }
 }

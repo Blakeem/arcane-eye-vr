@@ -1,5 +1,6 @@
 //! The steps against stand-ins for the game and the frame reader.
 
+mod burst;
 mod stand_in;
 
 use std::fs;
@@ -13,7 +14,7 @@ use ipc_layout::launch_token::Mode;
 
 use self::stand_in::{Exits, LOG_TEXT, StandInFrames, StandInGame};
 use super::{Closed, Report, Step, cause, trial};
-use crate::args::{Options, Settings, TrialName};
+use crate::args::{Burst, Options, Settings, TrialName};
 use crate::test_dir;
 
 fn options(out: &Path) -> Options {
@@ -22,6 +23,7 @@ fn options(out: &Path) -> Options {
         warmup: Duration::from_secs(7),
         perf_lines: 2,
         captures: 2,
+        burst: Burst::default(),
         out: out.to_path_buf(),
         game_dir: Some(PathBuf::from(r"D:\Game")),
         player_file: None,
@@ -68,7 +70,7 @@ fn a_failure_in_each_step_after_the_start_still_closes_the_game() {
     for (failed, middle) in cases {
         let dir = test_dir(&format!("fail-{}", failed.as_str()));
         let mut game = StandInGame::failing_at((failed != Step::Capture).then_some(failed));
-        let mut frames = StandInFrames { fail_reads: failed == Step::Capture, beating: false };
+        let mut frames = StandInFrames::new(failed == Step::Capture);
         let (report, printed, result) = run_trial(dir.path(), &mut game, &mut frames);
         let expected = failed_after_start(middle);
         assert_eq!(result, expected, "{failed:?}");
@@ -121,8 +123,7 @@ fn a_game_that_exits_during_a_step_after_the_start_fails_that_step_with_its_exit
         let dir = test_dir(&format!("exit-{check}"));
         let mut game = StandInGame::failing_at(failed.filter(|step| *step != Step::Capture));
         game.exits = Exits::AtCheck(check);
-        let mut frames =
-            StandInFrames { fail_reads: failed == Some(Step::Capture), beating: false };
+        let mut frames = StandInFrames::new(failed == Some(Step::Capture));
         let (report, _printed, result) = run_trial(dir.path(), &mut game, &mut frames);
         assert_eq!(result, failed_after_start(&middle), "{check}");
         assert_eq!(game.ran.last_chunk(), Some(&[Step::Close, Step::CopyLog]), "{check}");
@@ -140,7 +141,7 @@ fn a_failed_check_of_the_game_fails_a_passed_step_and_keeps_a_failed_step_cause(
         let dir = test_dir(&format!("exit-check-{}", failed.is_some()));
         let mut game = StandInGame::failing_at(failed);
         game.exits = Exits::CheckFails;
-        let mut frames = StandInFrames { fail_reads: false, beating: false };
+        let mut frames = StandInFrames::new(false);
         let (report, _printed, result) = run_trial(dir.path(), &mut game, &mut frames);
         assert_eq!(result, failed_after_start(middle), "{failed:?}");
         assert_eq!(report.exit_code(), ExitCode::from(1), "{failed:?}");
@@ -152,7 +153,7 @@ fn a_forced_close_is_recorded_and_the_trial_still_passes() {
     let dir = test_dir("forced");
     let mut game = StandInGame::failing_at(None);
     game.closed = Closed::Forced { waited: Duration::from_secs(30) };
-    let mut frames = StandInFrames { fail_reads: false, beating: false };
+    let mut frames = StandInFrames::new(false);
     let (report, _printed, result) = run_trial(dir.path(), &mut game, &mut frames);
     let close_line = "close: passed, forced: the game still ran 30s after the close request, so it \
                       was ended\n";
@@ -166,7 +167,7 @@ fn a_failed_close_fails_the_trial_and_the_log_is_still_copied() {
     let dir = test_dir("close-fails");
     let mut game = StandInGame::failing_at(Some(Step::Close));
     game.steam_running_reads = None;
-    let mut frames = StandInFrames { fail_reads: false, beating: false };
+    let mut frames = StandInFrames::new(false);
     let (report, _printed, result) = run_trial(dir.path(), &mut game, &mut frames);
     let tail = "capture: passed\nclose: failed: process 7 still ran 10s after it was ended\n\
                 copy-log: passed\noutcome: failed\n";
@@ -180,7 +181,7 @@ fn the_close_waits_until_steam_no_longer_reports_the_game_running() {
     let dir = test_dir("steam-clears");
     let mut game = StandInGame::failing_at(None);
     game.steam_running_reads = Some(2);
-    let mut frames = StandInFrames { fail_reads: false, beating: false };
+    let mut frames = StandInFrames::new(false);
     let (report, _printed, result) = run_trial(dir.path(), &mut game, &mut frames);
     assert_eq!(game.pauses, [Duration::from_millis(250); 2], "one pause per read that ran");
     assert!(result.ends_with("close: passed\ncopy-log: passed\noutcome: passed\n"), "{result}");
@@ -192,7 +193,7 @@ fn a_steam_state_that_never_clears_ends_the_wait_after_30_seconds_and_the_close_
     let dir = test_dir("steam-never-clears");
     let mut game = StandInGame::failing_at(None);
     game.steam_running_reads = None;
-    let mut frames = StandInFrames { fail_reads: false, beating: false };
+    let mut frames = StandInFrames::new(false);
     let (report, _printed, result) = run_trial(dir.path(), &mut game, &mut frames);
     // 30 s of 250 ms pauses.
     assert_eq!(game.pauses, [Duration::from_millis(250); 120]);
@@ -212,7 +213,7 @@ fn a_failure_before_the_start_runs_no_close() {
     ] {
         let dir = test_dir(&format!("before-{}", failed.as_str()));
         let mut game = StandInGame::failing_at(Some(failed));
-        let mut frames = StandInFrames { fail_reads: false, beating: false };
+        let mut frames = StandInFrames::new(false);
         let (report, _printed, result) = run_trial(dir.path(), &mut game, &mut frames);
         assert_eq!(result, format!("{line}outcome: failed\n"));
         assert_eq!(game.ran.last(), Some(&failed));
@@ -226,12 +227,13 @@ fn a_passed_trial_writes_every_file_of_the_result_folder() {
     let dir = test_dir("full");
     let folder = dir.path();
     let mut game = StandInGame::failing_at(None);
-    let mut frames = StandInFrames { fail_reads: false, beating: false };
+    let mut frames = StandInFrames::new(false);
     let (report, printed, result) = run_trial(folder, &mut game, &mut frames);
     let read = |file: &str| fs::read_to_string(folder.join(file)).expect("read a result file");
     let trial_text = format!(
-        "name: menu\nmode: desktop-stereo\nwarmup-secs: 7\nperf-lines: 2\ncaptures: 2\nout: {}\n\
-         game-dir: D:\\Game\nsettings-file: none\ndev-file: none\nmod-version: {}\n",
+        "name: menu\nmode: desktop-stereo\nwarmup-secs: 7\nperf-lines: 2\ncaptures: 2\n\
+         burst-frames: 0\nburst-region: entire frame\nburst-step: 1\nout: {}\ngame-dir: D:\\Game\n\
+         settings-file: none\ndev-file: none\nmod-version: {}\n",
         folder.display(),
         env!("CARGO_PKG_VERSION")
     );
@@ -283,7 +285,7 @@ fn a_window_with_a_camera_line_writes_one_line_per_summary_line_to_camera_txt() 
     let left = CameraLine { eye: CameraEye::Left, x: 1.0, ..camera };
     let mut game = StandInGame::failing_at(None);
     game.cameras = [Vec::new(), vec![left, camera]];
-    let mut frames = StandInFrames { fail_reads: false, beating: false };
+    let mut frames = StandInFrames::new(false);
     let (report, _printed, _result) = run_trial(folder, &mut game, &mut frames);
     let text = fs::read_to_string(folder.join("camera.txt")).expect("read camera.txt");
     let expected = "\
@@ -308,7 +310,7 @@ fn the_given_settings_files_land_in_home_before_the_game_starts_with_it() {
     options.settings.player_file = Some(player_file.clone());
     options.settings.dev_file = Some(dev_file.clone());
     let mut game = StandInGame::failing_at(Some(Step::FirstPresent));
-    let mut frames = StandInFrames { fail_reads: false, beating: false };
+    let mut frames = StandInFrames::new(false);
     trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
     let home = folder.join("home");
     assert_eq!(game.home.as_deref(), Some(home.as_path()));
@@ -329,7 +331,7 @@ fn a_missing_settings_file_fails_the_check_step_with_its_path_and_starts_nothing
     let mut options = options(folder);
     options.settings.player_file = Some(missing.clone());
     let mut game = StandInGame::failing_at(None);
-    let mut frames = StandInFrames { fail_reads: false, beating: false };
+    let mut frames = StandInFrames::new(false);
     let report = trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
     let result = fs::read_to_string(folder.join("result.txt")).expect("read result.txt");
     let expected = format!(
@@ -358,7 +360,7 @@ fn a_result_that_cannot_be_printed_is_a_print_error_after_result_txt_is_written(
 
     let dir = test_dir("print");
     let mut game = StandInGame::failing_at(Some(Step::Check));
-    let mut frames = StandInFrames { fail_reads: false, beating: false };
+    let mut frames = StandInFrames::new(false);
     let error = trial(&options(dir.path()), dir.path(), &mut game, &mut frames, &mut BrokenPipe)
         .expect_err("a broken pipe");
     assert_eq!(error.to_string(), "could not print the result");

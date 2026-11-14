@@ -2,10 +2,11 @@
 
 use std::fs;
 use std::io;
+use std::num::NonZeroU32;
 use std::os::windows::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ipc_layout::camera_line::CameraLine;
 use ipc_layout::perf_line::PerfSummary;
@@ -13,7 +14,9 @@ use launch::checks::GameRunning;
 use launch::status::WaitError;
 use launch::stop::StopError;
 use viewer_client::frame::{Frame, PixelFormat, ReadError};
+use viewer_client::region::Region;
 
+use crate::burst::BurstFrame;
 use crate::perf::{CountedLine, PerfError, PerfWindow};
 use crate::steps::{Closed, Frames, Game, Step, StepError};
 
@@ -163,10 +166,37 @@ impl Game for StandInGame {
     }
 }
 
-/// A frame reader that returns 2x1 RGBA frames, or fails its reads.
+/// The time between two present numbers of the stand-in's region reads.
+pub(super) const PRESENT_INTERVAL: Duration = Duration::from_millis(9);
+
+/// A frame reader that returns 2x1 RGBA frames, or fails its reads, and returns region reads with
+/// the present numbers of its script.
 pub(super) struct StandInFrames {
     pub(super) fail_reads: bool,
     pub(super) beating: bool,
+    /// The frame size the stand-in reports.
+    pub(super) size: (u32, u32),
+    /// The present number of each region read in order. A read past the last times out.
+    pub(super) presents: Vec<u32>,
+    reads: usize,
+    /// The region, step and timeout of each region read, in order.
+    pub(super) region_reads: Vec<(Region, NonZeroU32, Duration)>,
+    /// The time of present number 0, from which each region read's time follows.
+    start: Instant,
+}
+
+impl StandInFrames {
+    pub(super) fn new(fail_reads: bool) -> Self {
+        Self {
+            fail_reads,
+            beating: false,
+            size: (8, 4),
+            presents: Vec::new(),
+            reads: 0,
+            region_reads: Vec::new(),
+            start: Instant::now(),
+        }
+    }
 }
 
 impl Frames for StandInFrames {
@@ -184,5 +214,33 @@ impl Frames for StandInFrames {
         }
         let bytes = vec![10, 20, 30, 255, 40, 50, 60, 255];
         Ok(Frame { width: 2, height: 1, format: PixelFormat::Rgba8, bytes })
+    }
+
+    fn frame_size(&mut self) -> Result<(u32, u32), StepError> {
+        Ok(self.size)
+    }
+
+    /// A frame whose every byte is the low byte of its present number.
+    fn read_region(
+        &mut self,
+        region: Region,
+        step: NonZeroU32,
+        timeout: Duration,
+    ) -> Result<BurstFrame, StepError> {
+        if !self.beating {
+            return Err(StepError::Heartbeat(io::Error::other("a read before the heartbeat")));
+        }
+        self.region_reads.push((region, step, timeout));
+        let Some(&present) = self.presents.get(self.reads) else {
+            return Err(ReadError::Timeout(timeout).into());
+        };
+        self.reads = self.reads.saturating_add(1);
+        let (width, height) = region.kept_size(step);
+        let len = usize::try_from(width.saturating_mul(height).saturating_mul(4)).unwrap_or(0);
+        let byte = present.to_le_bytes()[0];
+        let pixels = Frame { width, height, format: PixelFormat::Rgba8, bytes: vec![byte; len] };
+        let since_start = PRESENT_INTERVAL.saturating_mul(present);
+        let at = self.start.checked_add(since_start).expect("a test time");
+        Ok(BurstFrame { present, at, pixels })
     }
 }

@@ -266,6 +266,29 @@ fn a_viewer_holding_the_mutex_skips_the_frame() {
 }
 
 #[test]
+fn each_present_counts_so_a_publish_skipped_for_a_busy_viewer_shows_as_a_gap() {
+    let names = names("present");
+    let core = warp();
+    let mut publisher = Publisher::create(&names).expect("create the header");
+    let mut viewer = Viewer::new(&names);
+    let (source, _bytes) = pattern(&core, 4, 4);
+    let start = Instant::now();
+    let numbers = |reader: &Viewer| (reader.header().frame(), reader.header().present());
+    assert_eq!(publish(&mut publisher, &core, start, &source), Outcome::NoViewer);
+    viewer.beat();
+    assert_eq!(publish(&mut publisher, &core, after(start, 16), &source), Outcome::Published);
+    assert_eq!(numbers(&viewer), (1, 2), "the present with no viewer counts");
+    let shared = viewer.open().expect("open the shared texture");
+    let mutex = Viewer::acquire(&shared);
+    assert_eq!(publish(&mut publisher, &core, after(start, 32), &source), Outcome::ViewerBusy);
+    assert_eq!(numbers(&viewer), (1, 2), "the skipped present wrote no number");
+    // SAFETY: this device acquired the mutex with the same key.
+    unsafe { mutex.ReleaseSync(MUTEX_KEY) }.expect("release the shared texture");
+    assert_eq!(publish(&mut publisher, &core, after(start, 48), &source), Outcome::Published);
+    assert_eq!(numbers(&viewer), (2, 4), "the next frame's number shows the skipped present");
+}
+
+#[test]
 fn an_abandoned_mutex_recreates_the_texture_under_the_same_name() {
     let names = names("abandoned");
     let core = warp();
@@ -350,5 +373,6 @@ fn a_new_core_continues_the_counters_of_a_header_a_viewer_kept() {
     viewer.beat();
     assert_eq!(publish(&mut second, &core, after(start, 16), &source), Outcome::Published);
     assert_eq!((viewer.header().generation(), viewer.header().frame()), (2, 2));
+    assert_eq!(viewer.header().present(), 2, "the new core counts on from the earlier present");
     assert_eq!(viewer.read(), bytes, "the new core's texture under the same name");
 }

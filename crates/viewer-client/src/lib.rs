@@ -2,13 +2,14 @@
 //!
 //! The debug viewer draws the frames in a window, and a test runner reads them back to save them.
 //! This crate owns the header view, the heartbeat thread, the device on the core's adapter, the open
-//! of the shared texture, the copy out of it under its keyed mutex and the frame read. The `raw` module
-//! and its submodules hold every unsafe Windows call.
+//! of the shared texture, the copy out of it or one region of it under its keyed mutex and the frame
+//! read. The `raw` module and its submodules hold every unsafe Windows call.
 
 pub mod frame;
 pub mod header;
 pub mod heartbeat;
 mod raw;
+pub mod region;
 
 #[cfg(any(test, feature = "fixture"))]
 pub use raw::fixture;

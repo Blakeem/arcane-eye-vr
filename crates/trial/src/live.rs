@@ -3,6 +3,7 @@
 //! reads the frames.
 
 use std::fs;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus};
 use std::thread;
@@ -22,8 +23,10 @@ use tracing::warn;
 use viewer_client::frame::{Frame, FrameReader};
 use viewer_client::header::Names;
 use viewer_client::heartbeat;
+use viewer_client::region::Region;
 
 use crate::args::Settings;
+use crate::burst::BurstFrame;
 use crate::perf::{self, LogTail, PerfWindow};
 use crate::steps::{Closed, Frames, Game, Step, StepError};
 
@@ -42,7 +45,8 @@ const PERF_LINE_TIMEOUT: Duration = Duration::from_secs(120);
 /// The longest wait for the game to exit after its windows were asked to close.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The longest wait for one frame. The core creates its shared texture once it sees the heartbeat.
+/// The longest wait for one captured frame, and for the frame size before a burst. The core creates
+/// its shared texture once it sees the heartbeat.
 const FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The time from one frame read to the next.
@@ -232,6 +236,20 @@ impl Frames for LiveFrames {
         }
         self.last_read = Some(Instant::now());
         Ok(self.reader.read(FRAME_TIMEOUT)?)
+    }
+
+    fn frame_size(&mut self) -> Result<(u32, u32), StepError> {
+        Ok(self.reader.frame_size(FRAME_TIMEOUT)?)
+    }
+
+    fn read_region(
+        &mut self,
+        region: Region,
+        step: NonZeroU32,
+        timeout: Duration,
+    ) -> Result<BurstFrame, StepError> {
+        let read = self.reader.read_region(timeout, region, step)?;
+        Ok(BurstFrame { present: read.present, at: Instant::now(), pixels: read.pixels })
     }
 }
 

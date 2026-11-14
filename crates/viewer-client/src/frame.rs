@@ -1,8 +1,10 @@
-//! The frame read: the published frame copied back to memory, for a caller that saves it.
+//! The frame read: the published frame, or one region of it, copied back to memory, for a caller
+//! that saves it.
 //!
 //! The core publishes only while a heartbeat advances, so a caller starts [`crate::heartbeat`] before
 //! it reads. The reader keeps its device and the opened texture between reads.
 
+use std::num::NonZeroU32;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -16,10 +18,15 @@ use windows::core::HSTRING;
 
 use crate::header::{HeaderReadError, Names, read_header};
 use crate::raw::Staging;
+use crate::region::Region;
 use crate::{Copied, Device, GpuError, HeaderView, SharedTexture};
 
 /// The wait between two looks at the header. It is shorter than one frame at 60 frames per second.
 const POLL: Duration = Duration::from_millis(5);
+
+/// The wait after a region read's look that finds no new frame. The read looks again at once, since
+/// a wait can last a 15.6 ms timer tick and the game can present a frame every 8.9 ms.
+const REGION_POLL: Duration = Duration::ZERO;
 
 /// How to read the 4 bytes of one pixel. The read copies the texture's bytes unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +69,15 @@ pub struct Frame {
     pub bytes: Vec<u8>,
 }
 
+/// The kept pixels of one region of a published frame, and the frame's present number.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegionFrame {
+    /// The count of frames the core's publisher handled up to this frame, published or not, continued
+    /// from the header an earlier core left.
+    pub present: u32,
+    pub pixels: Frame,
+}
+
 /// Why a frame read failed.
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
@@ -75,6 +91,9 @@ pub enum ReadError {
     /// No new frame arrived within the caller's timeout.
     #[error("no new frame arrived within {0:?}")]
     Timeout(Duration),
+    /// The region holds no pixel or does not lie inside the shared texture of this size.
+    #[error("the region {region} does not lie inside the {width}x{height} frame")]
+    RegionOutside { region: Region, width: u32, height: u32 },
 }
 
 /// Reads published frames from the viewer link.
@@ -107,10 +126,59 @@ impl FrameReader {
     /// the failed open when the last look before the timeout could not open the shared texture.
     /// Returns every other [`ReadError`] at once.
     pub fn read(&mut self, timeout: Duration) -> Result<Frame, ReadError> {
+        self.wait(timeout, POLL, |reader| {
+            reader.look(|device, opened, _view| entire_frame(device, opened))
+        })
+    }
+
+    /// Waits up to `timeout` for a new frame, as [`Self::read`] does, and returns its present
+    /// number and every `step`-th pixel of every `step`-th row of `region`, starting at the region's
+    /// top left pixel. Only the region is copied out of the shared texture. The present number is
+    /// read while this process holds the keyed mutex, so it numbers the copied pixels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReadError::RegionOutside`] when `region` does not lie inside the shared texture,
+    /// and every other error as [`Self::read`] does.
+    pub fn read_region(
+        &mut self,
+        timeout: Duration,
+        region: Region,
+        step: NonZeroU32,
+    ) -> Result<RegionFrame, ReadError> {
+        self.wait(timeout, REGION_POLL, |reader| {
+            reader.look(|device, opened, view| region_frame(device, opened, view, region, step))
+        })
+    }
+
+    /// Waits up to `timeout` for the header to describe a shared texture and returns the texture's
+    /// width and height.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReadError::Timeout`] when the header described no texture in time, and a
+    /// [`ReadError::Header`] at once.
+    pub fn frame_size(&mut self, timeout: Duration) -> Result<(u32, u32), ReadError> {
+        self.wait(timeout, POLL, |reader| {
+            let (_view, header) = read_header(&mut reader.header, &reader.names.mapping)?;
+            let texture = header.texture();
+            let size = (texture.width, texture.height);
+            Ok(if texture.width == 0 { Look::NoFrame } else { Look::Frame(size) })
+        })
+    }
+
+    /// Looks with `look` until it finds what it looks for or `timeout` passed. The wait between two
+    /// looks is [`retry_wait`].
+    fn wait<T>(
+        &mut self,
+        timeout: Duration,
+        frame_poll: Duration,
+        mut look: impl FnMut(&mut Self) -> Result<Look<T>, ReadError>,
+    ) -> Result<T, ReadError> {
         let start = Instant::now();
         loop {
-            let open_failure = match self.try_read()? {
-                Look::Frame(frame) => return Ok(frame),
+            let open_failure = match look(self)? {
+                Look::Frame(found) => return Ok(found),
                 Look::NoFrame => None,
                 Look::OpenFailed(error) => Some(error),
             };
@@ -118,16 +186,21 @@ impl FrameReader {
             if remaining.is_zero() {
                 return Err(open_failure.map_or(ReadError::Timeout(timeout), ReadError::Gpu));
             }
+            let poll = retry_wait(open_failure.as_ref(), frame_poll);
             // thread::sleep is banned for game threads. Parking waits the same, and an early wake
             // only looks early.
-            thread::park_timeout(remaining.min(POLL));
+            thread::park_timeout(remaining.min(poll));
         }
     }
 
-    /// One look at the header, and the copy of a new frame when the header numbers one.
-    fn try_read(&mut self) -> Result<Look, ReadError> {
+    /// One look at the header, and the `copy` of a new frame when the header numbers one. `copy`
+    /// returns `None` when the core held the shared texture past the wait.
+    fn look<T>(
+        &mut self,
+        copy: impl FnOnce(&Device, &mut Opened, &HeaderView) -> Result<Option<T>, ReadError>,
+    ) -> Result<Look<T>, ReadError> {
         let Self { names, header: header_slot, opened: opened_slot, device: device_slot } = self;
-        let (_view, header) = read_header(header_slot, &names.mapping)?;
+        let (view, header) = read_header(header_slot, &names.mapping)?;
         let texture = header.texture();
         if texture.width == 0 {
             return Ok(Look::NoFrame);
@@ -141,44 +214,93 @@ impl FrameReader {
         if opened.consumed == frame {
             return Ok(Look::NoFrame);
         }
-        let read = match device.copy(&opened.shared, opened.staging.texture()) {
-            Ok(Copied::NewFrame) => device.read_back(&opened.staging),
-            Ok(Copied::CoreBusy) => return Ok(Look::NoFrame),
-            Err(GpuError::Abandoned) => {
+        match copy(device, opened, view) {
+            Ok(Some(read)) => {
+                opened.consumed = frame;
+                Ok(Look::Frame(read))
+            }
+            Ok(None) => Ok(Look::NoFrame),
+            Err(ReadError::Gpu(GpuError::Abandoned)) => {
                 warn!(
                     generation = header.generation(),
                     "the core abandoned the shared texture's keyed mutex, reopening the texture"
                 );
                 *opened_slot = None;
-                return Ok(Look::NoFrame);
-            }
-            Err(error) => Err(error),
-        };
-        match read {
-            Ok(bytes) => {
-                opened.consumed = frame;
-                let (width, height) = opened.shared.size();
-                Ok(Look::Frame(Frame { width, height, format: opened.format, bytes }))
+                Ok(Look::NoFrame)
             }
             // A failed copy, release or read-back may come from a removed device, which the next
             // look replaces.
-            Err(error) => {
+            Err(ReadError::Gpu(error)) => {
                 *opened_slot = None;
                 *device_slot = None;
                 Err(error.into())
             }
+            Err(error) => Err(error),
         }
     }
 }
 
+/// The entire shared texture of `opened` copied and read back, or `None` when the core held it
+/// past the wait.
+fn entire_frame(device: &Device, opened: &Opened) -> Result<Option<Frame>, ReadError> {
+    if device.copy(&opened.shared, opened.staging.texture())? == Copied::CoreBusy {
+        return Ok(None);
+    }
+    let bytes = device.read_back(&opened.staging, NonZeroU32::MIN)?;
+    let (width, height) = opened.shared.size();
+    Ok(Some(Frame { width, height, format: opened.format, bytes }))
+}
+
+/// The kept pixels of `region` of the shared texture of `opened` and the present number `view`
+/// holds while the copy holds the keyed mutex, or `None` when the core held it past the wait.
+fn region_frame(
+    device: &Device,
+    opened: &mut Opened,
+    view: &HeaderView,
+    region: Region,
+    step: NonZeroU32,
+) -> Result<Option<RegionFrame>, ReadError> {
+    let (width, height) = opened.shared.size();
+    if !region.lies_inside(width, height) {
+        return Err(ReadError::RegionOutside { region, width, height });
+    }
+    let size = (region.width, region.height);
+    let staging = match opened.region.take() {
+        Some(staging) if staging.size() == size => staging,
+        stale => {
+            drop(stale);
+            device.create_staging(&opened.shared, size)?
+        }
+    };
+    let staging = opened.region.insert(staging);
+    let copied =
+        device.copy_region(&opened.shared, staging.texture(), region, || view.read_present())?;
+    let Some(present) = copied else {
+        return Ok(None);
+    };
+    let bytes = device.read_back(staging, step)?;
+    let (kept_width, kept_height) = region.kept_size(step);
+    let pixels = Frame { width: kept_width, height: kept_height, format: opened.format, bytes };
+    Ok(Some(RegionFrame { present, pixels }))
+}
+
 /// What one look at the header found.
-enum Look {
-    Frame(Frame),
+enum Look<T> {
+    Frame(T),
     /// No new frame, or the core held the shared texture past the wait.
     NoFrame,
     /// The shared texture failed to open, as in the gap between the core dropping the old texture
     /// and sharing the new one.
     OpenFailed(GpuError),
+}
+
+/// The wait after a look that found no frame: `frame_poll` when the look found no new frame, and
+/// [`POLL`] when the shared texture failed to open, since each retry of the open calls the GPU.
+const fn retry_wait(open_failure: Option<&GpuError>, frame_poll: Duration) -> Duration {
+    match open_failure {
+        Some(_) => POLL,
+        None => frame_poll,
+    }
 }
 
 /// The device in `slot` when it is on the adapter `adapter_luid`, else a new one there. A new device
@@ -200,12 +322,14 @@ fn device_on<'slot>(
     Ok(slot.insert(device))
 }
 
-/// The shared texture, the generation it was opened at, the texture the CPU reads it through, and
-/// the frame counter of the frame last returned from it.
+/// The shared texture, the generation it was opened at, the texture the CPU reads it through, the
+/// texture the CPU reads the last region through, and the frame counter of the frame last returned
+/// from it.
 struct Opened {
     generation: u32,
     shared: SharedTexture,
     staging: Staging,
+    region: Option<Staging>,
     format: PixelFormat,
     consumed: u32,
 }
@@ -233,8 +357,8 @@ impl Opened {
                 let Some(format) = PixelFormat::from_dxgi(dxgi_format) else {
                     return Err(ReadError::UnsupportedFormat(dxgi_format.0.cast_unsigned()));
                 };
-                let staging = device.create_staging(&shared)?;
-                Self { generation, shared, staging, format, consumed: header.frame() }
+                let staging = device.create_staging(&shared, shared.size())?;
+                Self { generation, shared, staging, region: None, format, consumed: header.frame() }
             }
         };
         Ok(Ok(slot.insert(opened)))

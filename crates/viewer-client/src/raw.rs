@@ -1,8 +1,8 @@
 //! The viewer client's unsafe edge, which holds every unsafe Windows call of the crate.
 //!
 //! This file holds the viewer header view. `raw/gpu.rs` holds the D3D11 and DXGI calls that open the
-//! shared texture, copy it and read it back. `raw/fixture.rs` holds the test fixtures in the core's
-//! place.
+//! shared texture, copy it or one region of it and read the copy back. `raw/fixture.rs` holds the
+//! test fixtures in the core's place.
 
 #![expect(
     unsafe_code,
@@ -15,7 +15,7 @@ mod gpu;
 
 use std::ptr;
 
-use ipc_layout::viewer_header::{HEARTBEAT_OFFSET, SIZE, WORDS};
+use ipc_layout::viewer_header::{HEARTBEAT_OFFSET, PRESENT_OFFSET, SIZE, WORDS};
 use windows::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND};
 use windows::Win32::System::Memory::{
     FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, OpenFileMappingW,
@@ -81,6 +81,13 @@ impl HeaderView {
             *word = unsafe { ptr::read_volatile(base.wrapping_add(index)) };
         }
         words
+    }
+
+    /// Reads the present number. The read is volatile, since the core writes it.
+    pub fn read_present(&self) -> u32 {
+        let field = self.address.Value.wrapping_byte_add(PRESENT_OFFSET).cast::<u32>().cast_const();
+        // SAFETY: the present number is a 4-aligned word inside the page-aligned view of the header.
+        unsafe { ptr::read_volatile(field) }
     }
 
     /// Writes the heartbeat, the one field the viewer owns.

@@ -63,7 +63,7 @@ impl Acquire {
 pub const MAGIC: u32 = u32::from_le_bytes(*b"B3SV");
 
 /// The layout version this crate reads and writes. Any change to the layout increments it.
-pub const LAYOUT_VERSION: u32 = 1;
+pub const LAYOUT_VERSION: u32 = 2;
 
 /// The size of the header, and of its mapping, in bytes.
 pub const SIZE: usize = 128;
@@ -86,7 +86,13 @@ pub const FRAME_OFFSET: usize = offset_of!(ViewerHeader, frame);
 /// The byte offset of the heartbeat counter, the one field the viewer writes.
 pub const HEARTBEAT_OFFSET: usize = offset_of!(ViewerHeader, heartbeat);
 
-const RESERVED_WORDS: usize = 14;
+/// The byte offset of the present number: the count of frames the core's publisher handled up to the
+/// frame the shared texture holds, published or not, continued from the header an earlier core left.
+/// The core writes it while it holds the keyed mutex, so a reader that holds the keyed mutex reads the
+/// number of the frame it copies.
+pub const PRESENT_OFFSET: usize = offset_of!(ViewerHeader, present);
+
+const RESERVED_WORDS: usize = 13;
 
 /// The locally unique id of the adapter that owns the shared texture, as DXGI reports it.
 #[repr(C)]
@@ -138,6 +144,7 @@ pub struct ViewerHeader {
     generation: u32,
     frame: u32,
     heartbeat: u32,
+    present: u32,
     reserved: [u32; RESERVED_WORDS],
 }
 
@@ -158,11 +165,12 @@ const _: () = assert!(WIDTH_OFFSET == 16);
 const _: () = assert!(offset_of!(ViewerHeader, generation) == 60);
 const _: () = assert!(offset_of!(ViewerHeader, frame) == 64);
 const _: () = assert!(offset_of!(ViewerHeader, heartbeat) == 68);
-const _: () = assert!(offset_of!(ViewerHeader, reserved) == 72);
+const _: () = assert!(offset_of!(ViewerHeader, present) == 72);
+const _: () = assert!(offset_of!(ViewerHeader, reserved) == 76);
 
 impl ViewerHeader {
     /// A header as the core writes it, with the heartbeat at 0.
-    pub const fn new(texture: TextureInfo, generation: u32, frame: u32) -> Self {
+    pub const fn new(texture: TextureInfo, generation: u32, frame: u32, present: u32) -> Self {
         Self {
             magic: MAGIC,
             layout_version: LAYOUT_VERSION,
@@ -170,6 +178,7 @@ impl ViewerHeader {
             generation,
             frame,
             heartbeat: 0,
+            present,
             reserved: [0; RESERVED_WORDS],
         }
     }
@@ -197,6 +206,7 @@ impl ViewerHeader {
             self.generation,
             self.frame,
             self.heartbeat,
+            self.present,
         ];
         let mut words = [0; WORDS];
         for (word, field) in words.iter_mut().zip(fields.into_iter().chain(self.reserved)) {
@@ -231,6 +241,7 @@ impl ViewerHeader {
             generation,
             frame,
             heartbeat,
+            present,
             reserved @ ..,
         ] = *words;
         if magic != MAGIC {
@@ -243,7 +254,7 @@ impl ViewerHeader {
         let right = EyeRect { x: right_x, y: right_y, width: right_width, height: right_height };
         let adapter_luid = AdapterLuid { low: luid_low, high: luid_high.cast_signed() };
         let texture = TextureInfo { adapter_luid, width, height, format, eyes: [left, right] };
-        Ok(Self { magic, layout_version, texture, generation, frame, heartbeat, reserved })
+        Ok(Self { magic, layout_version, texture, generation, frame, heartbeat, present, reserved })
     }
 
     /// Each word the core writes, as its byte offset and value, in ascending offset order. The
@@ -273,6 +284,10 @@ impl ViewerHeader {
 
     pub const fn heartbeat(&self) -> u32 {
         self.heartbeat
+    }
+
+    pub const fn present(&self) -> u32 {
+        self.present
     }
 }
 

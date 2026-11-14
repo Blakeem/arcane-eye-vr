@@ -10,11 +10,12 @@ use super::{HeaderView, HeaderViewError};
 
 #[test]
 fn header_view_reads_the_core_header_and_writes_only_the_heartbeat() {
-    let header = ViewerHeader::new(TextureInfo { width: 64, ..TextureInfo::default() }, 3, 9);
+    let header = ViewerHeader::new(TextureInfo { width: 64, ..TextureInfo::default() }, 3, 9, 12);
     let core = CoreMapping::create("round-trip", &header).expect("the core's mapping");
     let opened = HeaderView::open(&core.name).expect("open the header the core created");
     let view = opened.expect("the header the core created exists");
     assert_eq!(ViewerHeader::decode(&view.read_words()), Ok(header));
+    assert_eq!(view.read_present(), 12);
     view.write_heartbeat(41);
     assert_eq!(core.heartbeat(), 41);
     let read = ViewerHeader::decode(&view.read_words()).expect("a valid header");

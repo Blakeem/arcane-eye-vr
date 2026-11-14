@@ -3,8 +3,9 @@
 
 use std::error::Error;
 use std::io::{self, Write};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::process::{ExitCode, ExitStatus};
+use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
 use diag::error_chain;
@@ -16,13 +17,16 @@ use launch::stop::StopError;
 use launch::token::TokenCreateError;
 use tracing::{info, warn};
 use viewer_client::frame::{Frame, ReadError};
+use viewer_client::region::Region;
 
 use crate::args::{Options, Settings};
+use crate::burst::{self, BurstError, BurstFrame};
 use crate::folder::{self, FolderError, RESULT_FILE, TRIAL_FILE};
 use crate::home::{self, HomeError};
 use crate::perf::{self, PerfError, PerfWindow};
 use crate::pixels::{self, SizeError};
 use crate::png_file::{self, PngError};
+use crate::report::Report;
 
 /// The name of the perf window's totals in the result folder.
 const PERF_FILE: &str = "perf.txt";
@@ -52,12 +56,13 @@ pub(crate) enum Step {
     WarmUp,
     Perf,
     Capture,
+    Burst,
     Close,
     CopyLog,
 }
 
 impl Step {
-    const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Check => "check",
             Self::Token => "token",
@@ -66,6 +71,7 @@ impl Step {
             Self::WarmUp => "warm-up",
             Self::Perf => "perf",
             Self::Capture => "capture",
+            Self::Burst => "burst",
             Self::Close => "close",
             Self::CopyLog => "copy-log",
         }
@@ -104,12 +110,22 @@ pub(crate) trait Game {
     fn copy_log(&mut self, to: &Path) -> Result<(), StepError>;
 }
 
-/// The frame reader as the capture step drives it.
+/// The frame reader as the capture step and the burst step drive it.
 pub(crate) trait Frames {
     /// Starts the heartbeat that makes the core publish frames.
     fn start_heartbeat(&mut self) -> Result<(), StepError>;
     /// The next frame, read one second after the frame before it.
     fn read(&mut self) -> Result<Frame, StepError>;
+    /// The width and height of the frames the core publishes.
+    fn frame_size(&mut self) -> Result<(u32, u32), StepError>;
+    /// The kept pixels of `region` of the next new frame, read as soon as it arrives within
+    /// `timeout`, with every `step`-th pixel kept in both directions.
+    fn read_region(
+        &mut self,
+        region: Region,
+        step: NonZeroU32,
+        timeout: Duration,
+    ) -> Result<BurstFrame, StepError>;
 }
 
 /// Why a step failed.
@@ -158,6 +174,8 @@ pub(crate) enum StepError {
     #[error(transparent)]
     Png(#[from] PngError),
     #[error(transparent)]
+    Burst(#[from] BurstError),
+    #[error(transparent)]
     Stop(#[from] StopError),
     #[error("could not copy the session log {} to {}", from.display(), to.display())]
     Copy { from: PathBuf, to: PathBuf, source: io::Error },
@@ -172,79 +190,6 @@ pub(crate) enum TrialError {
     Folder(#[from] FolderError),
     #[error("could not print the result")]
     Print(#[source] io::Error),
-}
-
-/// How one step ended.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Outcome {
-    Passed,
-    Forced { waited: Duration },
-    Failed { cause: String },
-}
-
-/// The steps that ran and how each ended.
-#[derive(Debug, Default)]
-pub(crate) struct Report {
-    steps: Vec<(Step, Outcome)>,
-}
-
-impl Report {
-    /// Records the result of `step` and returns whether it passed.
-    fn record(&mut self, step: Step, result: Result<(), StepError>) -> bool {
-        let outcome = match result {
-            Ok(()) => Outcome::Passed,
-            Err(error) => Outcome::Failed { cause: cause(&error) },
-        };
-        self.push(step, outcome)
-    }
-
-    fn record_close(&mut self, result: Result<Closed, StepError>) {
-        let outcome = match result {
-            Ok(Closed::Exited) => Outcome::Passed,
-            Ok(Closed::Forced { waited }) => Outcome::Forced { waited },
-            Err(error) => Outcome::Failed { cause: cause(&error) },
-        };
-        self.push(Step::Close, outcome);
-    }
-
-    fn push(&mut self, step: Step, outcome: Outcome) -> bool {
-        let passed = !matches!(outcome, Outcome::Failed { .. });
-        match &outcome {
-            Outcome::Failed { cause } => warn!(step = step.as_str(), cause = %cause, "step failed"),
-            Outcome::Passed | Outcome::Forced { .. } => info!(step = step.as_str(), "step passed"),
-        }
-        self.steps.push((step, outcome));
-        passed
-    }
-
-    fn passed(&self) -> bool {
-        self.steps.iter().all(|(_, outcome)| !matches!(outcome, Outcome::Failed { .. }))
-    }
-
-    /// 0 when every step passed and 1 when a step failed.
-    pub(crate) fn exit_code(&self) -> ExitCode {
-        if self.passed() { ExitCode::SUCCESS } else { ExitCode::from(TRIAL_FAILED) }
-    }
-
-    /// The text of `result.txt`: one line per step that ran, then the outcome.
-    fn text(&self) -> String {
-        let mut lines: Vec<String> = self
-            .steps
-            .iter()
-            .map(|(step, outcome)| match outcome {
-                Outcome::Passed => format!("{}: passed\n", step.as_str()),
-                Outcome::Forced { waited } => format!(
-                    "{}: passed, forced: the game still ran {waited:?} after the close request, so \
-                     it was ended\n",
-                    step.as_str()
-                ),
-                Outcome::Failed { cause } => format!("{}: failed: {cause}\n", step.as_str()),
-            })
-            .collect();
-        let outcome = if self.passed() { "passed" } else { "failed" };
-        lines.push(format!("outcome: {outcome}\n"));
-        lines.concat()
-    }
 }
 
 /// Writes `trial.txt` into `folder`, runs the steps, then writes `result.txt` and prints it to `out`.
@@ -313,8 +258,8 @@ fn start(settings: &Settings, folder: &Path, game: &mut impl Game) -> Result<(),
     game.start(&home)
 }
 
-/// Runs the steps from the first Present to the capture and stops at the first that fails. Each
-/// step needs the game still running at its end.
+/// Runs the steps from the first Present to the capture, and the burst when the settings ask for
+/// one, and stops at the first that fails. Each step needs the game still running at its end.
 fn run_in_game(
     report: &mut Report,
     settings: &Settings,
@@ -339,7 +284,12 @@ fn run_in_game(
     }
     let capture =
         while_running(game, Step::Capture, |_game| capture_step(frames, settings.captures, folder));
-    report.record(Step::Capture, capture);
+    if !report.record(Step::Capture, capture) || settings.burst.frames == 0 {
+        return;
+    }
+    let burst =
+        while_running(game, Step::Burst, |_game| burst::step(frames, &settings.burst, folder));
+    report.record(Step::Burst, burst);
 }
 
 /// Runs `step`, then fails it with the game's exit when the game no longer runs. The exit leads the

@@ -1,6 +1,8 @@
 //! The device, the copy's texture checks and the keyed mutex decisions, and the row copy against
 //! mapped bytes written by hand.
 
+use std::num::NonZeroU32;
+
 use windows::Win32::Foundation::S_OK;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_MAPPED_SUBRESOURCE, ID3D11Device, ID3D11Texture2D,
@@ -11,8 +13,10 @@ use windows::Win32::Graphics::Dxgi::Common::{
 use windows::Win32::Graphics::Dxgi::DXGI_ERROR_DEVICE_REMOVED;
 use windows::core::{HRESULT, HSTRING};
 
-use super::{Copied, Device, GpuError, acquired, unpadded_rows};
+use super::rows::kept_rows;
+use super::{Copied, Device, GpuError, acquired};
 use crate::fixture::{CoreTexture, MISSING_LUID, share, test_name, texture_desc};
+use crate::region::Region;
 
 #[test]
 fn device_on_an_unknown_adapter_is_no_adapter_and_names_the_failed_step() {
@@ -92,18 +96,54 @@ fn mapped(bytes: &mut [u8], row_pitch: u32) -> D3D11_MAPPED_SUBRESOURCE {
     }
 }
 
+fn step(step: u32) -> NonZeroU32 {
+    NonZeroU32::new(step).expect("a nonzero step")
+}
+
 #[test]
 fn rows_lose_the_padding_after_their_pixels() {
     let mut bytes = [1, 2, 3, 4, 9, 9, 9, 9, 5, 6, 7, 8, 9, 9, 9, 9];
-    let pixels = unpadded_rows(&mapped(&mut bytes, 8), (1, 2)).expect("two rows of one pixel");
+    let pixels = kept_rows(&mapped(&mut bytes, 8), (1, 2), step(1)).expect("two rows of one pixel");
     assert_eq!(pixels, [1, 2, 3, 4, 5, 6, 7, 8]);
+}
+
+#[test]
+fn a_step_keeps_every_step_th_pixel_of_every_step_th_row_from_the_first() {
+    // Three rows of three pixels with 4 bytes of padding, each pixel's bytes its row and column.
+    let mut bytes: Vec<u8> = (0..3_u8)
+        .flat_map(|row| (0..3_u8).flat_map(move |column| [row, column, 0, 0]).chain([9; 4]))
+        .collect();
+    let halved = kept_rows(&mapped(&mut bytes, 16), (3, 3), step(2)).expect("a 3x3 texture");
+    assert_eq!(halved, [0, 0, 0, 0, 0, 2, 0, 0, 2, 0, 0, 0, 2, 2, 0, 0]);
+    let corner = kept_rows(&mapped(&mut bytes, 16), (3, 3), step(3)).expect("a 3x3 texture");
+    assert_eq!(corner, [0, 0, 0, 0]);
+}
+
+#[test]
+fn a_region_copy_outside_the_shared_texture_or_into_another_size_is_a_target_mismatch() {
+    let (core, name) = share_pair("copy-region");
+    let device = Device::create(core.luid).expect("a device on the core's adapter");
+    let shared = device.open(&name).expect("open the shared texture by name");
+    let target = empty_texture(device.d3d(), 1, DXGI_FORMAT_R8G8B8A8_UNORM);
+    for region in [
+        Region { x: 2, y: 0, width: 1, height: 1 },
+        Region { x: 0, y: 1, width: 1, height: 1 },
+        Region { x: 0, y: 0, width: 2, height: 1 },
+    ] {
+        let copied = device.copy_region(&shared, &target, region, || ()).map(|_held| ());
+        let error = copied.expect_err("no copy");
+        assert!(matches!(error, GpuError::TargetMismatch), "{region}: {error:?}");
+    }
+    let region = Region { x: 1, y: 0, width: 1, height: 1 };
+    let held = device.copy_region(&shared, &target, region, || 7).expect("a one-pixel region");
+    assert_eq!(held, Some(7), "the copy ran its while-held step under the free keyed mutex");
 }
 
 #[test]
 fn rows_shorter_than_a_frame_row_are_a_frame_size_error() {
     let mut bytes = [0; 8];
     let error =
-        unpadded_rows(&mapped(&mut bytes, 4), (2, 1)).expect_err("a 4-byte row of 2 pixels");
+        kept_rows(&mapped(&mut bytes, 4), (2, 1), step(1)).expect_err("a 4-byte row of 2 pixels");
     assert!(
         matches!(error, GpuError::FrameSize { width: 2, height: 1, row_pitch: 4 }),
         "{error:?}"

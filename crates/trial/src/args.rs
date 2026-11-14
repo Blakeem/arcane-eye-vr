@@ -1,17 +1,27 @@
 //! The command line: `trial --name <name>` and the options that set the steps.
 
 use std::ffi::{OsStr, OsString};
+use std::num::NonZeroU32;
+use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use ipc_layout::launch_token::Mode;
+use viewer_client::region::Region;
 
 pub(crate) const USAGE: &str = "usage: trial --name <name> [--mode vr|desktop-stereo] \
-     [--warmup-secs <n>] [--perf-lines <n>] [--captures <n>] [--out <folder>] [--game-dir <folder>] \
-     [--settings-file <path>] [--dev-file <path>]";
+     [--warmup-secs <n>] [--perf-lines <n>] [--captures <n>] [--burst-frames <n>] \
+     [--burst-region <x>,<y>,<width>,<height>] [--burst-step <k>] [--out <folder>] \
+     [--game-dir <folder>] [--settings-file <path>] [--dev-file <path>]";
 
 /// The most frames one trial captures, since a frame file's number has 4 digits.
 const MAX_CAPTURES: u32 = 9999;
+
+/// The most frames one burst keeps.
+const MAX_BURST_FRAMES: u32 = 2000;
+
+/// The largest burst step, which keeps every 16th pixel.
+const MAX_BURST_STEP: u32 = 16;
 
 /// The text that opens every option, and that no option value may start with.
 const OPTION_START: &str = "--";
@@ -41,6 +51,7 @@ pub(crate) struct Settings {
     pub(crate) warmup: Duration,
     pub(crate) perf_lines: u32,
     pub(crate) captures: u32,
+    pub(crate) burst: Burst,
     pub(crate) out: PathBuf,
     /// `None` finds the game's folder through Steam.
     pub(crate) game_dir: Option<PathBuf>,
@@ -57,11 +68,29 @@ impl Default for Settings {
             warmup: Duration::from_secs(20),
             perf_lines: 3,
             captures: 1,
+            burst: Burst::default(),
             out: PathBuf::from("trial-results"),
             game_dir: None,
             player_file: None,
             dev_file: None,
         }
+    }
+}
+
+/// The burst step's settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Burst {
+    /// The count of frames the burst keeps, where 0 runs no burst step.
+    pub(crate) frames: u32,
+    /// The region of the frame the burst keeps, or `None` for the entire frame.
+    pub(crate) region: Option<Region>,
+    /// The burst keeps every `step`-th pixel of the region in both directions.
+    pub(crate) step: NonZeroU32,
+}
+
+impl Default for Burst {
+    fn default() -> Self {
+        Self { frames: 0, region: None, step: NonZeroU32::MIN }
     }
 }
 
@@ -89,6 +118,13 @@ pub(crate) enum ArgsError {
     UnknownMode(String),
     #[error("{option} takes a whole number from {min} to {max}, not \"{value}\"")]
     OutOfRange { option: &'static str, value: String, min: u64, max: u64 },
+    #[error(
+        "--burst-region takes <x>,<y>,<width>,<height> in whole pixels, with a width and a height \
+         above 0, not \"{0}\""
+    )]
+    BadRegion(String),
+    #[error("trial got {0}, which needs --burst-frames above 0")]
+    BurstWithoutFrames(&'static str),
 }
 
 /// The options the command line takes.
@@ -99,6 +135,9 @@ enum Flag {
     WarmupSecs,
     PerfLines,
     Captures,
+    BurstFrames,
+    BurstRegion,
+    BurstStep,
     Out,
     GameDir,
     SettingsFile,
@@ -106,12 +145,15 @@ enum Flag {
 }
 
 impl Flag {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 12] = [
         Self::Name,
         Self::Mode,
         Self::WarmupSecs,
         Self::PerfLines,
         Self::Captures,
+        Self::BurstFrames,
+        Self::BurstRegion,
+        Self::BurstStep,
         Self::Out,
         Self::GameDir,
         Self::SettingsFile,
@@ -125,6 +167,9 @@ impl Flag {
             Self::WarmupSecs => "--warmup-secs",
             Self::PerfLines => "--perf-lines",
             Self::Captures => "--captures",
+            Self::BurstFrames => "--burst-frames",
+            Self::BurstRegion => "--burst-region",
+            Self::BurstStep => "--burst-step",
             Self::Out => "--out",
             Self::GameDir => "--game-dir",
             Self::SettingsFile => "--settings-file",
@@ -155,8 +200,13 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options,
             Flag::Name => name = Some(TrialName::new(&text(&value))?),
             Flag::Mode => settings.mode = mode(&text(&value))?,
             Flag::WarmupSecs => settings.warmup = seconds(flag, &value)?,
-            Flag::PerfLines => settings.perf_lines = count(flag, &value, u32::MAX)?,
-            Flag::Captures => settings.captures = count(flag, &value, MAX_CAPTURES)?,
+            Flag::PerfLines => settings.perf_lines = count(flag, &value, 1..=u32::MAX)?,
+            Flag::Captures => settings.captures = count(flag, &value, 1..=MAX_CAPTURES)?,
+            Flag::BurstFrames => {
+                settings.burst.frames = count(flag, &value, 0..=MAX_BURST_FRAMES)?;
+            }
+            Flag::BurstRegion => settings.burst.region = Some(region(&text(&value))?),
+            Flag::BurstStep => settings.burst.step = step(flag, &value)?,
             Flag::Out => settings.out = PathBuf::from(value),
             Flag::GameDir => settings.game_dir = Some(PathBuf::from(value)),
             Flag::SettingsFile => settings.player_file = Some(PathBuf::from(value)),
@@ -164,7 +214,22 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options,
         }
     }
     let name = name.ok_or(ArgsError::MissingName)?;
+    burst_has_frames(&seen, &settings.burst)?;
     Ok(Options { name, settings })
+}
+
+/// Fails when the command line sets the burst region or step and runs no burst, since the trial
+/// would then end without the burst its person asked for.
+fn burst_has_frames(seen: &[Flag], burst: &Burst) -> Result<(), ArgsError> {
+    if burst.frames > 0 {
+        return Ok(());
+    }
+    let needs_frames =
+        [Flag::BurstRegion, Flag::BurstStep].into_iter().find(|flag| seen.contains(flag));
+    match needs_frames {
+        Some(flag) => Err(ArgsError::BurstWithoutFrames(flag.as_str())),
+        None => Ok(()),
+    }
 }
 
 /// The value after `flag`. A next argument that opens like an option is a missing value.
@@ -196,14 +261,42 @@ fn seconds(flag: Flag, value: &OsStr) -> Result<Duration, ArgsError> {
     }
 }
 
-/// A count from 1 to `max`.
-fn count(flag: Flag, value: &OsStr, max: u32) -> Result<u32, ArgsError> {
+/// A count in `range`.
+fn count(flag: Flag, value: &OsStr, range: RangeInclusive<u32>) -> Result<u32, ArgsError> {
     let value = text(value);
     match value.parse::<u32>() {
-        Ok(count) if (1..=max).contains(&count) => Ok(count),
-        Ok(_) | Err(_) => {
-            Err(ArgsError::OutOfRange { option: flag.as_str(), value, min: 1, max: max.into() })
+        Ok(count) if range.contains(&count) => Ok(count),
+        Ok(_) | Err(_) => Err(ArgsError::OutOfRange {
+            option: flag.as_str(),
+            value,
+            min: (*range.start()).into(),
+            max: (*range.end()).into(),
+        }),
+    }
+}
+
+/// A burst step from 1 to [`MAX_BURST_STEP`].
+fn step(flag: Flag, value: &OsStr) -> Result<NonZeroU32, ArgsError> {
+    let value = text(value);
+    match value.parse::<NonZeroU32>() {
+        Ok(step) if step.get() <= MAX_BURST_STEP => Ok(step),
+        Ok(_) | Err(_) => Err(ArgsError::OutOfRange {
+            option: flag.as_str(),
+            value,
+            min: 1,
+            max: MAX_BURST_STEP.into(),
+        }),
+    }
+}
+
+/// A region written `<x>,<y>,<width>,<height>` in whole pixels, with a width and a height above 0.
+fn region(value: &str) -> Result<Region, ArgsError> {
+    let numbers: Vec<Option<u32>> = value.split(',').map(|part| part.parse().ok()).collect();
+    match numbers.as_slice() {
+        &[Some(x), Some(y), Some(width), Some(height)] if width > 0 && height > 0 => {
+            Ok(Region { x, y, width, height })
         }
+        _ => Err(ArgsError::BadRegion(value.to_owned())),
     }
 }
 
