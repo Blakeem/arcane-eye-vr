@@ -2,8 +2,8 @@
 //!
 //! The install resolves the `dx11_present_call` signature in the game exe's code and puts a mid hook
 //! on the match. The handler reads the eye view's layout for the next frame, ends the frames of the
-//! eye camera and the view camera, runs the frame work before the engine's `Present` call, reports the
-//! first frame through the launch token and runs the eye view's create.
+//! eye camera, the shadow cache and the view camera, runs the frame work before the engine's `Present`
+//! call, reports the first frame through the launch token and runs the eye view's create.
 
 use std::mem::ManuallyDrop;
 
@@ -21,6 +21,7 @@ use crate::eye_view;
 use crate::frame::{self, FrameReport};
 use crate::install::{GameCode, InstallError};
 use crate::raw::{self, StatusView};
+use crate::shadow_cache;
 use crate::view_camera;
 
 hooks::render_mid_hook!(
@@ -81,11 +82,12 @@ fn report(status: Option<&StatusView>, value: Status) {
 }
 
 /// The hook's handler, on the render thread before the engine's `Present` call. The views of the frame
-/// passed the eye camera's and the view camera's sites before this call, and the render loop holds no
-/// pointer into the view list, so the eye view may join it here.
+/// passed the eye camera's, the shadow cache's and the view camera's sites before this call, and the
+/// render loop holds no pointer into the view list, so the eye view may join it here.
 fn on_present_call(context: &CoreContext, thread: &RenderThread, registers: &mut Registers) {
     let layout = eye_view::frame_layout(context, thread);
     eye_camera::end_frame(context, thread, layout);
+    shadow_cache::end_frame(context, thread, layout);
     let cameras = view_camera::end_frame(context, thread, layout);
     let frame =
         context.frame.with(thread, |state| frame::on_present_call(state, registers, cameras));

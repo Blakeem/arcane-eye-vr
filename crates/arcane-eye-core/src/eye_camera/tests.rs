@@ -4,9 +4,6 @@
 mod install;
 mod pair;
 
-use std::fs;
-
-use diag::logging::LogName;
 use game_bindings::offsets::{
     CONTROLLER_INVERSE_VIEW, CONTROLLER_SIZE, CONTROLLER_VIEW, CONTROLLER_VTABLE_SLOTS,
     CONTROLLER_WORLD_TRANSLATE_SLOT, VIEW_LAST_SEEN_CONTROLLER, VIEW_READ_STATE_CONTROLLER,
@@ -21,9 +18,9 @@ use super::proxy::{self, PROXY_SIZE, RING_LEN};
 use super::test_support::{HALF_IPD_M, HEAD_POSITION, HEAD_VIEW, HeadController, RIGHT, eye_state};
 use super::{EyeFault, EyeState, History, Outcome};
 use crate::eye_view::Layout;
+use crate::logged;
 use crate::raw::SharedPages;
 use crate::raw::test_support::{PAGE_SIZE, ReadOnlyTail, call_world_translate, view_writes};
-use crate::test_dir;
 use crate::view_camera::test_support::{TestView, WORLD_TRANSLATE, block_at};
 
 /// A slot 9 function of another controller type. No code runs there.
@@ -79,16 +76,6 @@ fn view_ending_before(end: GameAddr, head: &HeadController) -> RenderView {
     let read_state = view_writes(view).offset(VIEW_READ_STATE_CONTROLLER).expect("the field");
     try_write(read_state, head.address().get()).expect("a writable ReadState");
     view
-}
-
-/// The lines `run` logs under a session log of its own.
-fn logged<R>(name: &str, run: impl FnOnce() -> R) -> (R, String) {
-    let dir = test_dir(name);
-    let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
-    let result = tracing::dispatcher::with_default(&logging.dispatch, run);
-    let file_path = logging.handle.file_path().to_path_buf();
-    logging.handle.shutdown().expect("the writer ends cleanly");
-    (result, fs::read_to_string(&file_path).expect("read the session log"))
 }
 
 #[test]

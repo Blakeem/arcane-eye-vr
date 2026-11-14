@@ -33,7 +33,7 @@ impl Views {
     }
 
     fn side_by_side(&self) -> Layout {
-        Layout::SideBySide { eye: self.eye.view() }
+        Layout::SideBySide { main: self.main.view(), eye: self.eye.view() }
     }
 }
 
@@ -147,7 +147,7 @@ fn an_eye_view_on_another_controller_is_left_as_it_is() {
     let views = Views::on(&head);
     let null = TestView::new(0, &block_at(0.0));
     let mut camera = target_state(Target::StereoPair);
-    camera.end_frame(Layout::SideBySide { eye: null.view() });
+    camera.end_frame(Layout::SideBySide { main: views.main.view(), eye: null.view() });
     assert_eq!(begin(&mut camera, null.view()), Ok(Outcome::Unchanged));
     assert_eq!(null.pointer_at(VIEW_READ_STATE_CONTROLLER), 0);
     proxied_at(begin(&mut camera, views.main.view()), Eye::Left, History::Cut);

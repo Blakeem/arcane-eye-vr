@@ -4,11 +4,9 @@
 mod create;
 mod update;
 
-use std::fs;
 use std::time::{Duration, Instant};
 
 use diag::health::{Feature, FeatureState, Health};
-use diag::logging::LogName;
 use game_bindings::render_view::{Environment, ViewContent};
 use game_mem::GameAddr;
 use settings::dev::{DevFlags, MainViewEye, SecondView, StereoFlags};
@@ -18,16 +16,7 @@ use super::decide::{Action, Observed, RETRY_PERIOD, Readiness, Retry, Stale, dec
 use super::{guarded, install};
 use crate::config::Config;
 use crate::install::GameCode;
-use crate::test_dir;
-
-fn logged<R>(name: &str, run: impl FnOnce() -> R) -> (R, String) {
-    let dir = test_dir(name);
-    let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
-    let result = tracing::dispatcher::with_default(&logging.dispatch, run);
-    let file_path = logging.handle.file_path().to_path_buf();
-    logging.handle.shutdown().expect("the writer ends cleanly");
-    (result, fs::read_to_string(&file_path).expect("read the session log"))
-}
+use crate::logged;
 
 fn config(second_view: SecondView) -> Config {
     let stereo = StereoFlags { main_view_eye: MainViewEye::Center, second_view };

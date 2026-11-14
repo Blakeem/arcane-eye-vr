@@ -3,7 +3,8 @@
 //!
 //! Each matches bg3-vr's layout. The view and `PerCamera` offsets were measured with a debugger
 //! breakpoint. The camera-cut field was checked by a static disassembly of the installed exe. The
-//! pipeline, frame, level and second-view offsets come from bg3-vr's recipe and a static disassembly.
+//! pipeline, frame, level, second-view and shadow stage offsets come from bg3-vr's recipe and a
+//! static disassembly.
 
 /// The camera controller pointer of a render view's `ReadState`, which the engine builds the view's
 /// `PerView` and `PerCamera` blocks from.
@@ -161,6 +162,23 @@ pub const LEVEL_LIGHTING_ID: usize = 0x24;
 
 /// The list in the id pool that the id release takes.
 pub const ID_POOL_RELEASE_LIST: usize = 0xC600;
+
+/// The render view pointer of a shadow stage, the stage with stage id 0x02, which is entry 0x12 of
+/// the view's stage array ([`VIEW_STAGE_ARRAY`]).
+pub const SHADOW_STAGE_VIEW: usize = 0x08;
+
+/// The parity byte of a shadow stage's distant shadow cache. A cache refresh switches it.
+pub const SHADOW_CACHE_PARITY: usize = 0x21D8;
+
+/// The records of a shadow stage's distant shadow cache, [`SHADOW_CACHE_RECORDS_SIZE`] bytes in world
+/// space.
+pub const SHADOW_CACHE_RECORDS: usize = 0x21E0;
+
+/// The size of a shadow stage's distant shadow cache records.
+pub const SHADOW_CACHE_RECORDS_SIZE: usize = 0x230;
+
+/// The on byte of a shadow stage's distant shadow cache.
+pub const SHADOW_CACHE_ON: usize = 0x241B;
 
 const _: () = assert!(CONTROLLER_INVERSE_VIEW + 16 * size_of::<f32>() <= CONTROLLER_SIZE);
 const _: () =

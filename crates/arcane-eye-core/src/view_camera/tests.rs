@@ -118,7 +118,7 @@ fn side_by_side_the_eye_view_has_its_own_camera_whatever_its_order() {
     let main = TestView::new(controller.address(), &block_at(1.0));
     let eye = TestView::new(controller.address(), &block_at(2.0));
     let third = TestView::new(controller.address(), &block_at(3.0));
-    let side_by_side = Layout::SideBySide { eye: eye.view() };
+    let side_by_side = Layout::SideBySide { main: main.view(), eye: eye.view() };
     let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE));
     frame_cameras(&mut camera, &[], side_by_side);
     let pair = frame_cameras(&mut camera, &[&eye, &main, &third], side_by_side);
@@ -154,7 +154,7 @@ fn a_feature_latched_off_ends_the_frame_with_no_camera_and_a_fresh_choice() {
     let first = TestView::new(controller.address(), &block_at(1.0));
     let eye = TestView::new(controller.address(), &block_at(2.0));
     let second = TestView::new(controller.address(), &block_at(3.0));
-    let side_by_side = Layout::SideBySide { eye: eye.view() };
+    let side_by_side = Layout::SideBySide { main: first.view(), eye: eye.view() };
     let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE));
     frame_cameras(&mut camera, &[], side_by_side);
     let health = running();
@@ -208,7 +208,7 @@ fn side_by_side_proxied_views_render_from_the_left_and_the_right_eye() {
     let head = HeadController::new(WORLD_TRANSLATE);
     let main = TestView::new(head.address().get(), &block_at(1.0));
     let eye = TestView::new(head.address().get(), &block_at(2.0));
-    let side_by_side = Layout::SideBySide { eye: eye.view() };
+    let side_by_side = Layout::SideBySide { main: main.view(), eye: eye.view() };
     let mut eye_camera = target_state(Target::StereoPair);
     eye_camera.end_frame(side_by_side);
     let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE));

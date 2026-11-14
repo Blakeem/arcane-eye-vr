@@ -181,6 +181,19 @@ pub const VIEW_SET_VIEWPORT: Signature = Signature {
     rip: None,
 };
 
+/// The exit of a shadow stage's execute, `add rsp,260h`, which every path through the function
+/// passes. It runs on the render thread once per view per frame, and `rdi` holds the stage. The match
+/// starts at `lea rcx,[rdi+21A0h]`, two `call` instructions come before the exit, and `pop rdi`,
+/// `ret` and 5 bytes of int3 padding follow it. SafetyHook's 14-byte fallback jump moves those 7
+/// bytes after the exit, so the pattern holds the padding. Derived from a disassembly.
+pub const SHADOW_STAGE_EXIT: Signature = Signature {
+    name: "shadow_stage_exit",
+    pattern: "48 8D 8F A0 21 00 00 4C 8D 05 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8D 4F 20 E8 ?? ?? ?? ?? 48 81 \
+              C4 60 02 00 00 5F C3 CC CC CC CC CC",
+    offset: 28,
+    rip: None,
+};
+
 /// The global that holds the render pipeline, from a `mov rcx,[rip+disp32]` that loads it. Derived
 /// from a disassembly.
 pub const G_PIPELINE: Signature = Signature {
@@ -248,6 +261,7 @@ pub const SIGNATURES: &[Signature] = &[
     VIEW_SET_ATMOSPHERE,
     VIEW_SET_LIGHTING,
     VIEW_SET_VIEWPORT,
+    SHADOW_STAGE_EXIT,
     G_PIPELINE,
     G_PLAYER_MANAGER,
     G_LEVEL_MANAGER,

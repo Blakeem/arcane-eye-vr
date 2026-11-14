@@ -6,9 +6,9 @@ use settings::player::Settings;
 use stereo_core::eye::Eye;
 
 use super::super::{Target, eye_of, install, target};
-use super::logged;
 use crate::config::Config;
 use crate::install::GameCode;
+use crate::logged;
 
 /// The message of a failed or skipped install.
 const NOT_INSTALLED: &str = "eye camera hook not installed";

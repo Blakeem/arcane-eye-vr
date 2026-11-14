@@ -3,7 +3,8 @@
 //! [`start`] takes its inputs as parameters and returns the log handle and the subscriber without
 //! installing either, so tests run it in isolation. Only [`init_process`] finds the root folder, sets
 //! the process-wide subscriber, reads the settings files, opens the launch token, installs the Present
-//! call-site, view camera, eye camera and eye view hooks and fills the core context slot.
+//! call-site, view camera, eye camera, eye view and shadow cache hooks and fills the core context
+//! slot.
 
 use std::panic::{self, UnwindSafe};
 use std::path::Path;
@@ -25,6 +26,7 @@ use crate::eye_view;
 use crate::install::GameCode;
 use crate::present;
 use crate::raw::StatusView;
+use crate::shadow_cache;
 use crate::view_camera::{self, ViewCamera};
 
 /// The code `arcane_eye_init` returns. 0 is success, every other value names the failure.
@@ -115,8 +117,9 @@ fn guarded(init: impl FnOnce() -> Result<(), InitError> + UnwindSafe) -> u32 {
 ///
 /// The hook installs run after every other step that can fail but the store, and the check above found
 /// the slot empty, so a failed init leaves the game unmodified. The view camera, eye camera and eye
-/// view installs follow the Present call-site install, which all three need. All four scan one copy
-/// of the game exe's code, which drops before the store.
+/// view installs follow the Present call-site install, which all three need, and the shadow cache
+/// install follows the eye view install, which it needs. All five scan one copy of the game exe's
+/// code, which drops before the store.
 fn run(
     mode: u32,
     root: impl FnOnce() -> Result<Root, RootError>,
@@ -133,23 +136,22 @@ fn run(
     let config = config::load(root.path());
     let health = Health::new();
     let status = open_status(token_name);
-    let (present_hook, view_installed, eye_installed, eye_view_installed) = {
+    let (present_hook, view_installed, eye_installed, eye_view_installed, shadow_installed) = {
         let game_code = GameCode::copy();
         let present_hook = present::install(&health, status.as_ref(), &game_code);
         let view_installed = view_camera::install(&health, &game_code);
         let eye_installed = eye_camera::install(&health, &game_code, config);
-        (
-            present_hook,
-            view_installed,
-            eye_installed,
-            eye_view::install(&health, &game_code, config),
-        )
+        let eye_view_installed = eye_view::install(&health, &game_code, config);
+        let shadow_installed = shadow_cache::install(&health, &game_code, config);
+        (present_hook, view_installed, eye_installed, eye_view_installed, shadow_installed)
     };
     let world_translate = view_installed.as_ref().map(|installed| installed.world_translate);
     let (eye_camera_hook, eye_state) =
         eye_installed.map(|installed| (installed.hook, installed.state)).unzip();
     let (eye_view_hook, eye_view_state) =
         eye_view_installed.map(|installed| (installed.hook, installed.state)).unzip();
+    let (shadow_cache_hook, shadow_state) =
+        shadow_installed.map(|installed| (installed.hook, installed.state)).unzip();
     let context = CoreContext {
         _log: core.log,
         _config: config,
@@ -159,10 +161,12 @@ fn run(
         view_camera: RenderCell::new(ViewCamera::new(world_translate)),
         eye_camera: RenderCell::new(eye_state),
         eye_view: eye_view_state,
+        shadow_cache: RenderCell::new(shadow_state),
         _present_hook: present_hook,
         _view_camera_hook: view_installed.map(|installed| installed.hook),
         _eye_camera_hook: eye_camera_hook,
         _eye_view_hook: eye_view_hook,
+        _shadow_cache_hook: shadow_cache_hook,
     };
     state::store_core_context(context)?;
     Ok(())
@@ -234,6 +238,11 @@ mod tests {
             context.health.state(Feature::EyeView),
             FeatureState::Pending,
             "with second_view off the eye view installs nothing"
+        );
+        assert_eq!(
+            context.health.state(Feature::ShadowCache),
+            FeatureState::Pending,
+            "with second_view off the shadow cache installs nothing"
         );
         assert!(dir.join(r"logs\arcane-eye-vr.log").is_file(), "the session log is in root\\logs");
         let second = run(1, || Ok(Root::new(dir.clone())), &mapping.name);

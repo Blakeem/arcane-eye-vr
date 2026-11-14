@@ -26,6 +26,9 @@ pub enum Feature {
     /// The mid hook at the game update, which with the Present call-site hook creates a second render
     /// view beside the main view.
     EyeView,
+    /// The mid hook at the exit of a shadow stage's execute, which gives the eye view's shadow stage
+    /// the main view's distant shadow cache state.
+    ShadowCache,
 }
 
 impl Feature {
@@ -36,6 +39,7 @@ impl Feature {
             Self::ViewCamera => "view-camera",
             Self::EyeCamera => "eye-camera",
             Self::EyeView => "eye-view",
+            Self::ShadowCache => "shadow-cache",
         }
     }
 }
@@ -115,6 +119,7 @@ pub struct Health {
     view_camera: AtomicU8,
     eye_camera: AtomicU8,
     eye_view: AtomicU8,
+    shadow_cache: AtomicU8,
 }
 
 impl Health {
@@ -125,6 +130,7 @@ impl Health {
             view_camera: AtomicU8::new(FeatureState::Pending as u8),
             eye_camera: AtomicU8::new(FeatureState::Pending as u8),
             eye_view: AtomicU8::new(FeatureState::Pending as u8),
+            shadow_cache: AtomicU8::new(FeatureState::Pending as u8),
         }
     }
 
@@ -164,6 +170,7 @@ impl Health {
             Feature::ViewCamera => &self.view_camera,
             Feature::EyeCamera => &self.eye_camera,
             Feature::EyeView => &self.eye_view,
+            Feature::ShadowCache => &self.shadow_cache,
         }
     }
 
@@ -250,6 +257,8 @@ mod tests {
         assert_eq!(Feature::EyeCamera.as_str(), "eye-camera");
         assert_eq!(health.state(Feature::EyeView), FeatureState::Pending);
         assert_eq!(Feature::EyeView.as_str(), "eye-view");
+        assert_eq!(health.state(Feature::ShadowCache), FeatureState::Pending);
+        assert_eq!(Feature::ShadowCache.as_str(), "shadow-cache");
     }
 
     #[test]

@@ -195,7 +195,7 @@ fn the_layout_names_the_eye_view_only_while_the_views_sit_side_by_side() {
     let start = Instant::now();
     assert_eq!(view.layout(&mut render_state, &health), Layout::MainOnly, "no placement yet");
     update(&view, &world, &mut recorder, start);
-    let side_by_side = Layout::SideBySide { eye: world.held().eye };
+    let side_by_side = Layout::SideBySide { main: world.held().main, eye: world.held().eye };
     assert_eq!(view.layout(&mut render_state, &health), side_by_side);
     let busy = view.shared.lock().expect("an unpoisoned lock");
     assert_eq!(
@@ -221,7 +221,7 @@ fn a_feature_latched_off_reads_no_eye_view_in_the_layout() {
     let mut render_state = RenderState::default();
     let health = running();
     update(&view, &world, &mut world.recorder(), Instant::now());
-    let side_by_side = Layout::SideBySide { eye: world.held().eye };
+    let side_by_side = Layout::SideBySide { main: world.held().main, eye: world.held().eye };
     assert_eq!(view.layout(&mut render_state, &health), side_by_side);
     health.panic_caught(Feature::EyeView);
     assert_eq!(view.layout(&mut render_state, &health), Layout::MainOnly, "a latched feature");
@@ -382,7 +382,11 @@ fn the_frame_paths_make_no_heap_allocation() {
     world.make_eye_ready();
     view.on_game_update(&mut recorder, world.pipeline.address(), now + RETRY_PERIOD);
     assert_eq!(guard.count(), 0, "the eye view's frame allocated");
-    assert_eq!(layout, Layout::SideBySide { eye: world.held().eye }, "the guarded layout read");
+    assert_eq!(
+        layout,
+        Layout::SideBySide { main: world.held().main, eye: world.held().eye },
+        "the guarded layout read"
+    );
     drop(guard);
     let set_camera = recorder.calls.iter().any(|call| matches!(call, Call::SetCamera { .. }));
     assert!(set_camera, "the guarded frames ran a set up: {:?}", recorder.calls);

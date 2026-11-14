@@ -1,9 +1,9 @@
 //! The core DLL's unsafe edge.
 //!
-//! It holds the exports, the Present call-site, view camera and eye camera hook installs, the write
-//! destinations of the render view and of the pages the core shares with game threads, the launch
-//! token's status field, and the D3D11 and DXGI calls of the frame handler. Its `eye_view` module holds
-//! the eye view feature's hook install and game calls.
+//! It holds the exports, the Present call-site, view camera, eye camera and shadow cache hook
+//! installs, the write destinations of the render view, of the shadow stage and of the pages the core
+//! shares with game threads, the launch token's status field, and the D3D11 and DXGI calls of the
+//! frame handler. Its `eye_view` module holds the eye view feature's hook install and game calls.
 
 #![expect(
     unsafe_code,
@@ -15,6 +15,7 @@ use std::mem::ManuallyDrop;
 use std::ptr;
 
 use game_bindings::render_view::RenderView;
+use game_bindings::shadow_stage::ShadowStage;
 use game_mem::{GameAddr, WriteDest, try_read};
 use hooks::{HookError, MidHook, MidThunk, Registers};
 use ipc_layout::core_init::InitFn;
@@ -35,8 +36,8 @@ use windows::core::{HRESULT, HSTRING, Interface as _};
 const GET_DESC_SLOT_OFFSET: usize = 12 * size_of::<usize>();
 
 /// Starts the core: the root folder, the session log, the settings files, the Present call-site, view
-/// camera, eye camera and eye view hooks, then the core context. `mode` is the launch token's mode
-/// value.
+/// camera, eye camera, eye view and shadow cache hooks, then the core context. `mode` is the launch
+/// token's mode value.
 ///
 /// Returns 0 on success and an [`InitStatus`](crate::init::InitStatus) failure code otherwise. A mode
 /// value that names no mode returns the unknown-mode code, and a second call in one process returns
@@ -103,6 +104,35 @@ pub(crate) fn install_eye_camera_hook(
     // on the render thread, which the render thunk's token requires.
     let hook = unsafe { hooks::install_mid_hook(address, thunk) }?;
     Ok(ManuallyDrop::new(hook))
+}
+
+/// Installs `thunk` as the mid hook at the shadow stage exit `address`.
+///
+/// `address` must be the exit of the one match of the `shadow_stage_exit` signature in the loaded
+/// game exe. The hook never drops, so it stays installed for the process life, and no render thread
+/// runs a freed stub.
+pub(crate) fn install_shadow_cache_hook(
+    address: GameAddr,
+    thunk: MidThunk,
+) -> Result<ManuallyDrop<MidHook>, HookError> {
+    // SAFETY: the exit is `add rsp,260h`, a 7-byte instruction with no RIP-relative operand that
+    // SafetyHook's 5-byte jump moves. Its 14-byte fallback also moves `pop rdi`, `ret` and the 5
+    // bytes of int3 padding that the signature matches after them. Every path through the execute
+    // passes the exit, so no jump targets a moved byte past it. The execute runs on the render
+    // thread, which the render thunk's token requires.
+    let hook = unsafe { hooks::install_mid_hook(address, thunk) }?;
+    Ok(ManuallyDrop::new(hook))
+}
+
+/// The shadow stage that `rdi` holds at the exit of its execute, and the destination of the core's
+/// writes to its first [`ShadowStage::WRITE_LEN`] bytes, which lives for the hook's borrow of
+/// `registers`. Only the shadow cache hook passes its registers here.
+pub(crate) fn shadow_stage_exit(registers: &Registers) -> (ShadowStage, WriteDest<'_>) {
+    let address = GameAddr::new(registers.rdi());
+    // SAFETY: at the exit `rdi` holds the engine's shadow stage, game memory that no Rust reference
+    // covers. The destination lives only for the hook, while the stage's execute returns.
+    let writes = unsafe { WriteDest::new(address, ShadowStage::WRITE_LEN) };
+    (ShadowStage::new(address), writes)
 }
 
 /// The render view that `rcx` holds at the begin-recording entry, and the destination of the core's

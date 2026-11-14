@@ -11,8 +11,9 @@
 //! The two threads share the held eye view through one mutex. The game thread holds it while its hook
 //! handler runs. The render thread only tries it and never holds it across a game call, so neither
 //! thread waits on a game call of the other. At each Present call site the render thread also reads
-//! the layout, which names the eye view while the views sit side by side, for the eye camera and the
-//! view camera. With `second_view` off the feature installs no hook.
+//! the layout, which names the main view and the eye view while the views sit side by side, for the
+//! eye camera, the view camera and the shadow cache. With `second_view` off the feature installs no
+//! hook.
 
 mod create;
 mod decide;
@@ -90,20 +91,20 @@ pub(crate) struct RenderState {
     layout: Layout,
 }
 
-/// Where the views render in a frame, as the eye camera and the view camera see it.
+/// Where the views render in a frame, as the eye camera, the view camera and the shadow cache see it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Layout {
     /// The main view covers the frame, and the eye view renders nothing.
     #[default]
     MainOnly,
-    /// The main view covers the left half of the frame and `eye` the right half.
-    SideBySide { eye: RenderView },
+    /// `main`, the pipeline's main view, covers the left half of the frame and `eye` the right half.
+    SideBySide { main: RenderView, eye: RenderView },
 }
 
 impl Layout {
     /// Whether `view` is the eye view of this layout.
     pub(crate) fn is_eye_view(self, view: RenderView) -> bool {
-        matches!(self, Self::SideBySide { eye } if eye == view)
+        matches!(self, Self::SideBySide { eye, .. } if eye == view)
     }
 }
 
@@ -269,7 +270,9 @@ impl EyeView {
         }
         if let Ok(shared) = self.shared.try_lock() {
             render.layout = match (shared.placement, shared.held) {
-                (Placement::SideBySide, Some(held)) => Layout::SideBySide { eye: held.eye },
+                (Placement::SideBySide, Some(held)) => {
+                    Layout::SideBySide { main: held.main, eye: held.eye }
+                }
                 (Placement::SideBySide | Placement::FullFrame, _) => Layout::MainOnly,
             };
         }

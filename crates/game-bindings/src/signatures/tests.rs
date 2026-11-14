@@ -1,10 +1,29 @@
 //! The signature resolve against hand-built sections, and the table's own checks.
 
-use super::{Rip, SIGNATURES, Signature, SignatureError};
+use super::{Rip, SHADOW_STAGE_EXIT, SIGNATURES, Signature, SignatureError};
 use crate::pattern::Pattern;
 use crate::pe::{CodeSection, Rva};
 
 const BASE: Rva = Rva(0x1000);
+
+/// The bytes of the shadow stage's exit match in the installed game exe, operands included.
+const SHADOW_STAGE_EXIT_BYTES: [u8; 42] = [
+    0x48, 0x8D, 0x8F, 0xA0, 0x21, 0x00, 0x00, 0x4C, 0x8D, 0x05, 0xC2, 0x72, 0x0D, 0x02, 0xE8, 0x8D,
+    0x0F, 0x00, 0x00, 0x48, 0x8D, 0x4F, 0x20, 0xE8, 0x54, 0x01, 0x00, 0x00, 0x48, 0x81, 0xC4, 0x60,
+    0x02, 0x00, 0x00, 0x5F, 0xC3, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC,
+];
+
+/// The shadow stage's exit instruction, `add rsp,260h`.
+const ADD_RSP_260H: [u8; 7] = [0x48, 0x81, 0xC4, 0x60, 0x02, 0x00, 0x00];
+
+/// Int3 padding with the shadow stage's exit match at each of `starts`.
+fn code_with_shadow_stage_exits(starts: &[usize]) -> Vec<u8> {
+    let mut bytes = vec![0xCC; 0x100];
+    for start in starts {
+        bytes[*start..][..SHADOW_STAGE_EXIT_BYTES.len()].copy_from_slice(&SHADOW_STAGE_EXIT_BYTES);
+    }
+    bytes
+}
 
 fn signature(pattern: &'static str, offset: i32, rip: Option<Rip>) -> Signature {
     Signature { name: "test", pattern, offset, rip }
@@ -93,6 +112,28 @@ fn rip_displacement_past_the_section_end_is_rejected() {
 fn malformed_pattern_text_is_a_pattern_error() {
     let result = resolve_in(&signature("AA X", 0, None), &[0xAA]);
     assert!(matches!(result, Err(SignatureError::Pattern(_))));
+}
+
+#[test]
+fn the_shadow_stage_exit_is_the_add_rsp_28_bytes_past_its_one_match() {
+    let bytes = code_with_shadow_stage_exits(&[0x40]);
+    assert_eq!(resolve_in(&SHADOW_STAGE_EXIT, &bytes), Ok(Rva(0x105C)));
+    assert_eq!(bytes[0x5C..][..ADD_RSP_260H.len()], ADD_RSP_260H, "the exit instruction");
+}
+
+#[test]
+fn the_shadow_stage_exit_twice_in_the_code_is_ambiguous() {
+    let bytes = code_with_shadow_stage_exits(&[0x10, 0x80]);
+    let result = resolve_in(&SHADOW_STAGE_EXIT, &bytes);
+    assert_eq!(result, Err(SignatureError::Ambiguous { matches: 2 }));
+}
+
+#[test]
+fn a_shadow_stage_exit_with_a_function_less_than_5_bytes_past_its_ret_has_no_match() {
+    let mut bytes = code_with_shadow_stage_exits(&[0x40]);
+    let last_padding = bytes[0x40..][..SHADOW_STAGE_EXIT_BYTES.len()].last_mut();
+    *last_padding.expect("the last padding byte") = 0x40;
+    assert_eq!(resolve_in(&SHADOW_STAGE_EXIT, &bytes), Err(SignatureError::NoMatch));
 }
 
 #[test]

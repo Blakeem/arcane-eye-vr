@@ -8,5 +8,6 @@ pub mod pattern;
 pub mod pe;
 pub mod pipeline;
 pub mod render_view;
+pub mod shadow_stage;
 pub mod signatures;
 pub mod state;

@@ -63,7 +63,7 @@ fn the_camera_read_and_the_camera_line_make_no_heap_allocation() {
     let special = TestView::new(0, &block_at(1.0));
     let main = TestView::new(controller.address(), &block_at(2.0));
     let eye = TestView::new(controller.address(), &block_at(3.0));
-    let side_by_side = Layout::SideBySide { eye: eye.view() };
+    let side_by_side = Layout::SideBySide { main: main.view(), eye: eye.view() };
     let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE));
     let health = Health::new();
     health.install_ok(Feature::ViewCamera);
