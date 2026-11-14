@@ -76,6 +76,11 @@ impl GameDir {
         exe_in(&self.0)
     }
 
+    /// The folder that holds the game exe and the mod's two DLLs.
+    pub fn bin(&self) -> PathBuf {
+        self.0.join(EXE_DIR)
+    }
+
     /// The game's folder in the libraries that the library list of the Steam folder `steam` names.
     fn find_in(steam: &Path) -> Result<Self, GameDirError> {
         let list_path = steam.join(STEAMAPPS).join(LIBRARY_LIST);
@@ -256,5 +261,6 @@ mod tests {
         write(&game.join(r"bin\bg3_dx11.exe"), "");
         let found = GameDir::new(game.to_path_buf()).expect("a game folder");
         assert_eq!(found.as_path(), game);
+        assert_eq!(found.bin(), game.join("bin"));
     }
 }

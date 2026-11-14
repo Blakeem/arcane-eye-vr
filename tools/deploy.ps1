@@ -3,7 +3,7 @@
 .SYNOPSIS
 Builds the mod, stages it in dist/, and installs the two game DLLs into the game's bin folder.
 .DESCRIPTION
-dist/ holds the launch app and the debug viewer at paths that stay the same across builds and
+dist/ holds the launch app, the debug viewer and the trial runner at paths that stay the same across builds and
 profiles, so a Steam "Add a Non-Steam Game" entry keeps working. dist/game-bin/ holds the files
 the game's bin folder receives. A normal Steam launch stays unmodded while the DLLs are installed.
 .PARAMETER Configuration
@@ -31,7 +31,7 @@ $SteamAppId = '1086940'
 $GameFolder = 'Baldurs Gate 3'
 $ProxyDll = 'version.dll'
 $CoreDll = 'arcane_eye_core.dll'
-$StagedApps = @('arcane-eye-vr.exe', 'viewer.exe')
+$StagedApps = @('arcane-eye-vr.exe', 'viewer.exe', 'trial.exe')
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $StageRoot = Join-Path $RepoRoot 'dist'
 $StageGameBin = Join-Path $StageRoot 'game-bin'
@@ -67,7 +67,7 @@ function Assert-GameStopped {
 }
 
 function Assert-StagedAppsStopped {
-    # Windows locks a running exe, so a launch app or viewer started from dist/ blocks the copy.
+    # Windows locks a running exe, so an app started from dist/ blocks the copy.
     $stagedPaths = $StagedApps | ForEach-Object { Join-Path $StageRoot $_ }
     $running = @(Get-Process | Where-Object { $_.Path -in $stagedPaths })
     if ($running.Count -gt 0) { throw "Close $($running.Name -join ', ') first. It runs from $StageRoot." }
@@ -82,7 +82,7 @@ function Assert-ProxyOwned {
 }
 
 function Invoke-Build {
-    $cargoArgs = @('build', '--locked', '-p', 'proxy', '-p', 'arcane-eye-core', '-p', 'launcher', '-p', 'viewer')
+    $cargoArgs = @('build', '--locked', '-p', 'proxy', '-p', 'arcane-eye-core', '-p', 'launcher', '-p', 'viewer', '-p', 'trial')
     if ($Configuration -eq 'release') { $cargoArgs += '--release' }
     cargo @cargoArgs
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed.' }
@@ -142,6 +142,7 @@ try {
     Write-Host "Installed: $bin"
     Write-Host "Launch:    $(Join-Path $StageRoot 'arcane-eye-vr.exe') --mode desktop-stereo"
     Write-Host "View:      $(Join-Path $StageRoot 'viewer.exe')"
+    Write-Host "Trial:     $(Join-Path $StageRoot 'trial.exe') --name <name>"
 }
 finally {
     Pop-Location

@@ -11,6 +11,7 @@ use std::process;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
 use std::thread::JoinHandle;
+use std::time::SystemTime;
 
 use tracing::{Dispatch, dispatcher, warn};
 use tracing_subscriber::filter::LevelFilter;
@@ -80,6 +81,8 @@ pub enum LogName {
     Core,
     /// The launch app's log, `arcane-eye-vr-launcher.log`.
     Launcher,
+    /// The trial runner's log, `arcane-eye-vr-trial.log`.
+    Trial,
 }
 
 impl LogName {
@@ -88,6 +91,7 @@ impl LogName {
         match self {
             Self::Core => "arcane-eye-vr",
             Self::Launcher => "arcane-eye-vr-launcher",
+            Self::Trial => "arcane-eye-vr-trial",
         }
     }
 }
@@ -99,6 +103,31 @@ impl LogName {
 /// Returns [`LogError::LocalAppData`] when Windows cannot resolve the folder.
 pub fn session_log_dir() -> Result<PathBuf, LogError> {
     Ok(raw::local_app_data()?.join("arcane-eye-vr").join("logs"))
+}
+
+/// The file that the process `process_id`, started at `started`, writes its `log` session to in
+/// `log_dir`, for a reader of that log. It is the process's fallback file when that was written at or
+/// after `started`, since a failed rotation moves the session there, and else the current file when
+/// that was written at or after `started`. A file written earlier is an earlier session's, so `None`
+/// means the process started no session.
+pub fn session_file(
+    log_dir: &Path,
+    log: LogName,
+    process_id: u32,
+    started: SystemTime,
+) -> Option<PathBuf> {
+    let fallback = rotation::fallback_path(log_dir, log, process_id);
+    let current = rotation::session_path(log_dir, log, 0);
+    [fallback, current].into_iter().find(|path| written_since(path, started))
+}
+
+/// Whether the file at `path` was written at or after `time`.
+fn written_since(path: &Path, time: SystemTime) -> bool {
+    match fs::metadata(path).and_then(|metadata| metadata.modified()) {
+        Ok(written) => written >= time,
+        // A missing or unreadable file holds no session a reader can open.
+        Err(_) => false,
+    }
 }
 
 /// Rotates the files of `log` in `log_dir`, opens a new session log and starts the log writer thread.

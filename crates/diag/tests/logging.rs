@@ -162,6 +162,44 @@ mod tests {
     }
 
     #[test]
+    fn a_reader_finds_the_fallback_log_the_process_wrote_or_else_the_current_log() {
+        let dir = temp_dir("session-file");
+        fs::create_dir_all(&dir).expect("create the test folder");
+        let started = SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(10)).expect("a time");
+        let earlier = SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(9)).expect("a time");
+        let session_file =
+            |log, process_id| diag::logging::session_file(&dir, log, process_id, started);
+        let in_empty_folder = session_file(LogName::Core, 7);
+        let current = fs::File::create(dir.join("arcane-eye-vr.log")).expect("create a log");
+        current.set_modified(earlier).expect("set the write time");
+        let beside_stale_current = session_file(LogName::Core, 7);
+        current.set_modified(started).expect("set the write time");
+        let beside_live_current = session_file(LogName::Core, 7);
+        let other =
+            fs::File::create(dir.join("arcane-eye-vr.pid8.log")).expect("create a fallback");
+        other.set_modified(started).expect("set the write time");
+        let beside_other_process = session_file(LogName::Core, 7);
+        let own = fs::File::create(dir.join("arcane-eye-vr.pid7.log")).expect("create a fallback");
+        own.set_modified(earlier).expect("set the write time");
+        let beside_stale_fallback = session_file(LogName::Core, 7);
+        own.set_modified(started).expect("set the write time");
+        current.set_modified(earlier).expect("set the write time");
+        let beside_live_fallback = session_file(LogName::Core, 7);
+        let trial = fs::File::create(dir.join("arcane-eye-vr-trial.log")).expect("create a log");
+        trial.set_modified(started).expect("set the write time");
+        let trial_log = session_file(LogName::Trial, 7);
+        drop((current, other, own, trial));
+        fs::remove_dir_all(&dir).expect("remove the test folder");
+        assert_eq!(in_empty_folder, None);
+        assert_eq!(beside_stale_current, None);
+        assert_eq!(beside_live_current, Some(dir.join("arcane-eye-vr.log")));
+        assert_eq!(beside_other_process, Some(dir.join("arcane-eye-vr.log")));
+        assert_eq!(beside_stale_fallback, Some(dir.join("arcane-eye-vr.log")));
+        assert_eq!(beside_live_fallback, Some(dir.join("arcane-eye-vr.pid7.log")));
+        assert_eq!(trial_log, Some(dir.join("arcane-eye-vr-trial.log")));
+    }
+
+    #[test]
     fn locked_stale_fallback_log_is_a_warn_line_that_names_it() {
         let dir = temp_dir("prune-locked");
         fs::create_dir_all(&dir).expect("create the test folder");

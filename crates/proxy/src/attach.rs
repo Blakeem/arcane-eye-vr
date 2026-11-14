@@ -2,11 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-use ipc_layout::core_init::INIT_STARTED;
+use ipc_layout::core_init::{CORE_DLL, INIT_STARTED};
 use ipc_layout::launch_token::{LaunchToken, TokenError};
-
-/// The core DLL's file name. It sits next to the proxy.
-const CORE_DLL: &str = "arcane_eye_core.dll";
 
 /// Which game executable loaded the proxy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

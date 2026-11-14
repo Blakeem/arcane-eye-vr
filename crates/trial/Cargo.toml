@@ -1,0 +1,19 @@
+[package]
+name = "trial"
+description = "Runs one unattended trial: starts the game with the mod, measures frame times, saves frames as PNG files and closes the game."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+diag = { path = "../diag" }
+ipc-layout = { path = "../ipc-layout" }
+launch = { path = "../launch" }
+png.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+viewer-client = { path = "../viewer-client" }
+
+[lints]
+workspace = true

@@ -1,9 +1,12 @@
-//! The core DLL's init export: its name, its signature and its success code.
+//! The core DLL's file name and its init export: the export's name, signature and success code.
 //!
-//! The proxy DLL resolves and calls the export, and the core DLL defines it. Both read these items, so
-//! a change to the contract reaches both DLLs.
+//! The proxy DLL loads the core by its file name, then resolves and calls the export, which the core
+//! DLL defines. Each reads these items, so a change to the contract reaches each of them.
 
 use core::ffi::CStr;
+
+/// The core DLL's file name. It sits in the game's bin folder next to the proxy.
+pub const CORE_DLL: &str = "arcane_eye_core.dll";
 
 /// The name the core DLL exports its init function under, which is that function's name.
 pub const INIT_EXPORT: &CStr = c"arcane_eye_init";

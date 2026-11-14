@@ -35,7 +35,7 @@ pwsh tools/deploy.ps1            # build, stage in dist/, copy the two DLLs into
 pwsh tools/deploy.ps1 -Remove    # move the two DLLs to the Recycle Bin
 ```
 
-Then start `dist\arcane-eye-vr.exe --mode desktop-stereo` and `dist\viewer.exe`.
+Then start `dist\arcane-eye-vr.exe --mode desktop-stereo` and `dist\viewer.exe`. Also `dist\trial.exe --name <name>` runs one trial with no person at the PC and writes its frame times, frames and result to `trial-results\` in the current folder.
 
 ```
 pwsh tools/gate.ps1 -Suite commit    # format, clippy, lint rules, typos
