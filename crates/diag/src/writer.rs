@@ -190,9 +190,10 @@ mod tests {
     use super::{Clock, SESSION_CAP_BYTES, Session};
     use crate::raw;
     use crate::ring::{LogRing, SLOT_COUNT};
-    use crate::test_dir::TestDir;
+    use crate::test_dir;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use test_support::TestDir;
 
     /// A session that writes to a new file in `dir`, and the file's path.
     fn session(dir: &TestDir) -> (Session, PathBuf) {
@@ -224,7 +225,7 @@ mod tests {
 
     #[test]
     fn drain_reports_lapped_lines_once_then_writes_the_rest() {
-        let dir = TestDir::new("lapped");
+        let dir = test_dir("lapped");
         let (mut session, path) = session(&dir);
         let ring = LogRing::new();
         for _ in 0..SLOT_COUNT + 3 {
@@ -244,7 +245,7 @@ mod tests {
 
     #[test]
     fn drain_stops_at_a_pending_line_and_resumes_there_once_it_is_published() {
-        let dir = TestDir::new("pending");
+        let dir = test_dir("pending");
         let (mut session, path) = session(&dir);
         let ring = LogRing::new();
         let held = ring.push_held(0, 2, 9, b"t msg=first");
@@ -260,7 +261,7 @@ mod tests {
 
     #[test]
     fn drain_counts_a_dropped_line_into_a_lost_line_before_the_next_line() {
-        let dir = TestDir::new("dropped");
+        let dir = test_dir("dropped");
         let (mut session, path) = session(&dir);
         let ring = LogRing::new();
         let _held = ring.push_held(0, 2, 9, b"t msg=held");
@@ -281,7 +282,7 @@ mod tests {
 
     #[test]
     fn a_session_past_its_cap_reports_it_once_then_writes_only_warn_and_error_lines() {
-        let dir = TestDir::new("cap");
+        let dir = test_dir("cap");
         let (mut session, path) = capped_session(&dir, 1);
         let ring = LogRing::new();
         let (debug, info, warn, error) = (1, 2, 3, 4);

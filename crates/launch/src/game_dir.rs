@@ -123,7 +123,7 @@ fn steam_dir(read: Result<Option<String>, RegistryError>) -> Result<PathBuf, Gam
 mod tests {
     use super::{GameDir, GameDirError, steam_dir};
     use crate::registry::{Hive, RegistryError, RegistryValue};
-    use crate::test_dir::TestDir;
+    use crate::test_dir;
     use std::fmt::Write as _;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn the_game_is_found_in_the_second_of_two_libraries() {
-        let dir = TestDir::new("two-libraries");
+        let dir = test_dir("two-libraries");
         let root = dir.path();
         let (steam, second) = (root.join("Steam"), root.join(r"Second Library"));
         write_library_list(&steam, &[&steam, &second]);
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn a_missing_library_list_is_an_error_that_names_its_path() {
-        let dir = TestDir::new("no-list");
+        let dir = test_dir("no-list");
         let steam = dir.path();
         let error = GameDir::find_in(steam).expect_err("no library list");
         let list = steam.join(r"steamapps\libraryfolders.vdf");
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn a_list_with_no_library_that_holds_the_manifest_is_an_error_that_names_the_list() {
-        let dir = TestDir::new("no-manifest");
+        let dir = test_dir("no-manifest");
         let root = dir.path();
         let steam = root.join("Steam");
         let list = write_library_list(&steam, &[&steam, &root.join("Other")]);
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn a_folder_without_the_game_exe_is_an_error_that_names_the_exe_path() {
-        let dir = TestDir::new("no-exe");
+        let dir = test_dir("no-exe");
         let steam = dir.path();
         write_library_list(steam, &[steam]);
         write(&steam.join(r"steamapps\appmanifest_1086940.acf"), MANIFEST_TEXT);
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn a_manifest_without_an_install_folder_is_an_error_that_names_it() {
-        let dir = TestDir::new("no-installdir");
+        let dir = test_dir("no-installdir");
         let steam = dir.path();
         write_library_list(steam, &[steam]);
         let manifest = steam.join(r"steamapps\appmanifest_1086940.acf");
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn a_given_folder_with_the_game_exe_is_the_game_s_folder() {
-        let dir = TestDir::new("given");
+        let dir = test_dir("given");
         let game = dir.path();
         write(&game.join(r"bin\bg3_dx11.exe"), "");
         let found = GameDir::new(game.to_path_buf()).expect("a game folder");

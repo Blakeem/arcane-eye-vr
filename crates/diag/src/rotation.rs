@@ -116,14 +116,14 @@ pub(crate) fn rotate(dir: &Path, log: LogName) -> Result<(), RotateError> {
 mod tests {
     use super::{fallback_path, prune_fallbacks, rotate, session_path};
     use crate::logging::LogName;
-    use crate::test_dir::TestDir;
+    use crate::test_dir;
     use std::fs;
     use std::os::windows::fs::OpenOptionsExt as _;
     use std::time::{Duration, SystemTime};
 
     #[test]
     fn rotation_keeps_four_previous_sessions() {
-        let folder = TestDir::new("rotate-full");
+        let folder = test_dir("rotate-full");
         let dir = folder.path();
         for (index, text) in ["s0", "s1", "s2", "s3", "s4"].into_iter().enumerate() {
             let index = u32::try_from(index).expect("small index");
@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn rotation_skips_missing_sessions() {
-        let folder = TestDir::new("rotate-gaps");
+        let folder = test_dir("rotate-gaps");
         let dir = folder.path();
         fs::write(dir.join("arcane-eye-vr.log"), "s0").expect("write");
         fs::write(dir.join("arcane-eye-vr.2.log"), "s2").expect("write");
@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn rotation_of_a_locked_session_log_names_both_files() {
-        let folder = TestDir::new("rotate-locked");
+        let folder = test_dir("rotate-locked");
         let dir = folder.path();
         let base = dir.join("arcane-eye-vr.log");
         fs::write(&base, "s0").expect("write");
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn rotation_onto_a_locked_oldest_log_stops_and_names_it() {
-        let folder = TestDir::new("rotate-locked-oldest");
+        let folder = test_dir("rotate-locked-oldest");
         let dir = folder.path();
         for index in [0, 3, 4] {
             fs::write(session_path(dir, LogName::Core, index), format!("s{index}")).expect("write");
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn prune_removes_only_the_oldest_fallback_logs_past_four() {
-        let folder = TestDir::new("prune");
+        let folder = test_dir("prune");
         let dir = folder.path();
         for process_id in 1..=6_u32 {
             let file =
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn launcher_log_rotates_its_own_files_and_leaves_the_core_log() {
-        let folder = TestDir::new("rotate-launcher");
+        let folder = test_dir("rotate-launcher");
         let dir = folder.path();
         fs::write(dir.join("arcane-eye-vr.log"), "core").expect("write");
         fs::write(dir.join("arcane-eye-vr-launcher.log"), "launcher").expect("write");

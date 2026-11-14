@@ -9,12 +9,13 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 use launch::stop::StopError;
+use test_support::TestDir;
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use super::{LiveGame, MOD_FILES, Started, close_game, core_log_in, missing_files, wait};
 use crate::args::Settings;
 use crate::steps::{Closed, Game, Step, StepError};
-use crate::test_dir::TestDir;
+use crate::test_dir;
 
 /// The libtest name of the test that a child process runs as a game that ignores its close.
 const STAND_IN_TEST: &str = "live::tests::stand_in_game_runs_until_ended";
@@ -36,7 +37,7 @@ struct StandIn {
 
 impl StandIn {
     fn start(test_name: &str) -> Self {
-        let dir = TestDir::new(test_name);
+        let dir = test_dir(test_name);
         let exe = dir.path().join(STAND_IN_EXE);
         let test_binary = env::current_exe().expect("the test binary path");
         fs::copy(test_binary, &exe).expect("copy the test binary as the stand-in");
@@ -118,7 +119,7 @@ fn a_game_that_exited_reports_its_exit_status_and_passes_the_close() {
 
 #[test]
 fn a_bin_folder_lacking_a_mod_file_names_each_missing_file() {
-    let dir = TestDir::new("mod-files");
+    let dir = test_dir("mod-files");
     let bin = dir.path();
     assert_eq!(missing_files(bin, &MOD_FILES), ["version.dll", "arcane_eye_core.dll"]);
     fs::write(bin.join("version.dll"), "").expect("write the proxy stand-in");
@@ -132,7 +133,7 @@ fn a_bin_folder_lacking_a_mod_file_names_each_missing_file() {
 
 #[test]
 fn a_core_log_written_before_the_game_started_is_no_core_log() {
-    let dir = TestDir::new("core-log");
+    let dir = test_dir("core-log");
     let log_dir = dir.path();
     let started = SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(10)).expect("a time");
     let earlier = SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(9)).expect("a time");

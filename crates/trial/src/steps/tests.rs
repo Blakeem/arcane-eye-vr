@@ -1,163 +1,19 @@
 //! The steps against stand-ins for the game and the frame reader.
 
+mod stand_in;
+
 use std::fs;
 use std::io;
-use std::os::windows::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{ExitCode, ExitStatus};
+use std::process::ExitCode;
 use std::time::Duration;
 
 use ipc_layout::launch_token::Mode;
-use ipc_layout::perf_line::PerfSummary;
-use launch::checks::GameRunning;
-use launch::status::WaitError;
-use launch::stop::StopError;
-use viewer_client::frame::{Frame, PixelFormat, ReadError};
 
-use super::{Closed, Frames, Game, Report, Step, StepError, trial};
+use self::stand_in::{Exits, LOG_TEXT, StandInFrames, StandInGame};
+use super::{Closed, Report, Step, cause, trial};
 use crate::args::{Options, Settings, TrialName};
-use crate::perf::PerfError;
-use crate::test_dir::TestDir;
-
-const LOG_TEXT: &str = "the core's session log\n";
-
-fn summary(frames: u32, mean_us: u64) -> PerfSummary {
-    PerfSummary {
-        frames,
-        mean: Duration::from_micros(mean_us),
-        p50: Duration::from_millis(16),
-        p95: Duration::from_millis(17),
-        p99: Duration::from_millis(18),
-        max: Duration::from_millis(19),
-        width: 2,
-        height: 1,
-    }
-}
-
-/// How the stand-in game answers the checks of whether it runs.
-#[derive(Clone, Copy)]
-enum Exits {
-    Never,
-    /// Exited with code 3 from this check on, counting from 1.
-    AtCheck(usize),
-    /// Every check fails.
-    CheckFails,
-}
-
-/// A game that fails at `fail_at`, exits as `exits` says and records each step it ran.
-struct StandInGame {
-    fail_at: Option<Step>,
-    exits: Exits,
-    exit_checks: usize,
-    closed: Closed,
-    ran: Vec<Step>,
-    warmup: Option<Duration>,
-}
-
-impl StandInGame {
-    fn failing_at(fail_at: Option<Step>) -> Self {
-        Self {
-            fail_at,
-            exits: Exits::Never,
-            exit_checks: 0,
-            closed: Closed::Exited,
-            ran: Vec::new(),
-            warmup: None,
-        }
-    }
-
-    fn step(&mut self, step: Step, error: StepError) -> Result<(), StepError> {
-        self.ran.push(step);
-        if self.fail_at == Some(step) { Err(error) } else { Ok(()) }
-    }
-}
-
-impl Game for StandInGame {
-    fn check(&mut self) -> Result<(), StepError> {
-        self.step(Step::Check, GameRunning.into())
-    }
-
-    fn create_token(&mut self) -> Result<(), StepError> {
-        self.step(Step::Token, StepError::Needs(Step::Check))
-    }
-
-    fn start(&mut self) -> Result<(), StepError> {
-        self.step(Step::Start, StepError::Needs(Step::Token))
-    }
-
-    fn wait_first_present(&mut self) -> Result<(), StepError> {
-        self.step(Step::FirstPresent, WaitError::CoreLoadFailed.into())
-    }
-
-    fn warm_up(&mut self, time: Duration) {
-        self.warmup = Some(time);
-        self.ran.push(Step::WarmUp);
-    }
-
-    fn exit_status(&mut self) -> Result<Option<ExitStatus>, StepError> {
-        self.exit_checks = self.exit_checks.saturating_add(1);
-        match self.exits {
-            Exits::Never => Ok(None),
-            Exits::AtCheck(check) => {
-                Ok((self.exit_checks >= check).then(|| ExitStatus::from_raw(3)))
-            }
-            Exits::CheckFails => Err(StepError::GameState(io::Error::other("access denied"))),
-        }
-    }
-
-    fn perf_window(&mut self, lines: u32) -> Result<Vec<PerfSummary>, StepError> {
-        let timeout = PerfError::Timeout {
-            path: PathBuf::from(r"C:\logs\arcane-eye-vr.log"),
-            got: 1,
-            expected: lines,
-            timeout: Duration::from_secs(120),
-        };
-        self.step(Step::Perf, timeout.into())?;
-        let count = usize::try_from(lines).unwrap_or(usize::MAX);
-        Ok([summary(600, 16_000), summary(300, 17_000)].into_iter().take(count).collect())
-    }
-
-    fn close(&mut self) -> Result<Closed, StepError> {
-        self.step(Step::Close, StopError::StillRunning { pid: 7 }.into())?;
-        Ok(self.closed)
-    }
-
-    fn copy_log(&mut self, to: &Path) -> Result<(), StepError> {
-        self.step(Step::CopyLog, StepError::Needs(Step::Start))?;
-        match fs::write(to, LOG_TEXT) {
-            Ok(()) => Ok(()),
-            Err(source) => Err(StepError::Copy {
-                from: PathBuf::from("stand-in"),
-                to: to.to_path_buf(),
-                source,
-            }),
-        }
-    }
-}
-
-/// A frame reader that returns 2x1 RGBA frames, or fails its reads.
-struct StandInFrames {
-    fail_reads: bool,
-    beating: bool,
-}
-
-impl Frames for StandInFrames {
-    fn start_heartbeat(&mut self) -> Result<(), StepError> {
-        self.beating = true;
-        Ok(())
-    }
-
-    fn read(&mut self) -> Result<Frame, StepError> {
-        if !self.beating {
-            return Err(StepError::Heartbeat(io::Error::other("a read before the heartbeat")));
-        }
-        if self.fail_reads {
-            return Err(ReadError::Timeout(Duration::from_secs(10)).into());
-        }
-        let bytes = vec![10, 20, 30, 255, 40, 50, 60, 255];
-        Ok(Frame { width: 2, height: 1, format: PixelFormat::Rgba8, bytes })
-    }
-}
+use crate::test_dir;
 
 fn options(out: &Path) -> Options {
     let settings = Settings {
@@ -207,7 +63,7 @@ fn a_failure_in_each_step_after_the_start_still_closes_the_game() {
         ),
     ];
     for (failed, middle) in cases {
-        let dir = TestDir::new(&format!("fail-{}", failed.as_str()));
+        let dir = test_dir(&format!("fail-{}", failed.as_str()));
         let mut game = StandInGame::failing_at((failed != Step::Capture).then_some(failed));
         let mut frames = StandInFrames { fail_reads: failed == Step::Capture, beating: false };
         let (report, printed, result) = run_trial(dir.path(), &mut game, &mut frames);
@@ -259,7 +115,7 @@ fn a_game_that_exits_during_a_step_after_the_start_fails_that_step_with_its_exit
         ),
     ];
     for (check, failed, middle) in cases {
-        let dir = TestDir::new(&format!("exit-{check}"));
+        let dir = test_dir(&format!("exit-{check}"));
         let mut game = StandInGame::failing_at(failed.filter(|step| *step != Step::Capture));
         game.exits = Exits::AtCheck(check);
         let mut frames =
@@ -278,7 +134,7 @@ fn a_failed_check_of_the_game_fails_a_passed_step_and_keeps_a_failed_step_cause(
         (Some(Step::FirstPresent), "first-present: failed: the game could not load the core\n"),
     ];
     for (failed, middle) in cases {
-        let dir = TestDir::new(&format!("exit-check-{}", failed.is_some()));
+        let dir = test_dir(&format!("exit-check-{}", failed.is_some()));
         let mut game = StandInGame::failing_at(failed);
         game.exits = Exits::CheckFails;
         let mut frames = StandInFrames { fail_reads: false, beating: false };
@@ -290,7 +146,7 @@ fn a_failed_check_of_the_game_fails_a_passed_step_and_keeps_a_failed_step_cause(
 
 #[test]
 fn a_forced_close_is_recorded_and_the_trial_still_passes() {
-    let dir = TestDir::new("forced");
+    let dir = test_dir("forced");
     let mut game = StandInGame::failing_at(None);
     game.closed = Closed::Forced { waited: Duration::from_secs(30) };
     let mut frames = StandInFrames { fail_reads: false, beating: false };
@@ -304,7 +160,7 @@ fn a_forced_close_is_recorded_and_the_trial_still_passes() {
 
 #[test]
 fn a_failed_close_fails_the_trial_and_the_log_is_still_copied() {
-    let dir = TestDir::new("close-fails");
+    let dir = test_dir("close-fails");
     let mut game = StandInGame::failing_at(Some(Step::Close));
     let mut frames = StandInFrames { fail_reads: false, beating: false };
     let (report, _printed, result) = run_trial(dir.path(), &mut game, &mut frames);
@@ -324,7 +180,7 @@ fn a_failure_before_the_start_runs_no_close() {
             "check: passed\ntoken: passed\nstart: failed: the token step did not pass first\n",
         ),
     ] {
-        let dir = TestDir::new(&format!("before-{}", failed.as_str()));
+        let dir = test_dir(&format!("before-{}", failed.as_str()));
         let mut game = StandInGame::failing_at(Some(failed));
         let mut frames = StandInFrames { fail_reads: false, beating: false };
         let (report, _printed, result) = run_trial(dir.path(), &mut game, &mut frames);
@@ -337,7 +193,7 @@ fn a_failure_before_the_start_runs_no_close() {
 
 #[test]
 fn a_passed_trial_writes_every_file_of_the_result_folder() {
-    let dir = TestDir::new("full");
+    let dir = test_dir("full");
     let folder = dir.path();
     let mut game = StandInGame::failing_at(None);
     let mut frames = StandInFrames { fail_reads: false, beating: false };
@@ -384,7 +240,7 @@ fn a_result_that_cannot_be_printed_is_a_print_error_after_result_txt_is_written(
         }
     }
 
-    let dir = TestDir::new("print");
+    let dir = test_dir("print");
     let mut game = StandInGame::failing_at(Some(Step::Check));
     let mut frames = StandInFrames { fail_reads: false, beating: false };
     let error = trial(&options(dir.path()), dir.path(), &mut game, &mut frames, &mut BrokenPipe)
@@ -392,4 +248,9 @@ fn a_result_that_cannot_be_printed_is_a_print_error_after_result_txt_is_written(
     assert_eq!(error.to_string(), "could not print the result");
     let result = fs::read_to_string(dir.path().join("result.txt")).expect("read result.txt");
     assert_eq!(result, "check: failed: Steam reports that the game is running\noutcome: failed\n");
+}
+
+#[test]
+fn each_line_break_in_a_cause_becomes_a_space_so_the_step_keeps_one_result_line() {
+    assert_eq!(cause(&io::Error::other("first\r\nsecond")), "first  second");
 }

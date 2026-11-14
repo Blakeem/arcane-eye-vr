@@ -9,6 +9,7 @@ use std::time::Duration;
 use std::{env, fs, io, process, ptr, thread};
 
 use ipc_layout::launch_token::{self, LaunchToken, Mode, STATUS_OFFSET, Status};
+use test_support::TestDir;
 use windows::Win32::Foundation::{
     CloseHandle, HINSTANCE, HWND, LPARAM, LRESULT, S_FALSE, S_OK, WPARAM,
 };
@@ -28,7 +29,7 @@ use windows::core::{HSTRING, PCWSTR};
 use super::{ComInit, ENDED_EXIT_CODE, Process, TokenCreateError, TokenMapping};
 use crate::registry::{Hive, RegistryValue};
 use crate::stop::{self, ProcessState, StopError};
-use crate::test_dir::TestDir;
+use crate::test_dir;
 
 const CURRENT_VERSION: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
 
@@ -260,7 +261,7 @@ impl StandIn {
     /// Starts the child test `child_test` in a copy of this test binary in the folder of the calling
     /// test `test_name` and returns once its window exists.
     fn start(child_test: &str, test_name: &str) -> Self {
-        let dir = TestDir::new(test_name);
+        let dir = test_dir(test_name);
         let exe = dir.path().join(STAND_IN_EXE);
         let test_binary = env::current_exe().expect("the test binary path");
         fs::copy(test_binary, &exe).expect("copy the test binary as the stand-in");

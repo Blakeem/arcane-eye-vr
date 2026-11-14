@@ -146,7 +146,7 @@ mod tests {
     use super::{InitError, InitStatus, guarded, open_status, run, start};
     use crate::context::CoreContext;
     use crate::raw::test_support::TestMapping;
-    use crate::test_dir::TestDir;
+    use crate::test_dir;
     use diag::health::{Feature, FeatureState};
     use diag::logging::{LogError, LogName};
     use game_bindings::state::{self, StateError};
@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn start_writes_the_start_line_to_the_session_log() {
-        let dir = TestDir::new("start");
+        let dir = test_dir("start");
         let core = start(Mode::DesktopStereo, dir.path()).expect("start");
         let file_path = core.log.file_path().to_path_buf();
         core.log.shutdown().expect("the writer ends cleanly");
@@ -175,7 +175,7 @@ mod tests {
     /// value per process. The test exe holds no Present call site, so the run reports status 12.
     #[test]
     fn second_run_returns_already_running_and_a_taken_subscriber_maps_to_code_3() {
-        let folder = TestDir::new("second-run");
+        let folder = test_dir("second-run");
         let dir = folder.path().to_path_buf();
         let mapping = TestMapping::create("second-run");
         run(1, || Ok(dir.clone()), &mapping.name).expect("the first run starts the core");
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn an_unknown_mode_fails_with_code_6_and_starts_nothing() {
-        let folder = TestDir::new("unknown-mode");
+        let folder = test_dir("unknown-mode");
         let dir = folder.path().join("logs");
         let mapping = TestMapping::create("unknown-mode");
         let result = run(7, || Ok(dir.clone()), &mapping.name);
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn failed_init_logs_its_code_and_cause_through_the_current_subscriber() {
-        let dir = TestDir::new("failure-line");
+        let dir = test_dir("failure-line");
         let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
         let code = dispatcher::with_default(&logging.dispatch, || {
             guarded(|| Err(InitError::AlreadyRunning))
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn a_token_that_fails_to_open_reports_no_status_and_logs_its_cause() {
-        let dir = TestDir::new("status-open-failure");
+        let dir = test_dir("status-open-failure");
         let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
         let status = dispatcher::with_default(&logging.dispatch, || {
             open_status(r"NoSuchNamespace\arcane-eye-vr-launch")

@@ -12,6 +12,7 @@ memchr.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+test-support = { path = "../test-support" }
 tracing.workspace = true
 
 [lints]

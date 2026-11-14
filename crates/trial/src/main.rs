@@ -16,8 +16,6 @@ mod perf;
 mod pixels;
 mod png_file;
 mod steps;
-#[cfg(test)]
-mod test_dir;
 
 use std::env;
 use std::io::{self, Write as _};
@@ -90,4 +88,10 @@ fn run(options: &Options) -> Result<ExitCode, Failure> {
         (Err(error), _) => Err(error.into()),
         (Ok(_), Err(error)) => Err(error.into()),
     }
+}
+
+/// A temp folder for test `name` of this crate.
+#[cfg(test)]
+fn test_dir(name: &str) -> test_support::TestDir {
+    test_support::TestDir::in_temp("arcane-eye-trial", name).expect("create the test folder")
 }

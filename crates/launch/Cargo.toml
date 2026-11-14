@@ -24,6 +24,9 @@ features = [
     "Win32_UI_WindowsAndMessaging",
 ]
 
+[dev-dependencies]
+test-support = { path = "../test-support" }
+
 [dev-dependencies.windows]
 workspace = true
 features = ["Win32_Graphics_Gdi", "Win32_System_LibraryLoader"]

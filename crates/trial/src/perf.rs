@@ -1,5 +1,8 @@
 //! The perf window: the perf summary lines the core appends to its session log after a start
 //! position, and their totals.
+//!
+//! The window leaves out the first perf summary line the log finishes after the start, since most
+//! of the frames that line covers were presented before the start.
 
 use std::fs::{self, File};
 use std::io::{self, Read as _, Seek as _, SeekFrom};
@@ -80,29 +83,56 @@ impl LogTail {
     }
 }
 
-/// Follows `tail` until it holds `count` perf summary lines. Each line has `line_timeout` to arrive
-/// after the one before it, or after the start for the first.
+/// The counted lines of a perf window, fed the perf summary lines of one log read at a time.
+#[derive(Debug)]
+struct Window {
+    expected: usize,
+    first_left_out: bool,
+    summaries: Vec<PerfSummary>,
+}
+
+impl Window {
+    fn new(expected: usize) -> Self {
+        Self { expected, first_left_out: false, summaries: Vec::new() }
+    }
+
+    /// Counts the lines of `read` up to the expected count, after the first perf summary line of
+    /// the window, which it leaves out.
+    fn add(&mut self, read: Vec<PerfSummary>) {
+        // The first perf summary line after the start holds frames from the end of the warm-up.
+        let skip = usize::from(!self.first_left_out);
+        self.first_left_out |= !read.is_empty();
+        self.summaries.extend(read.into_iter().skip(skip));
+        self.summaries.truncate(self.expected);
+    }
+
+    fn is_full(&self) -> bool {
+        self.summaries.len() >= self.expected
+    }
+}
+
+/// Follows `tail` until it holds `count` perf summary lines after the first perf summary line it
+/// finishes, which it leaves out. Each line has `line_timeout` to arrive after the one before it,
+/// or after the start for the first.
 pub(crate) fn collect(
     tail: &mut LogTail,
     count: u32,
     line_timeout: Duration,
 ) -> Result<Vec<PerfSummary>, PerfError> {
-    let expected = usize::try_from(count).unwrap_or(usize::MAX);
-    let mut summaries: Vec<PerfSummary> = Vec::new();
+    let mut window = Window::new(usize::try_from(count).unwrap_or(usize::MAX));
     let mut last_line = Instant::now();
     loop {
         let read = tail.read_summaries()?;
         if !read.is_empty() {
             last_line = Instant::now();
         }
-        summaries.extend(read);
-        if summaries.len() >= expected {
-            summaries.truncate(expected);
-            return Ok(summaries);
+        window.add(read);
+        if window.is_full() {
+            return Ok(window.summaries);
         }
         let remaining = line_timeout.saturating_sub(last_line.elapsed());
         if remaining.is_zero() {
-            let got = u32::try_from(summaries.len()).unwrap_or(u32::MAX);
+            let got = u32::try_from(window.summaries.len()).unwrap_or(u32::MAX);
             let path = tail.path.clone();
             return Err(PerfError::Timeout { path, got, expected: count, timeout: line_timeout });
         }

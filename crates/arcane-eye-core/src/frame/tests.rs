@@ -13,7 +13,7 @@ use crate::raw::{
     self,
     test_support::{FORMAT, TestSwapchain, TestViewer, test_view_names},
 };
-use crate::test_dir::TestDir;
+use crate::test_dir;
 use crate::viewer::ViewerLink;
 
 /// A frame state whose viewer link uses names of its own, and those names.
@@ -25,7 +25,7 @@ fn test_state(test: &str) -> (FrameState, ViewNames) {
 
 /// Runs `frames` under a session log of its own and returns the log's lines.
 fn log_lines(name: &str, frames: impl FnOnce()) -> Vec<String> {
-    let dir = TestDir::new(name);
+    let dir = test_dir(name);
     let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
     tracing::dispatcher::with_default(&logging.dispatch, frames);
     let file_path = logging.handle.file_path().to_path_buf();

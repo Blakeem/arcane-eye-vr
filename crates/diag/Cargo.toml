@@ -24,5 +24,8 @@ features = [
     "Win32_UI_Shell",
 ]
 
+[dev-dependencies]
+test-support = { path = "../test-support" }
+
 [lints]
 workspace = true

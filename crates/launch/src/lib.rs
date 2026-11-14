@@ -20,7 +20,11 @@ pub mod registry;
 pub mod status;
 pub mod steam;
 pub mod stop;
-#[cfg(test)]
-mod test_dir;
 pub mod token;
 mod vdf;
+
+/// A temp folder for test `name` of this crate.
+#[cfg(test)]
+fn test_dir(name: &str) -> test_support::TestDir {
+    test_support::TestDir::in_temp("arcane-eye-launch", name).expect("create the test folder")
+}

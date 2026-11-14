@@ -1,10 +1,6 @@
 //! Session logging end to end: events through the ring layer reach the session log file.
 
 #[cfg(test)]
-#[path = "../src/test_dir.rs"]
-mod test_dir;
-
-#[cfg(test)]
 mod tests {
     use std::fmt;
     use std::fs;
@@ -13,9 +9,13 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use diag::logging::{LogError, LogName};
+    use test_support::TestDir;
     use tracing::{debug, info, warn};
 
-    use crate::test_dir::TestDir;
+    /// A temp folder for test `name` of this test binary.
+    fn test_dir(name: &str) -> TestDir {
+        TestDir::in_temp("arcane-eye-diag", name).expect("create the test folder")
+    }
 
     /// Opens `path` with no share, so a rename, removal or second open of it fails.
     fn lock(path: &Path) -> fs::File {
@@ -34,7 +34,7 @@ mod tests {
     }
 
     fn log_lines(name: &str, emit: impl FnOnce()) -> Vec<String> {
-        let dir = TestDir::new(name);
+        let dir = test_dir(name);
         let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
         tracing::dispatcher::with_default(&logging.dispatch, emit);
         let file_path = logging.handle.file_path().to_path_buf();
@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn locked_session_log_moves_the_session_to_its_own_file_with_a_warn_line() {
-        let folder = TestDir::new("locked");
+        let folder = test_dir("locked");
         let dir = folder.path();
         let base = dir.join("arcane-eye-vr.log");
         fs::write(&base, "previous session").expect("write the previous session log");
@@ -118,7 +118,7 @@ mod tests {
 
     #[test]
     fn reused_process_id_appends_to_its_older_fallback_log() {
-        let folder = TestDir::new("reused-pid");
+        let folder = test_dir("reused-pid");
         let dir = folder.path();
         let base = dir.join("arcane-eye-vr.log");
         fs::write(&base, "previous session").expect("write the previous session log");
@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn second_session_in_the_same_folder_leaves_the_live_log_in_place() {
-        let folder = TestDir::new("live");
+        let folder = test_dir("live");
         let dir = folder.path();
         let first = diag::logging::start(dir, LogName::Core).expect("start the first session");
         let second =
@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn a_reader_finds_the_fallback_log_the_process_wrote_or_else_the_current_log() {
-        let folder = TestDir::new("session-file");
+        let folder = test_dir("session-file");
         let dir = folder.path();
         let started = SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(10)).expect("a time");
         let earlier = SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(9)).expect("a time");
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn locked_stale_fallback_log_is_a_warn_line_that_names_it() {
-        let folder = TestDir::new("prune-locked");
+        let folder = test_dir("prune-locked");
         let dir = folder.path();
         write_fallback_logs(dir);
         let oldest = dir.join("arcane-eye-vr.pid1.log");
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn rotation_failure_is_the_first_line_when_the_prune_also_fails() {
-        let folder = TestDir::new("both-locked");
+        let folder = test_dir("both-locked");
         let dir = folder.path();
         write_fallback_logs(dir);
         let base = dir.join("arcane-eye-vr.log");
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn locked_fallback_log_fails_with_the_fallback_path() {
-        let folder = TestDir::new("fallback-locked");
+        let folder = test_dir("fallback-locked");
         let dir = folder.path();
         let base = dir.join("arcane-eye-vr.log");
         fs::write(&base, "previous session").expect("write the previous session log");
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn log_folder_that_is_a_file_fails_with_the_folder_path() {
-        let folder = TestDir::new("file");
+        let folder = test_dir("file");
         let path = folder.path().join("logs");
         fs::write(&path, "not a folder").expect("write a file where the folder goes");
         let error =
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn missing_log_folder_is_created() {
-        let folder = TestDir::new("missing");
+        let folder = test_dir("missing");
         let log_dir = folder.path().join("logs");
         let logging = diag::logging::start(&log_dir, LogName::Core).expect("start logging");
         let file_path = logging.handle.file_path().to_path_buf();

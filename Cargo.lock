@@ -18,6 +18,7 @@ dependencies = [
  "gfx",
  "hooks",
  "ipc-layout",
+ "test-support",
  "thiserror",
  "tracing",
  "viewer-client",
@@ -63,6 +64,7 @@ dependencies = [
 name = "diag"
 version = "0.1.0"
 dependencies = [
+ "test-support",
  "thiserror",
  "tracing",
  "tracing-subscriber",
@@ -101,6 +103,7 @@ version = "0.1.0"
 dependencies = [
  "diag",
  "memchr",
+ "test-support",
  "thiserror",
  "tracing",
 ]
@@ -146,6 +149,7 @@ name = "launch"
 version = "0.1.0"
 dependencies = [
  "ipc-layout",
+ "test-support",
  "thiserror",
  "tracing",
  "windows",
@@ -303,6 +307,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-support"
+version = "0.1.0"
+
+[[package]]
 name = "thiserror"
 version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -358,6 +366,7 @@ dependencies = [
  "ipc-layout",
  "launch",
  "png",
+ "test-support",
  "thiserror",
  "tracing",
  "viewer-client",

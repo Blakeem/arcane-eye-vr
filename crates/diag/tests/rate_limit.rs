@@ -1,10 +1,6 @@
 //! The rate-limited log macros end to end: what reaches the session log from a burst of events.
 
 #[cfg(test)]
-#[path = "../src/test_dir.rs"]
-mod test_dir;
-
-#[cfg(test)]
 mod tests {
     use std::fs;
     use std::hint;
@@ -13,9 +9,8 @@ mod tests {
     use diag::logging::LogName;
     use diag::rate::{Once, RateLimit};
     use diag::{error_every, once, warn_every};
+    use test_support::TestDir;
     use tracing::Level;
-
-    use crate::test_dir::TestDir;
 
     /// Long enough that three back-to-back events fall inside one period.
     const PERIOD: Duration = Duration::from_millis(200);
@@ -28,8 +23,13 @@ mod tests {
         first: Once,
     }
 
+    /// A temp folder for test `name` of this test binary.
+    fn test_dir(name: &str) -> TestDir {
+        TestDir::in_temp("arcane-eye-diag", name).expect("create the test folder")
+    }
+
     fn log_lines(name: &str, emit: impl FnOnce()) -> Vec<String> {
-        let dir = TestDir::new(name);
+        let dir = test_dir(name);
         let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
         tracing::dispatcher::with_default(&logging.dispatch, emit);
         let file_path = logging.handle.file_path().to_path_buf();

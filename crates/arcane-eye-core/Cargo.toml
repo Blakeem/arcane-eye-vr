@@ -30,6 +30,7 @@ features = [
 ]
 
 [dev-dependencies]
+test-support = { path = "../test-support" }
 viewer-client = { path = "../viewer-client" }
 
 [dev-dependencies.windows]

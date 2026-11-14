@@ -65,13 +65,14 @@ fn working_dir(game_dir: &GameDir) -> PathBuf {
 mod tests {
     use super::{command, start};
     use crate::game_dir::GameDir;
-    use crate::test_dir::TestDir;
+    use crate::test_dir;
     use std::ffi::OsStr;
     use std::fs;
+    use test_support::TestDir;
 
     /// A game folder whose exe is an empty file, which Windows refuses to run.
     fn stand_in_game(name: &str) -> TestDir {
-        let dir = TestDir::new(name);
+        let dir = test_dir(name);
         fs::create_dir_all(dir.path().join("bin")).expect("create the game folder");
         fs::write(dir.path().join(r"bin\bg3_dx11.exe"), "").expect("write a stand-in exe");
         dir

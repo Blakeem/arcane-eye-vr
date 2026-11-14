@@ -11,6 +11,10 @@ pub mod rate;
 mod raw;
 mod ring;
 mod rotation;
-#[cfg(test)]
-mod test_dir;
 mod writer;
+
+/// A temp folder for test `name` of this crate.
+#[cfg(test)]
+fn test_dir(name: &str) -> test_support::TestDir {
+    test_support::TestDir::in_temp("arcane-eye-diag", name).expect("create the test folder")
+}

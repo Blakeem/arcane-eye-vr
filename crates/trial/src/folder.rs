@@ -126,7 +126,7 @@ mod tests {
 
     use super::{FolderError, create, trial_text, utc_stamp};
     use crate::args::{Options, Settings, TrialName};
-    use crate::test_dir::TestDir;
+    use crate::test_dir;
 
     fn stamp(seconds: u64) -> String {
         utc_stamp(Duration::from_secs(seconds))
@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn the_folder_is_the_utc_time_then_the_name_and_is_never_reused() {
-        let dir = TestDir::new("folder");
+        let dir = test_dir("folder");
         let out = dir.path().join(r"results\nested");
         let name = TrialName::new("menu-1").expect("a valid name");
         let started = Duration::from_secs(1_794_580_530);
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn an_out_folder_that_is_a_file_is_a_create_error_that_names_it() {
-        let dir = TestDir::new("folder-file");
+        let dir = test_dir("folder-file");
         let out = dir.path().join("results");
         fs::write(&out, "a file").expect("write a file where the out folder goes");
         let name = TrialName::new("menu").expect("a valid name");

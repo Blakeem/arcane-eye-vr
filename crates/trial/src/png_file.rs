@@ -50,7 +50,7 @@ mod tests {
 
     use super::{PngError, write};
     use crate::pixels::{Depth, RgbImage};
-    use crate::test_dir::TestDir;
+    use crate::test_dir;
 
     /// The size, bit depth, color type and bytes of the PNG file at `path`.
     fn read_back(path: &std::path::Path) -> (u32, u32, BitDepth, ColorType, Vec<u8>) {
@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn an_eight_bit_image_reads_back_with_its_size_depth_and_bytes() {
-        let dir = TestDir::new("png-8");
+        let dir = test_dir("png-8");
         let path = dir.path().join("frame-0001.png");
         let data = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
         write(&path, &RgbImage { width: 2, height: 2, depth: Depth::Eight, data: data.clone() })
@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn a_sixteen_bit_image_reads_back_with_its_size_depth_and_bytes() {
-        let dir = TestDir::new("png-16");
+        let dir = test_dir("png-16");
         let path = dir.path().join("frame-0002.png");
         let data = vec![0xFF, 0xFF, 0x80, 0x20, 0x00, 0x40, 0x00, 0x00, 0x00, 0x40, 0xFF, 0xFF];
         write(&path, &RgbImage { width: 1, height: 2, depth: Depth::Sixteen, data: data.clone() })
@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn a_file_in_a_missing_folder_is_a_create_error_that_names_it() {
-        let dir = TestDir::new("png-missing");
+        let dir = test_dir("png-missing");
         let path = dir.path().join(r"missing\frame-0001.png");
         let image = RgbImage { width: 1, height: 1, depth: Depth::Eight, data: vec![1, 2, 3] };
         let error = write(&path, &image).expect_err("no folder");
@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn data_shorter_than_the_image_is_an_encode_error_that_names_the_file() {
-        let dir = TestDir::new("png-short");
+        let dir = test_dir("png-short");
         let path = dir.path().join("frame-0001.png");
         let image = RgbImage { width: 2, height: 1, depth: Depth::Eight, data: vec![1, 2, 3] };
         let error = write(&path, &image).expect_err("3 bytes for 2 pixels");

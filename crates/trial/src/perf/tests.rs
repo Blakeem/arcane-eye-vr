@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use ipc_layout::perf_line::PerfSummary;
 
-use super::{LogTail, PerfError, Totals, collect, text, totals};
-use crate::test_dir::TestDir;
+use super::{LogTail, PerfError, Totals, Window, collect, text, totals};
+use crate::test_dir;
 
 const PREFIX: &str = "2026-11-13T12:35:25.951 INFO  thread=29780 arcane_eye_core::frame";
 
@@ -73,12 +73,14 @@ total frames=900 mean_us=17333 highest_p99_us=22000 highest_max_us=40000
 
 #[test]
 fn lines_before_the_start_position_are_left_out() {
-    let dir = TestDir::new("perf-start");
+    let dir = test_dir("perf-start");
     let log = dir.path().join("arcane-eye-vr.log");
     let before = format!("{}{PREFIX} msg=\"other\" a=1\n", line(600, 1, 1, 1));
     fs::write(&log, before).expect("write the test log");
     let mut tail = LogTail::at_end(&log).expect("a tail at the log's end");
-    append(&log, &format!("{PREFIX} msg=\"saved\"\n{}", line(600, 16_000, 20_000, 30_000)));
+    let left_out = line(600, 2, 2, 2);
+    let first = line(600, 16_000, 20_000, 30_000);
+    append(&log, &format!("{PREFIX} msg=\"saved\"\n{left_out}{first}"));
     append(&log, &line(500, 17_000, 21_000, 31_000));
     let summaries = collect(&mut tail, 2, Duration::from_secs(5)).expect("two lines");
     let expected = [summary(600, 16_000, 20_000, 30_000), summary(500, 17_000, 21_000, 31_000)];
@@ -86,8 +88,61 @@ fn lines_before_the_start_position_are_left_out() {
 }
 
 #[test]
+fn the_first_line_after_the_start_is_left_out_since_its_frames_began_before_the_start() {
+    let dir = test_dir("perf-first-left-out");
+    let log = dir.path().join("arcane-eye-vr.log");
+    fs::write(&log, "").expect("write the test log");
+    let mut tail = LogTail::at_end(&log).expect("a tail at the log's end");
+    let lines = [
+        line(600, 19_274, 2_000_000, 2_147_657),
+        line(600, 16_000, 20_000, 30_000),
+        line(600, 17_000, 21_000, 31_000),
+        line(600, 18_000, 22_000, 32_000),
+    ];
+    append(&log, &lines.concat());
+    let summaries = collect(&mut tail, 3, Duration::from_secs(5)).expect("three lines");
+    let expected = [
+        summary(600, 16_000, 20_000, 30_000),
+        summary(600, 17_000, 21_000, 31_000),
+        summary(600, 18_000, 22_000, 32_000),
+    ];
+    assert_eq!(summaries, expected);
+}
+
+#[test]
+fn only_the_first_line_of_the_first_read_with_lines_is_left_out_when_lines_arrive_one_read_each() {
+    let left_out = summary(600, 19_274, 2_000_000, 2_147_657);
+    let first = summary(600, 16_000, 20_000, 30_000);
+    let second = summary(600, 17_000, 21_000, 31_000);
+    let third = summary(600, 18_000, 22_000, 32_000);
+    let extra = summary(600, 19_000, 23_000, 33_000);
+    let mut window = Window::new(3);
+    window.add(Vec::new());
+    window.add(vec![left_out]);
+    assert_eq!(window.summaries, []);
+    window.add(vec![first]);
+    window.add(Vec::new());
+    assert_eq!(window.summaries, [first]);
+    assert!(!window.is_full(), "one of three lines fills the window");
+    window.add(vec![second, third, extra]);
+    assert_eq!(window.summaries, [first, second, third]);
+    assert!(window.is_full(), "three of three lines leave the window open");
+}
+
+#[test]
+fn a_window_that_gets_only_the_left_out_line_times_out_with_no_line_counted() {
+    let dir = test_dir("perf-only-left-out");
+    let log = dir.path().join("arcane-eye-vr.log");
+    fs::write(&log, "").expect("write the test log");
+    let mut tail = LogTail::at_end(&log).expect("a tail at the log's end");
+    append(&log, &line(600, 19_274, 2_000_000, 2_147_657));
+    let error = collect(&mut tail, 1, Duration::from_millis(20)).expect_err("no counted line");
+    assert!(matches!(error, PerfError::Timeout { got: 0, expected: 1, .. }), "{error:?}");
+}
+
+#[test]
 fn a_line_the_core_has_not_finished_waits_for_its_line_ending() {
-    let dir = TestDir::new("perf-partial");
+    let dir = test_dir("perf-partial");
     let log = dir.path().join("arcane-eye-vr.log");
     fs::write(&log, "").expect("write the test log");
     let mut tail = LogTail::at_end(&log).expect("a tail at the log's end");
@@ -101,7 +156,7 @@ fn a_line_the_core_has_not_finished_waits_for_its_line_ending() {
 
 #[test]
 fn a_window_with_no_line_in_time_is_a_timeout_that_names_the_count() {
-    let dir = TestDir::new("perf-timeout");
+    let dir = test_dir("perf-timeout");
     let log = dir.path().join("arcane-eye-vr.log");
     fs::write(&log, line(600, 1, 1, 1)).expect("write the test log");
     let mut tail = LogTail::at_end(&log).expect("a tail at the log's end");
@@ -116,7 +171,7 @@ fn a_window_with_no_line_in_time_is_a_timeout_that_names_the_count() {
 
 #[test]
 fn a_missing_log_is_a_read_error_that_names_it() {
-    let dir = TestDir::new("perf-missing");
+    let dir = test_dir("perf-missing");
     let log = dir.path().join("arcane-eye-vr.log");
     let Err(error) = LogTail::at_end(&log) else {
         panic!("a missing log has no end");
@@ -126,7 +181,7 @@ fn a_missing_log_is_a_read_error_that_names_it() {
 
 #[test]
 fn a_perf_summary_line_the_parser_rejects_fails_the_window() {
-    let dir = TestDir::new("perf-bad-line");
+    let dir = test_dir("perf-bad-line");
     let log = dir.path().join("arcane-eye-vr.log");
     fs::write(&log, "").expect("write the test log");
     let mut tail = LogTail::at_end(&log).expect("a tail at the log's end");

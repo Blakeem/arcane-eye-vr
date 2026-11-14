@@ -1,10 +1,6 @@
 //! The allocation guard through the debug global allocator in `state.rs`.
 
 #[cfg(test)]
-#[path = "support/test_dir.rs"]
-mod test_dir;
-
-#[cfg(test)]
 mod tests {
     use std::fs;
     use std::hint::black_box;
@@ -14,8 +10,7 @@ mod tests {
     use diag::alloc_guard::AllocGuardError;
     use diag::logging::LogName;
     use game_bindings::state::arm_alloc_guard;
-
-    use crate::test_dir::TestDir;
+    use test_support::TestDir;
 
     /// One test runs every check in turn, since the process holds one armed-thread state, and two
     /// tests that arm on parallel threads fail with `AlreadyArmed`.
@@ -61,7 +56,8 @@ mod tests {
     }
 
     fn enabled_ring_layer_event_allocates_nothing() {
-        let dir = TestDir::new("ring-layer");
+        let dir = TestDir::in_temp("arcane-eye-game-bindings", "ring-layer")
+            .expect("create the test folder");
         let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
         let count = tracing::dispatcher::with_default(&logging.dispatch, || {
             emit(0);

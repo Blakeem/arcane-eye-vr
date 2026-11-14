@@ -5,7 +5,7 @@ use std::error::Error;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, ExitStatus};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use diag::error_chain;
 use diag::logging::LogError;
@@ -83,7 +83,8 @@ pub(crate) trait Game {
     fn warm_up(&mut self, time: Duration);
     /// The game's exit status once it exited, or `None` while it runs.
     fn exit_status(&mut self) -> Result<Option<ExitStatus>, StepError>;
-    /// The next `lines` perf summary lines of the core's session log.
+    /// The `lines` perf summary lines of the core's session log after the next perf summary line it
+    /// finishes.
     fn perf_window(&mut self, lines: u32) -> Result<Vec<PerfSummary>, StepError>;
     fn close(&mut self) -> Result<Closed, StepError>;
     /// Copies the core's session log to `to`.
@@ -324,13 +325,17 @@ fn perf_step(game: &mut impl Game, lines: u32, folder: &Path) -> Result<(), Step
     Ok(())
 }
 
-/// Starts the heartbeat and writes `count` frames as `frame-0001.png` onward.
+/// Starts the heartbeat and writes `count` frames as `frame-0001.png` onward. Logs the time each
+/// frame took from its read to its written file.
 fn capture_step(frames: &mut impl Frames, count: u32, folder: &Path) -> Result<(), StepError> {
     frames.start_heartbeat()?;
     for number in 1..=count {
         let frame = frames.read()?;
+        let read_at = Instant::now();
         let image = pixels::to_rgb(&frame)?;
         png_file::write(&folder.join(format!("frame-{number:04}.png")), &image)?;
+        let elapsed_ms = u64::try_from(read_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+        info!(frame = number, elapsed_ms, "frame written");
     }
     Ok(())
 }

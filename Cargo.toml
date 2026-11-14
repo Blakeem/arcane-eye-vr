@@ -163,6 +163,29 @@ missing_asserts_for_indexing = "deny"
 # Hook entries depend on catch_unwind, so every profile unwinds.
 panic = "unwind"
 
+# The PNG encode chain of the trial runner's capture step. One 3840x2160 frame took 35 s in a debug
+# trial and 5 s in a release trial.
+[profile.dev.package.png]
+opt-level = 3
+
+[profile.dev.package.fdeflate]
+opt-level = 3
+
+[profile.dev.package.flate2]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.crc32fast]
+opt-level = 3
+
+[profile.dev.package.simd-adler32]
+opt-level = 3
+
+[profile.dev.package.adler2]
+opt-level = 3
+
 [profile.release]
 panic = "unwind"
 overflow-checks = true
