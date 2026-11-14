@@ -45,6 +45,15 @@ mod tests {
     }
 
     #[test]
+    fn the_two_camera_lines_of_one_window_each_yield_their_own_eye_and_numbers() {
+        let left_fields = FIELDS.replace("eye=right x=1000.625", "eye=left x=1000.5625");
+        let log = format!("{}\n{}\n", camera_line(&left_fields), camera_line(FIELDS));
+        let parsed: Vec<_> = log.lines().map(parse_line).collect();
+        let left = CameraLine { eye: CameraEye::Left, x: 1_000.562_5, ..CAMERA };
+        assert_eq!(parsed, [Ok(Some(left)), Ok(Some(CAMERA))]);
+    }
+
+    #[test]
     fn each_eye_reads_and_displays_as_its_name() {
         for (eye, name) in
             [(CameraEye::Center, "center"), (CameraEye::Left, "left"), (CameraEye::Right, "right")]

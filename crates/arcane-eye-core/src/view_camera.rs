@@ -1,10 +1,12 @@
 //! The view camera feature: its hook at the site where a render view's camera is built, the choice of
-//! each frame's main view, and the main view's camera for the camera line.
+//! each frame's main view, and the cameras of the main view and the eye view for the camera lines.
 //!
-//! The main view is the first view of a frame at the site whose `ReadState` camera controller is not
-//! null and has in vtable slot 9 either `GetWorldTranslate`, for the head, or the eye camera's proxy
-//! function, for an eye. A frame ends at the Present call-site hook, which takes the frame's camera, so
-//! the feature installs only when that hook runs. The feature reads game memory and writes none.
+//! A view is a candidate when its `ReadState` camera controller is not null and has in vtable slot 9
+//! either `GetWorldTranslate`, for the head, or the eye camera's proxy function, for an eye. The eye
+//! view is the candidate the frame's layout names while the views sit side by side. The main view is
+//! the first other candidate of a frame at the site. A frame ends at the Present call-site hook, which
+//! takes the frame's cameras, so the feature installs only when that hook runs. The feature reads game
+//! memory and writes none.
 
 use std::mem::{self, ManuallyDrop};
 
@@ -20,6 +22,7 @@ use tracing::{info, warn};
 
 use crate::context::CoreContext;
 use crate::eye_camera::proxy;
+use crate::eye_view::Layout;
 use crate::install::{GameCode, InstallError};
 use crate::raw;
 
@@ -90,13 +93,19 @@ fn on_camera_built(context: &CoreContext, thread: &RenderThread, registers: &mut
     context.view_camera.with(thread, |camera| camera.on_view(view));
 }
 
-/// Ends the frame of the view camera and returns the camera of the frame's main view, or `None` when
-/// the feature is off, no main view passed the site or its camera did not decode.
-pub(crate) fn end_frame(context: &CoreContext, thread: &RenderThread) -> Option<FrameCamera> {
-    context.view_camera.with(thread, |camera| camera.end_frame(&context.health)).flatten()
+/// Ends the frame of the view camera, so the next frame's views are chosen in `layout`, and returns
+/// the cameras of the frame's views. Both are `None` when the feature is off.
+pub(crate) fn end_frame(
+    context: &CoreContext,
+    thread: &RenderThread,
+    layout: Layout,
+) -> FrameCameras {
+    let cameras =
+        context.view_camera.with(thread, |camera| camera.end_frame(&context.health, layout));
+    cameras.unwrap_or_default()
 }
 
-/// The camera a frame's main view rendered with and the position it rendered from.
+/// The camera a frame's view rendered with and the position it rendered from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct FrameCamera {
     pub(crate) camera: Camera,
@@ -113,7 +122,15 @@ impl FrameCamera {
     }
 }
 
-/// The position a frame's main view rendered from.
+/// The cameras of a frame's main view and eye view. Each is `None` when its view did not pass the
+/// site or its camera did not decode.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct FrameCameras {
+    pub(crate) main: Option<FrameCamera>,
+    pub(crate) eye_view: Option<FrameCamera>,
+}
+
+/// The position a frame's view rendered from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Viewpoint {
     /// The head controller, whose world position is the camera's position.
@@ -122,22 +139,31 @@ pub(crate) enum Viewpoint {
     Eye { eye: Eye, head: [f32; 3] },
 }
 
-/// The position a main view's `ReadState` controller renders the view from.
+/// The position a view's `ReadState` controller renders the view from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Origin {
     Head,
-    /// The eye of the eye camera's proxy controller at the address.
-    Eye(Eye, GameAddr),
+    /// The eye camera's proxy controller at the address.
+    Proxy(GameAddr),
 }
 
-/// Whether the frame's main view passed the site.
+/// Whether a view of one role passed the site in the current frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum Choice {
-    /// No view of the frame was the main view yet.
+    /// No view of the role passed yet.
     #[default]
     Open,
-    /// The main view passed, with its camera when the camera decoded.
+    /// The view passed, with its camera when the camera decoded.
     Made(Option<FrameCamera>),
+}
+
+impl Choice {
+    fn take(&mut self) -> Option<FrameCamera> {
+        match mem::take(self) {
+            Self::Open => None,
+            Self::Made(camera) => camera,
+        }
+    }
 }
 
 /// The feature's render thread state, held in the core context.
@@ -145,56 +171,69 @@ enum Choice {
 pub(crate) struct ViewCamera {
     /// The resolved `GetWorldTranslate`, or `None` when the feature is not installed.
     world_translate: Option<GameAddr>,
-    /// The eye of the eye camera's proxies, or `None` when the eye camera is not installed.
-    proxy_eye: Option<Eye>,
-    choice: Choice,
+    /// The layout of the current frame.
+    layout: Layout,
+    main: Choice,
+    eye_view: Choice,
 }
 
 impl ViewCamera {
-    pub(crate) fn new(world_translate: Option<GameAddr>, proxy_eye: Option<Eye>) -> Self {
-        Self { world_translate, proxy_eye, choice: Choice::Open }
+    pub(crate) fn new(world_translate: Option<GameAddr>) -> Self {
+        Self {
+            world_translate,
+            layout: Layout::MainOnly,
+            main: Choice::Open,
+            eye_view: Choice::Open,
+        }
     }
 
-    /// Takes `view` as the frame's main view when no view of the frame was, and its controller marks
-    /// it as the main view. A proxied view whose head position cannot be read has no camera.
+    /// Takes `view` as the frame's eye view when the layout names it, or else as the frame's main
+    /// view when no view of the frame was, and its controller marks it as a candidate. A proxied view
+    /// whose eye or head position cannot be read has no camera.
     pub(crate) fn on_view(&mut self, view: RenderView) {
-        if self.choice != Choice::Open {
+        let choice =
+            if self.layout.is_eye_view(view) { &mut self.eye_view } else { &mut self.main };
+        if *choice != Choice::Open {
             return;
         }
-        let Some(origin) = self.origin(view) else { return };
+        let Some(origin) = origin(self.world_translate, view) else { return };
         let camera = view.per_camera().and_then(|block| block.camera());
-        let frame = camera.and_then(|camera| match origin {
-            Origin::Head => Some(FrameCamera { camera, viewpoint: Viewpoint::Head }),
-            Origin::Eye(eye, proxy) => proxy::head_position(proxy)
-                .map(|head| FrameCamera { camera, viewpoint: Viewpoint::Eye { eye, head } }),
-        });
-        self.choice = Choice::Made(frame);
+        *choice = Choice::Made(camera.and_then(|camera| frame_camera(camera, origin)));
     }
 
-    /// Where the controller of `view` renders it from, or `None` when `view` is not a main view.
-    fn origin(&self, view: RenderView) -> Option<Origin> {
-        let world_translate = self.world_translate?;
-        let controller = view.read_state_controller()?;
-        let slot_fn = controller.world_translate_fn()?;
-        if slot_fn == world_translate {
-            return Some(Origin::Head);
-        }
-        let eye = self.proxy_eye?;
-        (slot_fn == proxy::world_translate_fn()).then_some(Origin::Eye(eye, controller.address()))
-    }
-
-    /// The camera of the frame's main view, or `None` when `health` holds the feature off, and a fresh
-    /// choice for the next frame.
-    pub(crate) fn end_frame(&mut self, health: &Health) -> Option<FrameCamera> {
-        let choice = mem::take(&mut self.choice);
+    /// The cameras of the frame's views, both `None` when `health` holds the feature off, and a fresh
+    /// choice for the next frame, whose layout is `layout`.
+    pub(crate) fn end_frame(&mut self, health: &Health, layout: Layout) -> FrameCameras {
+        let cameras = FrameCameras { main: self.main.take(), eye_view: self.eye_view.take() };
+        self.layout = layout;
         if !health.is_running(Feature::ViewCamera) {
-            return None;
+            return FrameCameras::default();
         }
-        match choice {
-            Choice::Open => None,
-            Choice::Made(camera) => camera,
-        }
+        cameras
     }
+}
+
+/// Where the controller of `view` renders it from, or `None` when `view` is no candidate.
+fn origin(world_translate: Option<GameAddr>, view: RenderView) -> Option<Origin> {
+    let world_translate = world_translate?;
+    let controller = view.read_state_controller()?;
+    let slot_fn = controller.world_translate_fn()?;
+    if slot_fn == world_translate {
+        return Some(Origin::Head);
+    }
+    (slot_fn == proxy::world_translate_fn()).then_some(Origin::Proxy(controller.address()))
+}
+
+/// The frame camera of `camera` rendered from `origin`, or `None` when a proxy's eye or head position
+/// cannot be read.
+fn frame_camera(camera: Camera, origin: Origin) -> Option<FrameCamera> {
+    let viewpoint = match origin {
+        Origin::Head => Viewpoint::Head,
+        Origin::Proxy(proxy) => {
+            Viewpoint::Eye { eye: proxy::eye(proxy)?, head: proxy::head_position(proxy)? }
+        }
+    };
+    Some(FrameCamera { camera, viewpoint })
 }
 
 #[cfg(test)]

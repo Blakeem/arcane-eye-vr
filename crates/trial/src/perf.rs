@@ -5,12 +5,14 @@
 //! frames that line covers were presented before the start. Then it drops lines until one line is
 //! settled, which means its `max_us` is at most 4 times its `p50_us`, drops that line too, and counts
 //! the lines after it. The game's load pause can fall after the fixed warm-up and gives a line a
-//! maximum far above the scene's. The core logs a camera line just before the perf summary line of the
-//! same frames, so the window keeps, for each perf summary line it counts, the camera line before it or
-//! no camera when the core logged none.
+//! maximum far above the scene's. The core logs the camera lines that `ipc_layout::camera_line`
+//! describes just before the perf summary line of the same frames. So the window keeps, for each perf
+//! summary line it counts, the camera lines since the summary line before it, in log order, or none
+//! when the core logged none.
 
 use std::fs::{self, File};
 use std::io::{self, Read as _, Seek as _, SeekFrom};
+use std::mem;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -23,6 +25,9 @@ const POLL: Duration = Duration::from_millis(250);
 
 /// The `camera.txt` line for a summary line with no camera.
 const NO_CAMERA: &str = "none";
+
+/// The text between two cameras of one summary line in `camera.txt`.
+const CAMERA_SEPARATOR: &str = " | ";
 
 /// The highest ratio of a settled line's `max_us` to its `p50_us`.
 const SETTLED_MAX_PER_P50: u32 = 4;
@@ -121,12 +126,13 @@ enum WindowLine {
     Camera(CameraLine),
 }
 
-/// A perf summary line the perf window counts, and the camera line before it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// A perf summary line the perf window counts, and the camera lines before it.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CountedLine {
     pub(crate) summary: PerfSummary,
-    /// `None` when no camera line preceded the summary line.
-    pub(crate) camera: Option<CameraLine>,
+    /// The camera lines between the summary line before this one and this one, in log order. Empty
+    /// when no camera line preceded the summary line.
+    pub(crate) cameras: Vec<CameraLine>,
 }
 
 /// A perf window's counted lines and the count of the lines it dropped before them.
@@ -152,8 +158,8 @@ struct Window {
     expected: usize,
     phase: Phase,
     dropped: u32,
-    /// The camera line since the last perf summary line, which goes with the next one.
-    pending_camera: Option<CameraLine>,
+    /// The camera lines since the last perf summary line, which go with the next one.
+    pending_cameras: Vec<CameraLine>,
     counted: Vec<CountedLine>,
 }
 
@@ -168,31 +174,31 @@ impl Window {
             expected,
             phase: Phase::First,
             dropped: 0,
-            pending_camera: None,
+            pending_cameras: Vec::new(),
             counted: Vec::new(),
         }
     }
 
-    /// Counts the perf summary lines of `read` up to the expected count, each with the camera line
+    /// Counts the perf summary lines of `read` up to the expected count, each with the camera lines
     /// before it, after the first settled line after the window's first line. It drops the lines up
     /// to that settled line and their camera lines.
     fn add(&mut self, read: Vec<WindowLine>) {
         for line in read {
             match line {
-                WindowLine::Camera(camera) => self.pending_camera = Some(camera),
+                WindowLine::Camera(camera) => self.pending_cameras.push(camera),
                 WindowLine::Summary(summary) => self.count(summary),
             }
         }
     }
 
     fn count(&mut self, summary: PerfSummary) {
-        let camera = self.pending_camera.take();
+        let cameras = mem::take(&mut self.pending_cameras);
         let next = match self.phase {
             Phase::Settling if is_settled(&summary) => Phase::Counting,
             Phase::First | Phase::Settling => Phase::Settling,
             Phase::Counting => {
                 if !self.is_full() {
-                    self.counted.push(CountedLine { summary, camera });
+                    self.counted.push(CountedLine { summary, cameras });
                 }
                 return;
             }
@@ -218,7 +224,7 @@ impl Window {
 }
 
 /// Follows `tail` until it holds `count` perf summary lines after the window's dropped lines, as the
-/// module doc states, and keeps the camera line before each counted one. The settled line has
+/// module doc states, and keeps the camera lines before each counted one. The settled line has
 /// `line_timeout` to arrive after the start, and each counted line has `line_timeout` to arrive after
 /// the line before it.
 pub(crate) fn collect(
@@ -306,20 +312,25 @@ pub(crate) fn text(summaries: &[PerfSummary], dropped: u32) -> String {
     lines.concat()
 }
 
-/// The text of `camera.txt`: the one line `none` when no summary line has a camera, otherwise one
-/// line per summary line in `perf.txt` order, holding its camera's eye and numbers or `none`.
-pub(crate) fn camera_text(cameras: &[Option<CameraLine>]) -> String {
-    if cameras.iter().all(Option::is_none) {
+/// The text of `camera.txt`: the one line `none` when no counted line has a camera, otherwise one
+/// line per counted line in `perf.txt` order. A line holds each camera's eye and numbers in log
+/// order with [`CAMERA_SEPARATOR`] between two cameras, or `none`.
+pub(crate) fn camera_text(lines: &[CountedLine]) -> String {
+    if lines.iter().all(|line| line.cameras.is_empty()) {
         return format!("{NO_CAMERA}\n");
     }
-    let lines: Vec<String> = cameras
-        .iter()
-        .map(|camera| match camera {
-            Some(camera) => format!("{camera}\n"),
-            None => format!("{NO_CAMERA}\n"),
-        })
-        .collect();
-    lines.concat()
+    let text_lines: Vec<String> =
+        lines.iter().map(|line| camera_line_text(&line.cameras)).collect();
+    text_lines.concat()
+}
+
+/// The `camera.txt` line of one counted line whose camera lines are `cameras`.
+fn camera_line_text(cameras: &[CameraLine]) -> String {
+    if cameras.is_empty() {
+        return format!("{NO_CAMERA}\n");
+    }
+    let texts: Vec<String> = cameras.iter().map(ToString::to_string).collect();
+    format!("{}\n", texts.join(CAMERA_SEPARATOR))
 }
 
 #[cfg(test)]

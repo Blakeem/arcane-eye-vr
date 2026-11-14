@@ -15,8 +15,8 @@ use game_mem::GameAddr;
 use super::super::decide::RETRY_PERIOD;
 use super::super::place::{Placement, eye_place, main_place};
 use super::super::test_support::{ATMOSPHERE_REQUEST, Call, LIGHTING_REQUEST, Recorder, World};
-use super::super::{CreateState, EyeView};
-use diag::health::Health;
+use super::super::{EyeView, Layout, RenderState};
+use diag::health::{Feature, Health};
 
 /// Windows reserves the lowest 64 KiB of every process, so no read there succeeds.
 const UNMAPPED: usize = 0x10;
@@ -167,6 +167,61 @@ fn a_ready_eye_view_is_placed_side_by_side_every_frame() {
 }
 
 #[test]
+fn the_layout_names_the_eye_view_only_while_the_views_sit_side_by_side() {
+    let world = World::new();
+    world.make_eye_ready();
+    let view = holding(&world);
+    let mut render_state = RenderState::default();
+    let mut recorder = world.recorder();
+    let health = running();
+    let start = Instant::now();
+    assert_eq!(view.layout(&mut render_state, &health), Layout::MainOnly, "no placement yet");
+    update(&view, &world, &mut recorder, start);
+    let side_by_side = Layout::SideBySide { eye: world.held().eye };
+    assert_eq!(view.layout(&mut render_state, &health), side_by_side);
+    let busy = view.shared.lock().expect("an unpoisoned lock");
+    assert_eq!(
+        view.layout(&mut render_state, &health),
+        side_by_side,
+        "the layout read last stands"
+    );
+    drop(busy);
+    world.eye.set(VIEW_WRITE_STATE_CONTROLLER, 0_usize);
+    update(&view, &world, &mut recorder, start);
+    assert_eq!(view.layout(&mut render_state, &health), Layout::MainOnly, "a cleared eye view");
+    let mut shared = view.shared.lock().expect("an unpoisoned lock");
+    (shared.placement, shared.held) = (Placement::SideBySide, None);
+    drop(shared);
+    assert_eq!(view.layout(&mut render_state, &health), Layout::MainOnly, "no held eye view");
+}
+
+#[test]
+fn a_feature_latched_off_reads_no_eye_view_in_the_layout() {
+    let world = World::new();
+    world.make_eye_ready();
+    let view = holding(&world);
+    let mut render_state = RenderState::default();
+    let health = running();
+    update(&view, &world, &mut world.recorder(), Instant::now());
+    let side_by_side = Layout::SideBySide { eye: world.held().eye };
+    assert_eq!(view.layout(&mut render_state, &health), side_by_side);
+    health.panic_caught(Feature::EyeView);
+    assert_eq!(view.layout(&mut render_state, &health), Layout::MainOnly, "a latched feature");
+    assert_eq!(
+        view.layout(&mut render_state, &Health::new()),
+        Layout::MainOnly,
+        "a pending feature"
+    );
+}
+
+/// A registry with the eye view running.
+fn running() -> Health {
+    let health = Health::new();
+    health.install_ok(Feature::EyeView);
+    health
+}
+
+#[test]
 fn a_cleared_eye_view_returns_the_main_view_to_the_entire_frame() {
     let world = World::new();
     world.make_eye_ready();
@@ -294,18 +349,20 @@ fn the_frame_paths_make_no_heap_allocation() {
     let world = World::new();
     world.make_eye_ready();
     let view = holding(&world);
-    let health = Health::new();
+    let health = running();
     let mut recorder = world.recorder();
-    let mut create_state = CreateState::default();
+    let mut render_state = RenderState::default();
     let now = Instant::now();
     update(&view, &world, &mut recorder, now);
     world.eye.set(VIEW_WRITE_STATE_CONTROLLER, 0_usize);
     let guard = arm_alloc_guard().expect("arm the allocation guard");
-    view.on_present_call(&mut recorder, &mut create_state, &health, now);
+    let layout = view.layout(&mut render_state, &health);
+    view.on_present_call(&mut recorder, &mut render_state, &health, now);
     view.on_game_update(&mut recorder, world.pipeline.address(), now + RETRY_PERIOD);
     world.make_eye_ready();
     view.on_game_update(&mut recorder, world.pipeline.address(), now + RETRY_PERIOD);
     assert_eq!(guard.count(), 0, "the eye view's frame allocated");
+    assert_eq!(layout, Layout::SideBySide { eye: world.held().eye }, "the guarded layout read");
     drop(guard);
     let set_camera = recorder.calls.iter().any(|call| matches!(call, Call::SetCamera { .. }));
     assert!(set_camera, "the guarded frames ran a set up: {:?}", recorder.calls);

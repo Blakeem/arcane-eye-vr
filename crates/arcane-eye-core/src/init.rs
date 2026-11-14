@@ -146,7 +146,6 @@ fn run(
         )
     };
     let world_translate = view_installed.as_ref().map(|installed| installed.world_translate);
-    let proxy_eye = eye_installed.as_ref().map(|installed| installed.state.eye());
     let (eye_camera_hook, eye_state) =
         eye_installed.map(|installed| (installed.hook, installed.state)).unzip();
     let (eye_view_hook, eye_view_state) =
@@ -157,7 +156,7 @@ fn run(
         health,
         status,
         frame: RenderCell::default(),
-        view_camera: RenderCell::new(ViewCamera::new(world_translate, proxy_eye)),
+        view_camera: RenderCell::new(ViewCamera::new(world_translate)),
         eye_camera: RenderCell::new(eye_state),
         eye_view: eye_view_state,
         _present_hook: present_hook,

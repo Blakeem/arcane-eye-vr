@@ -14,7 +14,7 @@ use super::super::create::{CreateGuard, create};
 use super::super::decide::RETRY_PERIOD;
 use super::super::engine::Addresses;
 use super::super::test_support::{Call, Recorder, World};
-use super::super::{CreateState, EyeView};
+use super::super::{EyeView, RenderState};
 
 const UNMAPPED: usize = 0x10;
 
@@ -190,11 +190,11 @@ fn the_present_call_creates_once_and_the_game_update_then_holds_the_eye_view() {
     let view = EyeView::new(world.addresses());
     let health = Health::new();
     let mut recorder = world.recorder();
-    let mut create_state = CreateState::default();
+    let mut render_state = RenderState::default();
     let now = Instant::now();
-    view.on_present_call(&mut recorder, &mut create_state, &health, now);
+    view.on_present_call(&mut recorder, &mut render_state, &health, now);
     assert_eq!(recorder.take().len(), 3, "steps 2, 3 and 6");
-    view.on_present_call(&mut recorder, &mut create_state, &health, now + RETRY_PERIOD);
+    view.on_present_call(&mut recorder, &mut render_state, &health, now + RETRY_PERIOD);
     assert_eq!(recorder.take(), [], "a held eye view is not created again");
     let held = view.shared.lock().expect("an unpoisoned lock").held;
     assert_eq!(held, Some(world.held()));
@@ -207,13 +207,13 @@ fn a_retried_create_waits_one_second() {
     let view = EyeView::new(world.addresses());
     let health = Health::new();
     let mut recorder = world.recorder();
-    let mut create_state = CreateState::default();
+    let mut render_state = RenderState::default();
     let start = Instant::now();
-    view.on_present_call(&mut recorder, &mut create_state, &health, start);
+    view.on_present_call(&mut recorder, &mut render_state, &health, start);
     world.pipeline_global.set(0, world.pipeline.address().get());
-    view.on_present_call(&mut recorder, &mut create_state, &health, start);
+    view.on_present_call(&mut recorder, &mut render_state, &health, start);
     assert_eq!(recorder.take(), [], "the second attempt waits");
-    view.on_present_call(&mut recorder, &mut create_state, &health, start + RETRY_PERIOD);
+    view.on_present_call(&mut recorder, &mut render_state, &health, start + RETRY_PERIOD);
     assert_eq!(recorder.take().len(), 3, "the attempt one second later creates");
 }
 
@@ -225,7 +225,7 @@ fn a_failed_guard_after_step_3_switches_the_feature_off() {
     let health = Health::new();
     health.install_ok(Feature::EyeView);
     let mut recorder = world.recorder();
-    view.on_present_call(&mut recorder, &mut CreateState::default(), &health, Instant::now());
+    view.on_present_call(&mut recorder, &mut RenderState::default(), &health, Instant::now());
     assert_eq!(health.state(Feature::EyeView), FeatureState::Failed);
     assert_eq!(view.shared.lock().expect("an unpoisoned lock").held, None);
 }
@@ -236,14 +236,14 @@ fn a_view_created_while_the_game_thread_holds_the_state_is_handed_over_next_fram
     let view = EyeView::new(world.addresses());
     let health = Health::new();
     let mut recorder = world.recorder();
-    let mut create_state = CreateState::default();
+    let mut render_state = RenderState::default();
     let now = Instant::now();
     let busy = view.shared.lock().expect("an unpoisoned lock");
-    view.hand_over(&mut create_state, world.held());
+    view.hand_over(&mut render_state, world.held());
     drop(busy);
-    assert_eq!(create_state.pending, Some(world.held()));
-    view.on_present_call(&mut recorder, &mut create_state, &health, now);
+    assert_eq!(render_state.pending, Some(world.held()));
+    view.on_present_call(&mut recorder, &mut render_state, &health, now);
     assert_eq!(recorder.take(), [], "the handover makes no call");
-    assert_eq!(create_state.pending, None);
+    assert_eq!(render_state.pending, None);
     assert_eq!(view.shared.lock().expect("an unpoisoned lock").held, Some(world.held()));
 }

@@ -1,18 +1,25 @@
 //! The eye camera feature: its hook at the entry of a render view's begin-recording, which renders
-//! each frame's main view from one eye's position.
+//! each frame's main view, and the eye view beside it, from an eye's position.
 //!
-//! The main view is the first view of a frame whose `ReadState` camera controller has
-//! `GetWorldTranslate` in vtable slot 9, as the view camera chooses it. For that view the handler
-//! fills a proxy controller from the head controller with the eye's view matrices and an own slot 9
-//! that returns the eye's position, and points the view's `ReadState` at the proxy. Every draw places
-//! its vertices relative to the position slot 9 returns, so geometry, lighting and decals all use the
-//! eye. The engine's frame sync points the `ReadState` back at the head controller at each frame's end.
+//! The main view is the first view of a frame, other than the eye view, whose `ReadState` camera
+//! controller has `GetWorldTranslate` in vtable slot 9, as the view camera chooses it. With
+//! `second_view` on, the main view renders from the left eye and the eye view from the right eye in a
+//! frame where the eye view feature placed the two views side by side, and every view renders from
+//! the head in any other frame. With `second_view` off, the main view renders from the eye that
+//! `main_view_eye` names.
 //!
-//! The proxies form a ring in pages that the core context holds for the process life, so a proxy that
-//! a render worker thread still reads stays mapped. A frame ends at the Present call-site hook, so the
-//! feature installs only when that hook runs. With `main_view_eye = "center"` the feature installs no
-//! hook.
+//! For a proxied view the handler fills a proxy controller from the head controller with the eye's
+//! view matrices and an own slot 9 that returns the eye's position, and points the view's `ReadState`
+//! at the proxy. Every draw places its vertices relative to the position slot 9 returns, so geometry,
+//! lighting and decals all use the eye. The engine's frame sync points each `ReadState` back at the
+//! head controller at each frame's end.
+//!
+//! Each of the two views has its own ring of proxies in pages that the core context holds for the
+//! process life, so a proxy that a render worker thread still reads stays mapped. A frame ends at the
+//! Present call-site hook, so the feature installs only when that hook runs. With `second_view` off
+//! and `main_view_eye = "center"` the feature installs no hook.
 
+mod lane;
 pub(crate) mod proxy;
 
 use std::mem::ManuallyDrop;
@@ -24,16 +31,17 @@ use diag::{once, warn_every};
 use game_bindings::render_view::{CameraController, ReadState, RenderView};
 use game_bindings::signatures::{GET_WORLD_TRANSLATE, RENDER_VIEW_BEGIN};
 use game_bindings::state;
-use game_mem::{GameAddr, WriteDest, WriteError};
+use game_mem::{GameAddr, WriteDest};
 use hooks::{MidHook, Registers, RenderThread};
-use settings::dev::MainViewEye;
-use stereo_core::eye::{self, Eye};
-use stereo_core::eye_camera::{self, EyeCamera};
+use settings::dev::{MainViewEye, SecondView, StereoFlags};
+use stereo_core::eye::{self, Eye, PerEye};
 use tracing::{Level, info, warn};
 
-use self::proxy::{ProxyParts, RING_LEN, RING_SIZE};
+use self::lane::Lane;
+use self::proxy::{PAGES_SIZE, RING_SIZE};
 use crate::config::Config;
 use crate::context::CoreContext;
+use crate::eye_view::Layout;
 use crate::install::{GameCode, InstallError};
 use crate::raw::{self, SharedPages};
 
@@ -93,34 +101,48 @@ pub(crate) enum EyeFault {
     RestoreWrite,
 }
 
-/// Whether a view of the current frame was the main view.
+/// The views the eye camera renders from an eye.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MainView {
-    Open,
-    Found,
+pub(crate) enum Target {
+    /// The main view renders from the eye.
+    MainView(Eye),
+    /// In a frame where the views sit side by side, the main view renders from the left eye and the
+    /// eye view from the right eye.
+    StereoPair,
 }
 
-/// The proxy and head controller of the last frame the eye camera proxied, for the camera-cut rule.
+impl Target {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::MainView(Eye::Left) => "main_view_left",
+            Self::MainView(Eye::Right) => "main_view_right",
+            Self::StereoPair => "stereo_pair",
+        }
+    }
+}
+
+/// The role of a view in the current frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct LastProxy {
-    head: CameraController,
-    proxy: GameAddr,
+enum Role {
+    MainView,
+    EyeView,
 }
 
 /// What the handler did with a view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Outcome {
-    /// The view is not the frame's main view, so it renders as the game set it.
-    NotMainView,
-    /// The view renders from `proxy` for this frame.
-    Proxied { proxy: GameAddr, history: History },
+    /// The eye camera proxies no view in this role in this frame, so the view renders as the game set
+    /// it.
+    Unchanged,
+    /// The view renders from `proxy` at `eye` for this frame.
+    Proxied { eye: Eye, proxy: GameAddr, history: History },
 }
 
 /// Whether the engine keeps a proxied view's frame history.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum History {
-    /// The view rendered last from the eye camera's last proxy of the same head controller, so the new
-    /// proxy is also the view's last-seen controller and the engine sets no camera cut.
+    /// The view rendered last from its lane's last proxy of the same head controller, so the new proxy
+    /// is also the view's last-seen controller and the engine sets no camera cut.
     Kept,
     /// The head controller changed, or the view rendered last from another controller, such as the
     /// head or another camera, so the engine sets a camera cut, which resets fog history, exposure
@@ -137,25 +159,38 @@ pub(crate) const fn eye_of(main_view_eye: MainViewEye) -> Option<Eye> {
     }
 }
 
-/// Installs the eye camera hook in `code`, the game exe's code, when `config` names an eye and the
+/// The views `stereo` has the eye camera render from an eye, or `None` when it renders none.
+/// `second_view` overrides `main_view_eye`.
+pub(crate) const fn target(stereo: StereoFlags) -> Option<Target> {
+    match (stereo.second_view, eye_of(stereo.main_view_eye)) {
+        (SecondView::On, _) => Some(Target::StereoPair),
+        (SecondView::Off, Some(eye)) => Some(Target::MainView(eye)),
+        (SecondView::Off, None) => None,
+    }
+}
+
+/// Installs the eye camera hook in `code`, the game exe's code, when `config` names a target and the
 /// Present call-site hook is running, and reports the outcome in the health registry and the log.
-/// With `center` it installs nothing and logs that. A failure installs nothing and leaves the other
+/// Without a target it installs nothing and logs that. A failure installs nothing and leaves the other
 /// features running.
 pub(crate) fn install(health: &Health, code: &GameCode, config: Config) -> Option<Installed> {
-    let main_view_eye = config.dev.stereo.main_view_eye;
-    let Some(eye) = eye_of(main_view_eye) else {
-        info!(main_view_eye = main_view_eye.as_str(), "eye camera hook not installed");
+    let stereo = config.dev.stereo;
+    let main_view_eye = stereo.main_view_eye.as_str();
+    let Some(target) = target(stereo) else {
+        info!(main_view_eye, second_view = false, "eye camera hook not installed");
         return None;
     };
+    if target == Target::StereoPair && stereo.main_view_eye != MainViewEye::Center {
+        warn!(main_view_eye, "main_view_eye is ignored while second_view is on");
+    }
     let ipd_m = config.settings.stereo.ipd_mm.millimeters() / MILLIMETERS_PER_METER;
-    let offset_m = eye::offsets_m(ipd_m)[eye];
-    match hook_view_begin(health, code, eye, offset_m) {
+    match hook_view_begin(health, code, target, eye::offsets_m(ipd_m)) {
         Ok((site, installed)) => {
             health.install_ok(Feature::EyeCamera);
             info!(
                 address = format_args!("{:#x}", site.get()),
-                main_view_eye = main_view_eye.as_str(),
-                offset_m,
+                target = target.as_str(),
+                ipd_m,
                 "eye camera hook installed"
             );
             Some(installed)
@@ -173,15 +208,15 @@ pub(crate) fn install(health: &Health, code: &GameCode, config: Config) -> Optio
 fn hook_view_begin(
     health: &Health,
     code: &GameCode,
-    eye: Eye,
-    offset_m: f32,
+    target: Target,
+    offsets_m: PerEye<f32>,
 ) -> Result<(GameAddr, Installed), EyeCameraError> {
     if !health.is_running(Feature::PresentHook) {
         return Err(EyeCameraError::NoFrameEnd);
     }
     let (world_translate, site) = locate(code)?;
-    let pages = SharedPages::commit(RING_SIZE)?;
-    let state = EyeState::new(pages, world_translate, eye, offset_m);
+    let pages = SharedPages::commit(PAGES_SIZE)?;
+    let state = EyeState::new(pages, world_translate, target, offsets_m);
     let hook = hook_at(site)?;
     Ok((site, Installed { hook, state }))
 }
@@ -204,21 +239,26 @@ fn on_view_begin(context: &CoreContext, thread: &RenderThread, registers: &mut R
     });
 }
 
-/// Ends the frame of the eye camera, so the next frame's main view is chosen afresh.
-pub(crate) fn end_frame(context: &CoreContext, thread: &RenderThread) {
+/// Ends the frame of the eye camera, so the next frame's views are chosen afresh in `layout`.
+pub(crate) fn end_frame(context: &CoreContext, thread: &RenderThread, layout: Layout) {
     context.eye_camera.with(thread, |state| {
         if let Some(state) = state {
-            state.end_frame();
+            state.end_frame(layout);
         }
     });
 }
 
-/// The fault of a failed last-seen write, given the result of the write that points the view's
-/// `ReadState` back at the head.
-const fn last_seen_fault(restore: Result<(), WriteError>) -> EyeFault {
-    match restore {
-        Ok(()) => EyeFault::LastSeenWrite,
-        Err(_) => EyeFault::RestoreWrite,
+/// The role of `view` for `target` in a frame of `layout`, or `None` when the eye camera proxies no
+/// view in that frame.
+fn role(target: Target, layout: Layout, view: RenderView) -> Option<Role> {
+    match (target, layout) {
+        (Target::StereoPair, Layout::MainOnly) => None,
+        (Target::StereoPair, Layout::SideBySide { .. }) if layout.is_eye_view(view) => {
+            Some(Role::EyeView)
+        }
+        (Target::MainView(_), _) | (Target::StereoPair, Layout::SideBySide { .. }) => {
+            Some(Role::MainView)
+        }
     }
 }
 
@@ -234,59 +274,65 @@ struct EyeLogs {
 pub(crate) struct EyeState {
     /// The proxies' pages, which stay mapped while the core context lives.
     pages: SharedPages,
-    /// The byte offset of each proxy in `pages`, the next one first.
-    ring: [usize; RING_LEN],
-    /// The resolved `GetWorldTranslate`, which marks the main view's head controller.
+    /// The resolved `GetWorldTranslate`, which marks a head controller.
     world_translate: GameAddr,
-    eye: Eye,
-    /// The eye's signed offset from the head along the head's right axis, in meters.
-    offset_m: f32,
-    main_view: MainView,
-    last: Option<LastProxy>,
+    target: Target,
+    /// The main view's proxies, in the pages' first ring.
+    main: Lane,
+    /// The eye view's proxies, in the pages' second ring. Only [`Target::StereoPair`] takes them.
+    eye_view: Lane,
+    /// The layout of the current frame.
+    layout: Layout,
     logs: EyeLogs,
 }
 
 impl EyeState {
-    /// The state for proxies in `pages`, which hold [`RING_SIZE`] bytes, at `offset_m` from the head
-    /// controllers whose slot 9 is `world_translate`.
-    fn new(pages: SharedPages, world_translate: GameAddr, eye: Eye, offset_m: f32) -> Self {
+    /// The state for proxies in `pages`, which hold [`PAGES_SIZE`] bytes, at `offsets_m` from the
+    /// head controllers whose slot 9 is `world_translate`.
+    fn new(
+        pages: SharedPages,
+        world_translate: GameAddr,
+        target: Target,
+        offsets_m: PerEye<f32>,
+    ) -> Self {
+        let main_eye = match target {
+            Target::MainView(eye) => eye,
+            Target::StereoPair => Eye::Left,
+        };
         Self {
             pages,
-            ring: proxy::ring(),
             world_translate,
-            eye,
-            offset_m,
-            main_view: MainView::Open,
-            last: None,
+            target,
+            main: Lane::new(main_eye, offsets_m[main_eye], 0),
+            eye_view: Lane::new(Eye::Right, offsets_m[Eye::Right], RING_SIZE),
+            layout: Layout::MainOnly,
             logs: EyeLogs::default(),
         }
     }
 
-    /// The eye the proxies sit at.
-    pub(crate) const fn eye(&self) -> Eye {
-        self.eye
+    /// Ends the frame, so each lane proxies its next view, in a next frame of `layout`.
+    pub(crate) const fn end_frame(&mut self, layout: Layout) {
+        self.main.end_frame();
+        self.eye_view.end_frame();
+        self.layout = layout;
     }
 
-    /// Ends the frame, so the next view whose controller marks it as the main view is proxied.
-    pub(crate) const fn end_frame(&mut self) {
-        self.main_view = MainView::Open;
-    }
-
-    /// Renders `view`, whose first bytes are `writes`, from the eye for this frame when it is the
-    /// frame's main view. A failed read or write logs a rate-limited warning.
+    /// Renders `view`, whose first bytes are `writes`, from an eye for this frame when it is the
+    /// frame's main view or eye view. A failed read or write logs a rate-limited warning.
     pub(crate) fn on_view_begin(&mut self, view: RenderView, writes: WriteDest<'_>) {
         match self.proxy_view(view, writes) {
-            Ok(Outcome::Proxied { proxy, history }) => {
+            Ok(Outcome::Proxied { eye, proxy, history }) => {
                 once!(
                     self.logs.first_proxy,
                     Level::INFO,
                     view = format_args!("{:#x}", view.address().get()),
+                    eye = ?eye,
                     proxy = format_args!("{:#x}", proxy.get()),
                     history = ?history,
-                    "eye camera renders the main view from the eye"
+                    "eye camera renders a view from an eye"
                 );
             }
-            Ok(Outcome::NotMainView) => {}
+            Ok(Outcome::Unchanged) => {}
             Err(fault) => {
                 warn_every!(
                     self.logs.fault,
@@ -299,68 +345,34 @@ impl EyeState {
         }
     }
 
-    /// Reads the head controller and the view's last-seen controller, fills the next proxy for the
-    /// eye and points `view` at it through `writes`. Only the first main view of a frame is proxied.
+    /// Proxies `view` in its lane when the view has a role in this frame, its lane proxied no view
+    /// yet and its `ReadState` holds a head controller.
     fn proxy_view(&mut self, view: RenderView, writes: WriteDest<'_>) -> Result<Outcome, EyeFault> {
-        if self.main_view == MainView::Found {
-            return Ok(Outcome::NotMainView);
+        let lane = match role(self.target, self.layout, view) {
+            Some(Role::MainView) => &mut self.main,
+            Some(Role::EyeView) => &mut self.eye_view,
+            None => return Ok(Outcome::Unchanged),
+        };
+        if lane.is_taken() {
+            return Ok(Outcome::Unchanged);
         }
-        let Some(head) = self.main_view_controller(view)? else {
-            return Ok(Outcome::NotMainView);
+        let Some(head) = head_controller(view, self.world_translate)? else {
+            return Ok(Outcome::Unchanged);
         };
-        self.main_view = MainView::Found;
-        let copy = head.copy().ok_or(EyeFault::ControllerUnreadable)?;
-        let vtable = head.vtable_slots().ok_or(EyeFault::ControllerUnreadable)?;
-        let last_seen = view.last_seen_controller().ok_or(EyeFault::LastSeenUnreadable)?;
-        let history = self.history(head, last_seen);
-        let head_view = copy.view();
-        let eye_camera = EyeCamera::from_head(&head_view, self.offset_m);
-        let head_position = eye_camera::position(&head_view);
-        let [next, ..] = self.ring;
-        self.ring.rotate_left(1);
-        let parts = ProxyParts { head: &copy, vtable: &vtable, eye: &eye_camera, head_position };
-        let Ok(proxy_writes) = self.pages.destination().offset(next) else {
-            return Err(EyeFault::ProxyWrite);
-        };
-        let proxy = proxy_writes.start();
-        let Ok(()) = proxy::write(proxy_writes, &parts) else { return Err(EyeFault::ProxyWrite) };
-        point_view(writes, head, CameraController::new(proxy), history)?;
-        self.last = Some(LastProxy { head, proxy });
-        Ok(Outcome::Proxied { proxy, history })
-    }
-
-    /// Kept when the view saw last the proxy of the last proxied frame and that frame's head
-    /// controller is `head`, and a cut otherwise.
-    fn history(&self, head: CameraController, last_seen: GameAddr) -> History {
-        let same = self.last == Some(LastProxy { head, proxy: last_seen });
-        if same { History::Kept } else { History::Cut }
-    }
-
-    /// The head controller of `view` when `view` is the main view, or `None` for another view.
-    fn main_view_controller(&self, view: RenderView) -> Result<Option<CameraController>, EyeFault> {
-        let state = view.read_state().ok_or(EyeFault::ReadStateUnreadable)?;
-        let ReadState::Controller(head) = state else { return Ok(None) };
-        let slot_9 = head.world_translate_fn().ok_or(EyeFault::ControllerUnreadable)?;
-        Ok((slot_9 == self.world_translate).then_some(head))
+        lane.proxy(&self.pages, view, writes, head)
     }
 }
 
-/// Points the `ReadState` of the view whose first bytes are `view` at `proxy`, and its last-seen
-/// controller too when `history` is kept. A failed last-seen write points the `ReadState` back at
-/// `head`.
-fn point_view(
-    view: WriteDest<'_>,
-    head: CameraController,
-    proxy: CameraController,
-    history: History,
-) -> Result<(), EyeFault> {
-    let Ok(()) = RenderView::write_read_state(view, proxy) else {
-        return Err(EyeFault::ReadStateWrite);
-    };
-    if history == History::Kept && RenderView::write_last_seen_controller(view, proxy).is_err() {
-        return Err(last_seen_fault(RenderView::write_read_state(view, head)));
-    }
-    Ok(())
+/// The `ReadState` controller of `view` when it is a head controller, whose slot 9 is
+/// `world_translate`, or `None` for another controller.
+fn head_controller(
+    view: RenderView,
+    world_translate: GameAddr,
+) -> Result<Option<CameraController>, EyeFault> {
+    let state = view.read_state().ok_or(EyeFault::ReadStateUnreadable)?;
+    let ReadState::Controller(head) = state else { return Ok(None) };
+    let slot_9 = head.world_translate_fn().ok_or(EyeFault::ControllerUnreadable)?;
+    Ok((slot_9 == world_translate).then_some(head))
 }
 
 #[cfg(test)]

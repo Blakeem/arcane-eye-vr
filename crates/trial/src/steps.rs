@@ -93,7 +93,7 @@ pub(crate) trait Game {
     /// The game's exit status once it exited, or `None` while it runs.
     fn exit_status(&mut self) -> Result<Option<ExitStatus>, StepError>;
     /// The `lines` perf summary lines of the core's session log after the lines the perf window
-    /// drops, the camera line before each of them, and the count of the dropped lines.
+    /// drops, the camera lines before each of them, and the count of the dropped lines.
     fn perf_window(&mut self, lines: u32) -> Result<PerfWindow, StepError>;
     fn close(&mut self) -> Result<Closed, StepError>;
     /// Whether Steam reports the game running. A failed read is a warn line and counts as not running.
@@ -368,9 +368,8 @@ fn while_running<G: Game>(
 fn perf_step(game: &mut impl Game, lines: u32, folder: &Path) -> Result<(), StepError> {
     let window = game.perf_window(lines)?;
     let summaries: Vec<_> = window.lines.iter().map(|line| line.summary).collect();
-    let cameras: Vec<_> = window.lines.iter().map(|line| line.camera).collect();
     folder::write(folder, PERF_FILE, &perf::text(&summaries, window.dropped))?;
-    folder::write(folder, CAMERA_FILE, &perf::camera_text(&cameras))?;
+    folder::write(folder, CAMERA_FILE, &perf::camera_text(&window.lines))?;
     Ok(())
 }
 

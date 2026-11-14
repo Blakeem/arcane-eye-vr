@@ -1,9 +1,9 @@
 //! The Present call-site hook: its install at init and its handler on the render thread.
 //!
 //! The install resolves the `dx11_present_call` signature in the game exe's code and puts a mid hook
-//! on the match. The handler ends the frames of the view camera and the eye camera, runs the frame
-//! work before the engine's `Present` call, reports the first frame through the launch token and runs
-//! the eye view's create.
+//! on the match. The handler reads the eye view's layout for the next frame, ends the frames of the
+//! eye camera and the view camera, runs the frame work before the engine's `Present` call, reports the
+//! first frame through the launch token and runs the eye view's create.
 
 use std::mem::ManuallyDrop;
 
@@ -84,10 +84,11 @@ fn report(status: Option<&StatusView>, value: Status) {
 /// passed the eye camera's and the view camera's sites before this call, and the render loop holds no
 /// pointer into the view list, so the eye view may join it here.
 fn on_present_call(context: &CoreContext, thread: &RenderThread, registers: &mut Registers) {
-    eye_camera::end_frame(context, thread);
-    let camera = view_camera::end_frame(context, thread);
+    let layout = eye_view::frame_layout(context, thread);
+    eye_camera::end_frame(context, thread, layout);
+    let cameras = view_camera::end_frame(context, thread, layout);
     let frame =
-        context.frame.with(thread, |state| frame::on_present_call(state, registers, camera));
+        context.frame.with(thread, |state| frame::on_present_call(state, registers, cameras));
     if frame == Some(FrameReport::FirstPresent) {
         report(context.status.as_ref(), Status::FirstPresent);
     }

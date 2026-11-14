@@ -2,12 +2,13 @@
 //!
 //! On the first frame it takes the device and the immediate context. On every frame it tracks the
 //! swapchain, its device and its back buffer, and hands the frame to the debug viewer link. It times
-//! each call and logs the perf summary line once per window of frames, after the camera line of the
-//! window's newest view camera.
+//! each call and logs the perf summary line once per window of frames, after the camera lines of the
+//! window's newest main view camera and newest eye view camera.
 //!
 //! It keeps no back-buffer reference and no swapchain reference. An extra swapchain reference keeps a
 //! swapchain the game released alive, and DXGI then refuses a new swapchain on the same window.
 
+use std::mem;
 use std::time::{Duration, Instant};
 
 use diag::perf::{FrameWindow, SUMMARY_FRAMES};
@@ -22,7 +23,7 @@ use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 use windows::core::HRESULT;
 
 use crate::raw::{self, BackBuffer, Devices};
-use crate::view_camera::{FrameCamera, Viewpoint};
+use crate::view_camera::{FrameCamera, FrameCameras, Viewpoint};
 use crate::viewer::ViewerLink;
 
 /// The shortest time between two lines of one rate-limited call site.
@@ -49,8 +50,9 @@ pub(crate) struct FrameState {
     /// The time of the previous Present call, from which the next frame interval runs.
     last_call: Option<Instant>,
     frame_times: FrameWindow,
-    /// The newest main view camera of the current perf window, for its camera line.
-    camera: Option<FrameCamera>,
+    /// The newest main view camera and eye view camera of the current perf window, for its camera
+    /// lines.
+    cameras: FrameCameras,
 }
 
 /// The rate-limit state of each log call site of the frame handler.
@@ -71,15 +73,15 @@ struct Snapshot {
     back_buffer: BackBuffer,
 }
 
-/// Runs the frame work for the swapchain that `registers` hold at the Present call site. `camera` is
-/// the main view camera of the frame, when the view camera feature read one.
+/// Runs the frame work for the swapchain that `registers` hold at the Present call site. `cameras`
+/// are the cameras of the frame's views that the view camera feature read.
 pub(crate) fn on_present_call(
     state: &mut FrameState,
     registers: &Registers,
-    camera: Option<FrameCamera>,
+    cameras: FrameCameras,
 ) -> FrameReport {
     let now = Instant::now();
-    keep_camera(state, camera);
+    keep_cameras(state, cameras);
     let frame = raw::with_present_swapchain(registers, |address, swapchain| {
         on_frame(state, address, swapchain)
     });
@@ -96,16 +98,19 @@ pub(crate) fn on_present_call(
     report
 }
 
-/// Keeps `camera` as the newest camera of the perf window, when the frame has one.
-fn keep_camera(state: &mut FrameState, camera: Option<FrameCamera>) {
-    if camera.is_some() {
-        state.camera = camera;
+/// Keeps each camera of `cameras` as the newest camera of its view in the perf window.
+fn keep_cameras(state: &mut FrameState, cameras: FrameCameras) {
+    if cameras.main.is_some() {
+        state.cameras.main = cameras.main;
+    }
+    if cameras.eye_view.is_some() {
+        state.cameras.eye_view = cameras.eye_view;
     }
 }
 
 /// Adds the time since the previous Present call to the frame-time window. When that interval fills
-/// the window, logs the camera line of the window's newest camera, when it has one, then the perf
-/// summary line.
+/// the window, logs the camera lines that `ipc_layout::camera_line` describes, then the perf summary
+/// line.
 fn record_interval(state: &mut FrameState, now: Instant) {
     let Some(previous) = state.last_call.replace(now) else {
         return;
@@ -113,8 +118,9 @@ fn record_interval(state: &mut FrameState, now: Instant) {
     let Some(times) = state.frame_times.record(now.saturating_duration_since(previous)) else {
         return;
     };
-    if let Some(camera) = state.camera.take() {
-        log_camera(&camera);
+    let cameras = mem::take(&mut state.cameras);
+    for camera in [cameras.main, cameras.eye_view].iter().flatten() {
+        log_camera(camera);
     }
     let back_buffer = state.last.map(|snapshot| snapshot.back_buffer);
     // The window limits this line to one per SUMMARY_FRAMES frames, so it needs no rate-limit macro.
@@ -132,7 +138,7 @@ fn record_interval(state: &mut FrameState, now: Instant) {
     );
 }
 
-/// Logs the camera line. A reader pairs it with the perf summary line that follows it.
+/// Logs one camera line. A reader pairs it with the perf summary line that follows it.
 fn log_camera(frame: &FrameCamera) {
     let camera = &frame.camera;
     let [x, y, z] = camera.position;

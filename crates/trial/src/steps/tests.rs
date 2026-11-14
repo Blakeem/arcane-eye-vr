@@ -280,13 +280,16 @@ fn a_window_with_a_camera_line_writes_one_line_per_summary_line_to_camera_txt() 
         near: 0.1,
         far: 1000.0,
     };
+    let left = CameraLine { eye: CameraEye::Left, x: 1.0, ..camera };
     let mut game = StandInGame::failing_at(None);
-    game.cameras = [None, Some(camera)];
+    game.cameras = [Vec::new(), vec![left, camera]];
     let mut frames = StandInFrames { fail_reads: false, beating: false };
     let (report, _printed, _result) = run_trial(folder, &mut game, &mut frames);
     let text = fs::read_to_string(folder.join("camera.txt")).expect("read camera.txt");
     let expected = "\
 none
+eye=left x=1.0 y=-2.0 z=3.0 head_x=1.25 head_y=-2.0 head_z=3.0 fx=0.0 fy=0.0 fz=1.0 \
+fov_y_rad=1.25 aspect=1.5 near=0.1 far=1000.0 | \
 eye=right x=1.5 y=-2.0 z=3.0 head_x=1.25 head_y=-2.0 head_z=3.0 fx=0.0 fy=0.0 fz=1.0 \
 fov_y_rad=1.25 aspect=1.5 near=0.1 far=1000.0
 ";

@@ -6,10 +6,10 @@ use game_bindings::offsets::{
     CONTROLLER_SIZE, CONTROLLER_VIEW, CONTROLLER_VTABLE_SLOTS, CONTROLLER_WORLD_TRANSLATE_SLOT,
 };
 use game_mem::GameAddr;
-use stereo_core::eye::Eye;
+use stereo_core::eye::{Eye, PerEye};
 
-use super::EyeState;
-use super::proxy::RING_SIZE;
+use super::proxy::PAGES_SIZE;
+use super::{EyeState, Target};
 use crate::raw::SharedPages;
 use crate::view_camera::test_support::WORLD_TRANSLATE;
 
@@ -75,13 +75,15 @@ impl HeadController {
     }
 }
 
-/// The eye camera's state for `eye`, half a 63 mm distance from the head, over fresh pages, whose
-/// head controllers have `WORLD_TRANSLATE` in slot 9.
+/// The eye camera's state for `target`, with eyes 63 mm apart, over fresh pages, whose head
+/// controllers have `WORLD_TRANSLATE` in slot 9.
+pub(crate) fn target_state(target: Target) -> EyeState {
+    let pages = SharedPages::commit(PAGES_SIZE).expect("commit the proxy pages");
+    let offsets_m = PerEye { left: -HALF_IPD_M, right: HALF_IPD_M };
+    EyeState::new(pages, WORLD_TRANSLATE, target, offsets_m)
+}
+
+/// The eye camera's state that renders the main view from `eye`.
 pub(crate) fn eye_state(eye: Eye) -> EyeState {
-    let pages = SharedPages::commit(RING_SIZE).expect("commit the proxy pages");
-    let offset_m = match eye {
-        Eye::Left => -HALF_IPD_M,
-        Eye::Right => HALF_IPD_M,
-    };
-    EyeState::new(pages, WORLD_TRANSLATE, eye, offset_m)
+    target_state(Target::MainView(eye))
 }

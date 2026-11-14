@@ -10,13 +10,13 @@ use game_bindings::state::arm_alloc_guard;
 use gfx::publish::ViewNames;
 use ipc_layout::perf_line::{self, PerfSummary};
 
-use super::{FrameReport, FrameState, keep_camera, on_frame, record_interval};
+use super::{FrameReport, FrameState, keep_cameras, on_frame, record_interval};
 use crate::raw::{
     self,
     test_support::{FORMAT, TestSwapchain, TestViewer, test_view_names},
 };
 use crate::test_dir;
-use crate::view_camera::FrameCamera;
+use crate::view_camera::FrameCameras;
 use crate::viewer::ViewerLink;
 
 /// A frame state whose viewer link uses names of its own, and those names.
@@ -41,15 +41,15 @@ fn frame(state: &mut FrameState, test: &TestSwapchain) -> FrameReport {
     test.with(|address, swapchain| on_frame(state, address, swapchain)).expect("a swapchain")
 }
 
-/// A frame as `on_present_call` runs it, with the call's time given as `now` and the main view
-/// camera the view camera feature gave the frame.
+/// A frame as `on_present_call` runs it, with the call's time given as `now` and the cameras the
+/// view camera feature gave the frame's views.
 fn timed_frame(
     state: &mut FrameState,
     test: &TestSwapchain,
     now: Instant,
-    camera: Option<FrameCamera>,
+    cameras: FrameCameras,
 ) -> FrameReport {
-    keep_camera(state, camera);
+    keep_cameras(state, cameras);
     let report = frame(state, test);
     record_interval(state, now);
     report
@@ -97,7 +97,7 @@ fn the_601st_frame_logs_one_perf_summary_that_the_parser_reads() {
     let (mut state, _names) = test_state("perf-summary");
     let lines = log_lines("perf-summary", || {
         for now in call_times() {
-            timed_frame(&mut state, &test, now, None);
+            timed_frame(&mut state, &test, now, FrameCameras::default());
         }
     });
     // The sorted intervals are 10 001 .. 10 600 us. Nearest ranks 300, 570 and 594.
@@ -157,10 +157,10 @@ fn the_frame_that_logs_the_perf_summary_makes_no_heap_allocation() {
     let mut allocated = None;
     let lines = log_lines("summary-allocation", || {
         for now in times {
-            timed_frame(&mut state, &test, now, None);
+            timed_frame(&mut state, &test, now, FrameCameras::default());
         }
         let guard = arm_alloc_guard().expect("arm the allocation guard");
-        let report = timed_frame(&mut state, &test, last, None);
+        let report = timed_frame(&mut state, &test, last, FrameCameras::default());
         allocated = Some((guard.count(), report));
     });
     assert_eq!(allocated, Some((0, FrameReport::Later)), "the summary frame allocated");

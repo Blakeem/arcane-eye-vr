@@ -10,7 +10,9 @@
 //!
 //! The two threads share the held eye view through one mutex. The game thread holds it while its hook
 //! handler runs. The render thread only tries it and never holds it across a game call, so neither
-//! thread waits on a game call of the other. With `second_view` off the feature installs no hook.
+//! thread waits on a game call of the other. At each Present call site the render thread also reads
+//! the layout, which names the eye view while the views sit side by side, for the eye camera and the
+//! view camera. With `second_view` off the feature installs no hook.
 
 mod create;
 mod decide;
@@ -26,6 +28,7 @@ use std::time::{Duration, Instant};
 use diag::health::{Feature, Health};
 use diag::rate::RateLimit;
 use diag::warn_every;
+use game_bindings::render_view::RenderView;
 use game_bindings::state;
 use game_mem::GameAddr;
 use hooks::{GameThread, MidHook, Registers, RenderCell, RenderThread};
@@ -73,17 +76,35 @@ pub(crate) struct EyeViewState {
     /// The game functions the feature calls.
     pub(crate) fns: EngineFns,
     pub(crate) view: EyeView,
-    /// The render thread's part of the create.
-    pub(crate) create: RenderCell<CreateState>,
+    /// The render thread's part of the feature.
+    pub(crate) render: RenderCell<RenderState>,
 }
 
-/// The render thread's part of the create: a created eye view not yet handed to the game thread,
-/// the retry of the create and its log state.
+/// The render thread's part of the feature: a created eye view not yet handed to the game thread,
+/// the retry of the create and its log state, and the layout the render thread read last.
 #[derive(Debug, Default)]
-pub(crate) struct CreateState {
+pub(crate) struct RenderState {
     pending: Option<Held>,
     retry: Retry,
     retry_log: RateLimit,
+    layout: Layout,
+}
+
+/// Where the views render in a frame, as the eye camera and the view camera see it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Layout {
+    /// The main view covers the frame, and the eye view renders nothing.
+    #[default]
+    MainOnly,
+    /// The main view covers the left half of the frame and `eye` the right half.
+    SideBySide { eye: RenderView },
+}
+
+impl Layout {
+    /// Whether `view` is the eye view of this layout.
+    pub(crate) fn is_eye_view(self, view: RenderView) -> bool {
+        matches!(self, Self::SideBySide { eye } if eye == view)
+    }
 }
 
 /// The state the render thread and the game thread share.
@@ -140,7 +161,7 @@ fn hook_game_update(
     let state = EyeViewState {
         fns: located.fns,
         view: EyeView::new(located.addresses),
-        create: RenderCell::default(),
+        render: RenderCell::default(),
     };
     Ok((located.site, Installed { hook, state }))
 }
@@ -164,10 +185,18 @@ pub(crate) fn on_present_call(context: &CoreContext, thread: &RenderThread) {
     let health = &context.health;
     guarded(health, || {
         let mut calls = RenderCalls::new(&state.fns, thread);
-        state.create.with(thread, |creation| {
-            state.view.on_present_call(&mut calls, creation, health, Instant::now());
+        state.render.with(thread, |render| {
+            state.view.on_present_call(&mut calls, render, health, Instant::now());
         });
     });
+}
+
+/// The layout of the next frame, read at the Present call site on the render thread. It is
+/// [`Layout::MainOnly`] while `eye-view` is not installed or off.
+pub(crate) fn frame_layout(context: &CoreContext, thread: &RenderThread) -> Layout {
+    let Some(state) = &context.eye_view else { return Layout::MainOnly };
+    let layout = state.render.with(thread, |render| state.view.layout(render, &context.health));
+    layout.unwrap_or_default()
 }
 
 /// Runs `work` while `eye-view` is running, inside `catch_unwind`, so a panic in it latches
@@ -191,12 +220,12 @@ impl EyeView {
     pub(crate) fn on_present_call(
         &self,
         calls: &mut impl CreateCalls,
-        creation: &mut CreateState,
+        render: &mut RenderState,
         health: &Health,
         now: Instant,
     ) {
         let Ok(mut shared) = self.shared.try_lock() else { return };
-        if let Some(pending) = creation.pending.take() {
+        if let Some(pending) = render.pending.take() {
             shared.held = Some(pending);
             return;
         }
@@ -205,10 +234,10 @@ impl EyeView {
             None => Observed::PresentWithoutEye,
         };
         drop(shared);
-        if decide(observed, creation.retry.due(now)) != Action::Create {
+        if decide(observed, render.retry.due(now)) != Action::Create {
             return;
         }
-        creation.retry.wait(now);
+        render.retry.wait(now);
         match create::create(calls, &self.addresses) {
             Ok(held) => {
                 // The create retry limits this line to one per RETRY_PERIOD, so it needs no
@@ -218,10 +247,10 @@ impl EyeView {
                     view_count = held.frame.view_count(),
                     "eye view created"
                 );
-                self.hand_over(creation, held);
+                self.hand_over(render, held);
             }
             Err(guard) if guard.retries() => {
-                warn_every!(creation.retry_log, LOG_PERIOD, guard = %guard, "eye view create waits");
+                warn_every!(render.retry_log, LOG_PERIOD, guard = %guard, "eye view create waits");
             }
             Err(guard) => {
                 // The failed check switches the feature off, so this line appears once.
@@ -231,11 +260,27 @@ impl EyeView {
         }
     }
 
+    /// The layout the game thread placed last, kept in `render`, or [`Layout::MainOnly`] while
+    /// `health` holds the feature off. While the game thread holds the shared state, the layout read
+    /// last stands.
+    pub(crate) fn layout(&self, render: &mut RenderState, health: &Health) -> Layout {
+        if !health.is_running(Feature::EyeView) {
+            return Layout::MainOnly;
+        }
+        if let Ok(shared) = self.shared.try_lock() {
+            render.layout = match (shared.placement, shared.held) {
+                (Placement::SideBySide, Some(held)) => Layout::SideBySide { eye: held.eye },
+                (Placement::SideBySide | Placement::FullFrame, _) => Layout::MainOnly,
+            };
+        }
+        render.layout
+    }
+
     /// Hands `held` to the game thread now, or at the next frame when the game thread holds the state.
-    fn hand_over(&self, creation: &mut CreateState, held: Held) {
+    fn hand_over(&self, render: &mut RenderState, held: Held) {
         match self.shared.try_lock() {
             Ok(mut shared) => shared.held = Some(held),
-            Err(_busy) => creation.pending = Some(held),
+            Err(_busy) => render.pending = Some(held),
         }
     }
 

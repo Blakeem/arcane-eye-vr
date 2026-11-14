@@ -1,4 +1,7 @@
-//! The perf window against session log lines written by hand.
+//! The perf window against session log lines written by hand. The submodule holds the text of
+//! `camera.txt`.
+
+mod camera_text;
 
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
@@ -10,8 +13,8 @@ use ipc_layout::camera_line::{CameraEye, CameraLine};
 use ipc_layout::perf_line::PerfSummary;
 
 use super::{
-    CountedLine, LogTail, PerfError, PerfWindow, Totals, Window, WindowLine, camera_text, collect,
-    is_settled, text, totals,
+    CountedLine, LogTail, PerfError, PerfWindow, Totals, Window, WindowLine, collect, is_settled,
+    text, totals,
 };
 use crate::test_dir;
 
@@ -38,17 +41,27 @@ fn summary(frames: u32, mean: u64, p99: u64, max: u64) -> PerfSummary {
     }
 }
 
-/// A camera line in the session log's format, with its line ending.
-fn camera_log_line(x: f32) -> String {
+/// A camera line of `eye` in the session log's format, with its line ending.
+fn eye_camera_log_line(eye: CameraEye, x: f32) -> String {
     format!(
-        "{PREFIX} msg=camera eye=left x={x} y=2 z=3 head_x=7 head_y=2 head_z=3 fx=0 fy=0 fz=1 \
-         fov_y_rad=1.25 aspect=1.5 near=0.1 far=1000\n"
+        "{PREFIX} msg=camera eye={} x={x} y=2 z=3 head_x=7 head_y=2 head_z=3 fx=0 fy=0 fz=1 \
+         fov_y_rad=1.25 aspect=1.5 near=0.1 far=1000\n",
+        eye.as_str()
     )
 }
 
+/// A left eye camera line in the session log's format, with its line ending.
+fn camera_log_line(x: f32) -> String {
+    eye_camera_log_line(CameraEye::Left, x)
+}
+
 fn camera(x: f32) -> CameraLine {
+    eye_camera(CameraEye::Left, x)
+}
+
+fn eye_camera(eye: CameraEye, x: f32) -> CameraLine {
     CameraLine {
-        eye: CameraEye::Left,
+        eye,
         x,
         y: 2.0,
         z: 3.0,
@@ -67,7 +80,7 @@ fn camera(x: f32) -> CameraLine {
 
 /// `summary` counted with no camera line before it.
 fn without_camera(summary: PerfSummary) -> CountedLine {
-    CountedLine { summary, camera: None }
+    CountedLine { summary, cameras: Vec::new() }
 }
 
 /// A window of `lines` counted with no camera line, after `dropped` dropped lines.
@@ -233,7 +246,7 @@ fn only_the_lines_up_to_the_settled_line_are_dropped_when_lines_arrive_one_read_
 }
 
 #[test]
-fn the_window_keeps_the_camera_line_before_each_counted_summary_line() {
+fn the_window_keeps_the_camera_lines_before_each_counted_summary_line() {
     let dir = test_dir("perf-cameras");
     let log = dir.path().join("arcane-eye-vr.log");
     fs::write(&log, camera_log_line(-1.0)).expect("write the test log");
@@ -242,38 +255,27 @@ fn the_window_keeps_the_camera_line_before_each_counted_summary_line() {
         camera_log_line(0.0),
         pause_line(),
         camera_log_line(0.5),
+        eye_camera_log_line(CameraEye::Right, 0.75),
         settled_line(),
         camera_log_line(1.0),
         line(600, 16_000, 20_000, 30_000),
         line(600, 17_000, 21_000, 31_000),
         camera_log_line(3.0),
+        eye_camera_log_line(CameraEye::Right, 3.5),
         line(600, 18_000, 22_000, 32_000),
         camera_log_line(4.0),
         line(600, 19_000, 23_000, 33_000),
     ];
     append(&log, &lines.concat());
     let window = collect(&mut tail, 3, Duration::from_secs(5)).expect("three lines");
-    let expected = [
-        CountedLine { summary: summary(600, 16_000, 20_000, 30_000), camera: Some(camera(1.0)) },
+    let pair = vec![camera(3.0), eye_camera(CameraEye::Right, 3.5)];
+    let expected = vec![
+        CountedLine { summary: summary(600, 16_000, 20_000, 30_000), cameras: vec![camera(1.0)] },
         without_camera(summary(600, 17_000, 21_000, 31_000)),
-        CountedLine { summary: summary(600, 18_000, 22_000, 32_000), camera: Some(camera(3.0)) },
+        CountedLine { summary: summary(600, 18_000, 22_000, 32_000), cameras: pair },
     ];
-    let expected = PerfWindow { lines: expected.to_vec(), dropped: 2 };
-    assert_eq!(window, expected, "each counted summary line with the camera line before it");
-}
-
-#[test]
-fn the_camera_text_holds_a_line_per_summary_line_or_one_none() {
-    let expected = "\
-eye=left x=1.5 y=2.0 z=3.0 head_x=7.0 head_y=2.0 head_z=3.0 fx=0.0 fy=0.0 fz=1.0 fov_y_rad=1.25 \
-aspect=1.5 near=0.1 far=1000.0
-none
-eye=left x=-4.0 y=2.0 z=3.0 head_x=7.0 head_y=2.0 head_z=3.0 fx=0.0 fy=0.0 fz=1.0 fov_y_rad=1.25 \
-aspect=1.5 near=0.1 far=1000.0
-";
-    assert_eq!(camera_text(&[Some(camera(1.5)), None, Some(camera(-4.0))]), expected);
-    assert_eq!(camera_text(&[None, None]), "none\n", "a window with no camera");
-    assert_eq!(camera_text(&[]), "none\n", "a window with no summary line");
+    let expected = PerfWindow { lines: expected, dropped: 2 };
+    assert_eq!(window, expected, "each counted summary line with the camera lines before it");
 }
 
 #[test]
