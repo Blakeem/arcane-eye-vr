@@ -11,6 +11,7 @@ use hooks::{HookContext, MidHook, RenderCell};
 
 use crate::config::Config;
 use crate::eye_camera::EyeState;
+use crate::eye_view::EyeViewState;
 use crate::frame::FrameState;
 use crate::raw::StatusView;
 use crate::view_camera::ViewCamera;
@@ -28,6 +29,8 @@ pub(crate) struct CoreContext {
     /// `None` when the eye camera is not installed. The state holds the proxy controllers' pages, so
     /// every proxy stays mapped for the life of the context.
     pub(crate) eye_camera: RenderCell<Option<EyeState>>,
+    /// `None` when the eye view is not installed.
+    pub(crate) eye_view: Option<EyeViewState>,
     /// Never dropped, so the hook stays installed for the process life (see
     /// [`install_present_hook`](crate::raw::install_present_hook)).
     pub(crate) _present_hook: Option<ManuallyDrop<MidHook>>,
@@ -37,6 +40,9 @@ pub(crate) struct CoreContext {
     /// Never dropped, like the Present call-site hook (see
     /// [`install_eye_camera_hook`](crate::raw::install_eye_camera_hook)).
     pub(crate) _eye_camera_hook: Option<ManuallyDrop<MidHook>>,
+    /// Never dropped, like the Present call-site hook (see
+    /// [`install_game_update_hook`](crate::raw::eye_view::install_game_update_hook)).
+    pub(crate) _eye_view_hook: Option<ManuallyDrop<MidHook>>,
 }
 
 impl HookContext for CoreContext {

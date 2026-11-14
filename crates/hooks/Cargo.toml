@@ -1,6 +1,6 @@
 [package]
 name = "hooks"
-description = "The hook thunk macro, hook installation and removal, and the render thread token and cell."
+description = "The hook thunk macros, hook installation and removal, the render and game thread tokens and the render thread cell."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true

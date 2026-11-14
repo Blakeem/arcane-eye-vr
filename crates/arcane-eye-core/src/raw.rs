@@ -2,7 +2,8 @@
 //!
 //! It holds the exports, the Present call-site, view camera and eye camera hook installs, the write
 //! destinations of the render view and of the pages the core shares with game threads, the launch
-//! token's status field, and the D3D11 and DXGI calls of the frame handler.
+//! token's status field, and the D3D11 and DXGI calls of the frame handler. Its `eye_view` module holds
+//! the eye view feature's hook install and game calls.
 
 #![expect(
     unsafe_code,
@@ -34,7 +35,8 @@ use windows::core::{HRESULT, HSTRING, Interface as _};
 const GET_DESC_SLOT_OFFSET: usize = 12 * size_of::<usize>();
 
 /// Starts the core: the root folder, the session log, the settings files, the Present call-site, view
-/// camera and eye camera hooks, then the core context. `mode` is the launch token's mode value.
+/// camera, eye camera and eye view hooks, then the core context. `mode` is the launch token's mode
+/// value.
 ///
 /// Returns 0 on success and an [`InitStatus`](crate::init::InitStatus) failure code otherwise. A mode
 /// value that names no mode returns the unknown-mode code, and a second call in one process returns
@@ -310,6 +312,8 @@ impl Drop for StatusView {
         drop(unsafe { UnmapViewOfFile(view) });
     }
 }
+
+pub(crate) mod eye_view;
 
 #[cfg(test)]
 pub(crate) mod test_support;

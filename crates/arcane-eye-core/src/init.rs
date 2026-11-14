@@ -3,7 +3,7 @@
 //! [`start`] takes its inputs as parameters and returns the log handle and the subscriber without
 //! installing either, so tests run it in isolation. Only [`init_process`] finds the root folder, sets
 //! the process-wide subscriber, reads the settings files, opens the launch token, installs the Present
-//! call-site, view camera and eye camera hooks and fills the core context slot.
+//! call-site, view camera, eye camera and eye view hooks and fills the core context slot.
 
 use std::panic::{self, UnwindSafe};
 use std::path::Path;
@@ -21,6 +21,7 @@ use tracing::{Dispatch, info, warn};
 use crate::config;
 use crate::context::CoreContext;
 use crate::eye_camera;
+use crate::eye_view;
 use crate::install::GameCode;
 use crate::present;
 use crate::raw::StatusView;
@@ -113,9 +114,9 @@ fn guarded(init: impl FnOnce() -> Result<(), InitError> + UnwindSafe) -> u32 {
 /// the launch token's mapping.
 ///
 /// The hook installs run after every other step that can fail but the store, and the check above found
-/// the slot empty, so a failed init leaves the game unmodified. The view camera and eye camera
-/// installs follow the Present call-site install, which both need. All three scan one copy of the
-/// game exe's code, which drops before the store.
+/// the slot empty, so a failed init leaves the game unmodified. The view camera, eye camera and eye
+/// view installs follow the Present call-site install, which all three need. All four scan one copy
+/// of the game exe's code, which drops before the store.
 fn run(
     mode: u32,
     root: impl FnOnce() -> Result<Root, RootError>,
@@ -132,16 +133,24 @@ fn run(
     let config = config::load(root.path());
     let health = Health::new();
     let status = open_status(token_name);
-    let (present_hook, view_installed, eye_installed) = {
+    let (present_hook, view_installed, eye_installed, eye_view_installed) = {
         let game_code = GameCode::copy();
         let present_hook = present::install(&health, status.as_ref(), &game_code);
         let view_installed = view_camera::install(&health, &game_code);
-        (present_hook, view_installed, eye_camera::install(&health, &game_code, config))
+        let eye_installed = eye_camera::install(&health, &game_code, config);
+        (
+            present_hook,
+            view_installed,
+            eye_installed,
+            eye_view::install(&health, &game_code, config),
+        )
     };
     let world_translate = view_installed.as_ref().map(|installed| installed.world_translate);
     let proxy_eye = eye_installed.as_ref().map(|installed| installed.state.eye());
     let (eye_camera_hook, eye_state) =
         eye_installed.map(|installed| (installed.hook, installed.state)).unzip();
+    let (eye_view_hook, eye_view_state) =
+        eye_view_installed.map(|installed| (installed.hook, installed.state)).unzip();
     let context = CoreContext {
         _log: core.log,
         _config: config,
@@ -150,9 +159,11 @@ fn run(
         frame: RenderCell::default(),
         view_camera: RenderCell::new(ViewCamera::new(world_translate, proxy_eye)),
         eye_camera: RenderCell::new(eye_state),
+        eye_view: eye_view_state,
         _present_hook: present_hook,
         _view_camera_hook: view_installed.map(|installed| installed.hook),
         _eye_camera_hook: eye_camera_hook,
+        _eye_view_hook: eye_view_hook,
     };
     state::store_core_context(context)?;
     Ok(())
@@ -219,6 +230,11 @@ mod tests {
             context.health.state(Feature::EyeCamera),
             FeatureState::Pending,
             "with main_view_eye = center the eye camera installs nothing"
+        );
+        assert_eq!(
+            context.health.state(Feature::EyeView),
+            FeatureState::Pending,
+            "with second_view off the eye view installs nothing"
         );
         assert!(dir.join(r"logs\arcane-eye-vr.log").is_file(), "the session log is in root\\logs");
         let second = run(1, || Ok(Root::new(dir.clone())), &mapping.name);

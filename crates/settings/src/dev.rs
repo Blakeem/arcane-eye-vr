@@ -23,6 +23,42 @@ pub struct DevFlags {
 pub struct StereoFlags {
     /// The dev flag `stereo.main_view_eye`. Its entry in [`crate::flags::FLAGS`] states its question.
     pub main_view_eye: MainViewEye,
+    /// The dev flag `stereo.second_view`. Its entry in [`crate::flags::FLAGS`] states its question.
+    pub second_view: SecondView,
+}
+
+/// Whether the mod has the engine draw a second render view beside the main view. `dev.toml` writes it
+/// as a boolean.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[cfg_attr(test, derive(serde::Serialize))]
+#[serde(from = "bool")]
+#[cfg_attr(test, serde(into = "bool"))]
+pub enum SecondView {
+    #[default]
+    Off,
+    On,
+}
+
+impl SecondView {
+    /// The value as `dev.toml` writes it.
+    pub const fn as_bool(self) -> bool {
+        match self {
+            Self::Off => false,
+            Self::On => true,
+        }
+    }
+}
+
+impl From<bool> for SecondView {
+    fn from(on: bool) -> Self {
+        if on { Self::On } else { Self::Off }
+    }
+}
+
+impl From<SecondView> for bool {
+    fn from(second_view: SecondView) -> Self {
+        second_view.as_bool()
+    }
 }
 
 /// An eye position of the game's single render view.

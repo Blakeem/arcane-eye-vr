@@ -24,6 +24,7 @@ These parts work in tests:
 - The mod loads into the DirectX 11 version of the game and reads each frame.
 - A debug viewer shows that frame in its own window.
 - For trials, the game's view can render from the left or right eye. The keys `main_view_eye` and `ipd_mm` under Settings set it.
+- For trials, the game can draw a second view beside its own view. Once the second view is ready, the game's view fills the left half of each frame and the second view the right half, both from the game's camera. The key `second_view` under Settings sets it.
 
 Stereo rendering, headset output and controller input are not built yet.
 
@@ -43,6 +44,7 @@ ipd_mm = 63.0    # distance between the eyes in millimeters, 50 to 80
 # dev.toml
 [stereo]
 main_view_eye = "center"    # the eye position of the game's view: center, left or right
+second_view = false         # a second view in the right half of the frame: true or false
 ```
 
 A file with an invalid value is rejected as an entire file and its defaults apply. The session log in `logs\` names the line and column of the problem. An unknown key in `settings.toml` is logged and skipped, and an unknown key in `dev.toml` rejects the file.

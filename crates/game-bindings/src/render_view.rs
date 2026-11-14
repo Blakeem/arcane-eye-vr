@@ -1,5 +1,5 @@
 //! Typed, guarded reads and writes of an engine render view and of the camera controller its
-//! `ReadState` names.
+//! `ReadState` names, and the view fields the second view's recipe reads and writes.
 //!
 //! Each read and write goes through `game-mem`'s guarded copy, so a wrong address yields a failure
 //! value and never a fault. A read checks no type, so a right address is the caller's part. A write
@@ -10,8 +10,12 @@ use game_mem::{GameAddr, WriteDest, WriteError, try_read, try_read_array, try_wr
 use crate::camera::PerCamera;
 use crate::offsets::{
     CONTROLLER_SIZE, CONTROLLER_VIEW, CONTROLLER_VTABLE_SLOTS, CONTROLLER_WORLD_TRANSLATE_SLOT,
-    PER_CAMERA_FAR, PER_CAMERA_NEAR, PER_CAMERA_POSITION, PER_CAMERA_PROJECTION, PER_CAMERA_VIEW,
-    VIEW_LAST_SEEN_CONTROLLER, VIEW_PER_CAMERA, VIEW_READ_STATE_CONTROLLER,
+    ENVIRONMENT_RECORD_ID, PER_CAMERA_FAR, PER_CAMERA_NEAR, PER_CAMERA_POSITION,
+    PER_CAMERA_PROJECTION, PER_CAMERA_VIEW, SCENE_ACTIVE, VIEW_ATMOSPHERE, VIEW_ATMOSPHERE_LOCK,
+    VIEW_ATMOSPHERE_REQUEST, VIEW_JOB_CONTEXT, VIEW_LAST_SEEN_CONTROLLER, VIEW_LIGHTING,
+    VIEW_LIGHTING_LOCK, VIEW_LIGHTING_REQUEST, VIEW_OCCLUSION, VIEW_PER_CAMERA,
+    VIEW_READ_STATE_CONTROLLER, VIEW_SCENE, VIEW_SPLIT_INDEX, VIEW_SPLIT_SIDE, VIEW_STAGE_ARRAY,
+    VIEW_STAGE_OWNER, VIEW_WRITE_STATE_CONTROLLER, VIEW_WRITE_STATE_ENABLED,
 };
 
 /// A render view, by its address in the game process.
@@ -37,8 +41,49 @@ pub struct ControllerCopy([u8; CONTROLLER_SIZE]);
 /// The index of the view matrix's first `f32` in a controller's bytes.
 const VIEW_WORD: usize = CONTROLLER_VIEW / size_of::<f32>();
 
-// `WRITE_LEN` ends at the last-seen field, so the `ReadState` field must come before it.
+// `WRITE_LEN` ends at the last-seen field, so every other written field must come before it.
 const _: () = assert!(VIEW_READ_STATE_CONTROLLER < VIEW_LAST_SEEN_CONTROLLER);
+const _: () = assert!(VIEW_WRITE_STATE_ENABLED < VIEW_LAST_SEEN_CONTROLLER);
+const _: () = assert!(VIEW_SPLIT_INDEX < VIEW_LAST_SEEN_CONTROLLER);
+const _: () = assert!(VIEW_SPLIT_SIDE + size_of::<i32>() <= VIEW_LAST_SEEN_CONTROLLER);
+
+/// The pointers that tell a render view's own stage objects from another view's. A null pointer
+/// reads as address 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewParts {
+    pub vtable: GameAddr,
+    /// The owner view of the view's stage group.
+    pub stage_owner: GameAddr,
+    pub stage_array: GameAddr,
+    pub job_context: GameAddr,
+}
+
+/// An atmosphere or lighting record of a render view and the view's request id for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Environment {
+    /// The record, or address 0 when the view has none.
+    pub record: GameAddr,
+    /// The record's id, or `None` when the record is null.
+    pub id: Option<i32>,
+    /// The view's request id, -1 when it names no request.
+    pub request: i32,
+}
+
+/// What a render view renders and the bytes that gate the setters that change it. A null pointer
+/// reads as address 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewContent {
+    /// The `WriteState` camera controller.
+    pub controller: GameAddr,
+    pub scene: GameAddr,
+    /// The scene's active byte, or 0 when the scene is null.
+    pub scene_active: u8,
+    pub atmosphere: Environment,
+    pub lighting: Environment,
+    pub split_index: u8,
+    pub atmosphere_lock: u8,
+    pub lighting_lock: u8,
+}
 
 impl RenderView {
     /// The bytes from a view's start that hold each field the view's writes fill.
@@ -115,6 +160,85 @@ impl RenderView {
             position: try_read_array(block.checked_add(PER_CAMERA_POSITION)?)?,
         })
     }
+
+    /// The view's vtable pointer, or `None` when it cannot be read.
+    pub fn vtable(self) -> Option<GameAddr> {
+        try_read::<usize>(self.0).map(GameAddr::new)
+    }
+
+    /// The view's stage objects, or `None` when any pointer cannot be read.
+    pub fn parts(self) -> Option<ViewParts> {
+        Some(ViewParts {
+            vtable: self.vtable()?,
+            stage_owner: self.pointer(VIEW_STAGE_OWNER)?,
+            stage_array: self.pointer(VIEW_STAGE_ARRAY)?,
+            job_context: self.pointer(VIEW_JOB_CONTEXT)?,
+        })
+    }
+
+    /// What the view renders, or `None` when any field cannot be read.
+    pub fn content(self) -> Option<ViewContent> {
+        let scene = self.pointer(VIEW_SCENE)?;
+        let scene_active = match scene.get() {
+            0 => 0,
+            _ => try_read::<u8>(scene.checked_add(SCENE_ACTIVE)?)?,
+        };
+        Some(ViewContent {
+            controller: self.pointer(VIEW_WRITE_STATE_CONTROLLER)?,
+            scene,
+            scene_active,
+            atmosphere: self.environment(VIEW_ATMOSPHERE, VIEW_ATMOSPHERE_REQUEST)?,
+            lighting: self.environment(VIEW_LIGHTING, VIEW_LIGHTING_REQUEST)?,
+            split_index: try_read::<u8>(self.0.checked_add(VIEW_SPLIT_INDEX)?)?,
+            atmosphere_lock: try_read::<u8>(self.0.checked_add(VIEW_ATMOSPHERE_LOCK)?)?,
+            lighting_lock: try_read::<u8>(self.0.checked_add(VIEW_LIGHTING_LOCK)?)?,
+        })
+    }
+
+    /// The view's occlusion object, address 0 included, or `None` when the pointer cannot be read.
+    pub fn occlusion(self) -> Option<GameAddr> {
+        self.pointer(VIEW_OCCLUSION)
+    }
+
+    /// Sets the split-screen index of the view whose first [`RenderView::WRITE_LEN`] bytes are `view`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`WriteError`] of a field that cannot be written or lies outside `view`.
+    pub fn write_split_index(view: WriteDest<'_>, index: u8) -> Result<(), WriteError> {
+        try_write(view.offset(VIEW_SPLIT_INDEX)?, index)
+    }
+
+    /// Sets the `WriteState` Enabled byte and the split-screen side of the view whose first
+    /// [`RenderView::WRITE_LEN`] bytes are `view`, as the engine's viewport system does per player
+    /// view.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`WriteError`] of a field that cannot be written or lies outside `view`. The first
+    /// field may then hold the new value.
+    pub fn write_enabled_and_side(
+        view: WriteDest<'_>,
+        enabled: u8,
+        side: i32,
+    ) -> Result<(), WriteError> {
+        try_write(view.offset(VIEW_WRITE_STATE_ENABLED)?, enabled)?;
+        try_write(view.offset(VIEW_SPLIT_SIDE)?, side)
+    }
+
+    fn pointer(self, offset: usize) -> Option<GameAddr> {
+        try_read::<usize>(self.0.checked_add(offset)?).map(GameAddr::new)
+    }
+
+    fn environment(self, record_offset: usize, request_offset: usize) -> Option<Environment> {
+        let record = self.pointer(record_offset)?;
+        let id = match record.get() {
+            0 => None,
+            _ => Some(try_read::<i32>(record.checked_add(ENVIRONMENT_RECORD_ID)?)?),
+        };
+        let request = try_read::<i32>(self.0.checked_add(request_offset)?)?;
+        Some(Environment { record, id, request })
+    }
 }
 
 fn write_pointer(
@@ -172,116 +296,4 @@ impl ControllerCopy {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::hint::black_box;
-
-    use game_mem::GameAddr;
-
-    use super::{CameraController, ReadState, RenderView};
-    use crate::offsets::{
-        CONTROLLER_SIZE, CONTROLLER_VIEW, CONTROLLER_VTABLE_SLOTS, CONTROLLER_WORLD_TRANSLATE_SLOT,
-        PER_CAMERA_FAR, PER_CAMERA_NEAR, PER_CAMERA_POSITION, PER_CAMERA_PROJECTION,
-        PER_CAMERA_VIEW, VIEW_LAST_SEEN_CONTROLLER, VIEW_PER_CAMERA, VIEW_READ_STATE_CONTROLLER,
-    };
-
-    /// Windows reserves the lowest 64 KiB of every process, so no read there succeeds.
-    const UNMAPPED: GameAddr = GameAddr::new(0x10);
-
-    /// A controller address that a test view names. No read goes there.
-    const CONTROLLER: usize = 0x1234_5678;
-
-    fn address_of(bytes: &[u8]) -> GameAddr {
-        GameAddr::new(bytes.as_ptr().expose_provenance())
-    }
-
-    fn put(bytes: &mut [u8], offset: usize, value: &[u8]) {
-        bytes[offset..][..value.len()].copy_from_slice(value);
-    }
-
-    fn floats(values: &[f32]) -> Vec<u8> {
-        values.iter().flat_map(|value| value.to_ne_bytes()).collect()
-    }
-
-    #[test]
-    fn a_view_yields_its_controller_and_its_per_camera_fields() {
-        let mut view = vec![0_u8; VIEW_PER_CAMERA + 0x100];
-        put(&mut view, VIEW_READ_STATE_CONTROLLER, &CONTROLLER.to_ne_bytes());
-        let block = VIEW_PER_CAMERA;
-        let matrix: Vec<f32> = (0_u8..16).map(f32::from).collect();
-        let projection: Vec<f32> = (16_u8..32).map(f32::from).collect();
-        put(&mut view, block + PER_CAMERA_VIEW, &floats(&matrix));
-        put(&mut view, block + PER_CAMERA_PROJECTION, &floats(&projection));
-        put(&mut view, block + PER_CAMERA_NEAR, &floats(&[0.5]));
-        put(&mut view, block + PER_CAMERA_FAR, &floats(&[900.0]));
-        put(&mut view, block + PER_CAMERA_POSITION, &floats(&[1.0, 2.0, 3.0]));
-        let view = black_box(view);
-        let render_view = RenderView::new(address_of(&view));
-        let controller = render_view.read_state_controller();
-        assert_eq!(controller, Some(CameraController(GameAddr::new(CONTROLLER))));
-        let read = render_view.per_camera().expect("a readable block");
-        assert_eq!(read.view.to_vec(), matrix);
-        assert_eq!(read.projection.to_vec(), projection);
-        assert_eq!((read.near, read.far), (0.5, 900.0));
-        assert_eq!(read.position, [1.0, 2.0, 3.0]);
-    }
-
-    #[test]
-    fn a_null_controller_pointer_and_an_unmapped_view_yield_nothing() {
-        let view = black_box(vec![0_u8; VIEW_PER_CAMERA + 0x100]);
-        assert_eq!(RenderView::new(address_of(&view)).read_state_controller(), None);
-        assert_eq!(RenderView::new(UNMAPPED).read_state_controller(), None);
-        assert_eq!(RenderView::new(UNMAPPED).per_camera(), None);
-    }
-
-    #[test]
-    fn a_controller_yields_its_slot_9_function_and_an_unmapped_one_nothing() {
-        let mut vtable = vec![0_usize; 12];
-        vtable[CONTROLLER_WORLD_TRANSLATE_SLOT / size_of::<usize>()] = 0xABCD;
-        let vtable = black_box(vtable);
-        let object = black_box([vtable.as_ptr().expose_provenance()]);
-        let controller = CameraController(GameAddr::new(object.as_ptr().expose_provenance()));
-        assert_eq!(controller.world_translate_fn(), Some(GameAddr::new(0xABCD)));
-        assert_eq!(CameraController(UNMAPPED).world_translate_fn(), None);
-    }
-
-    #[test]
-    fn read_state_tells_a_null_pointer_from_an_unreadable_one() {
-        let mut view = vec![0_u8; VIEW_PER_CAMERA];
-        let null = RenderView::new(address_of(&view)).read_state();
-        put(&mut view, VIEW_READ_STATE_CONTROLLER, &CONTROLLER.to_ne_bytes());
-        let view = black_box(view);
-        let set = RenderView::new(address_of(&view)).read_state();
-        assert_eq!(null, Some(ReadState::Null));
-        let named = CameraController::new(GameAddr::new(CONTROLLER));
-        assert_eq!(set, Some(ReadState::Controller(named)));
-        assert_eq!(named.address(), GameAddr::new(CONTROLLER));
-        assert_eq!(RenderView::new(UNMAPPED).read_state(), None);
-    }
-
-    #[test]
-    fn the_last_seen_controller_reads_a_null_pointer_and_nothing_from_an_unmapped_view() {
-        let view = black_box(vec![0_u8; VIEW_LAST_SEEN_CONTROLLER + 8]);
-        let last_seen = RenderView::new(address_of(&view)).last_seen_controller();
-        assert_eq!(last_seen, Some(GameAddr::new(0)));
-        assert_eq!(RenderView::new(UNMAPPED).last_seen_controller(), None);
-    }
-
-    #[test]
-    fn a_controller_copy_holds_its_bytes_and_view_matrix_and_the_vtable_its_slots() {
-        let slots: Vec<usize> = (1..=CONTROLLER_VTABLE_SLOTS).collect();
-        let slots = black_box(slots);
-        let matrix: Vec<f32> = (0_u8..16).map(|value| f32::from(value) + 0.5).collect();
-        let mut object = vec![0x5A_u8; CONTROLLER_SIZE];
-        put(&mut object, 0, &slots.as_ptr().expose_provenance().to_ne_bytes());
-        put(&mut object, CONTROLLER_VIEW, &floats(&matrix));
-        let object = black_box(object);
-        let controller = CameraController::new(address_of(&object));
-        let copy = controller.copy().expect("a readable controller");
-        assert_eq!(copy.bytes().as_slice(), object.as_slice());
-        assert_eq!(copy.view().to_vec(), matrix);
-        let read = controller.vtable_slots().map(|read| read.to_vec());
-        assert_eq!(read.as_ref(), Some(&slots));
-        assert_eq!(CameraController::new(UNMAPPED).copy(), None);
-        assert_eq!(CameraController::new(UNMAPPED).vtable_slots(), None);
-    }
-}
+mod tests;

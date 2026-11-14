@@ -11,7 +11,7 @@ use game_bindings::offsets::{
 use game_bindings::render_view::{CameraController, RenderView};
 use game_bindings::state::arm_alloc_guard;
 use game_mem::{GameAddr, WriteError, try_read, try_read_array, try_read_bytes, try_write};
-use settings::dev::{DevFlags, MainViewEye, StereoFlags};
+use settings::dev::{DevFlags, MainViewEye, SecondView, StereoFlags};
 use settings::player::Settings;
 use stereo_core::eye::Eye;
 
@@ -93,7 +93,7 @@ fn logged<R>(name: &str, run: impl FnOnce() -> R) -> (R, String) {
 fn config(main_view_eye: MainViewEye) -> Config {
     Config {
         settings: Settings::default(),
-        dev: DevFlags { stereo: StereoFlags { main_view_eye } },
+        dev: DevFlags { stereo: StereoFlags { main_view_eye, second_view: SecondView::Off } },
     }
 }
 

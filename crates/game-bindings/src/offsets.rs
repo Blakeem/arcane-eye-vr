@@ -2,7 +2,8 @@
 //! 4.1.1.7631656.
 //!
 //! Each matches bg3-vr's layout. The view and `PerCamera` offsets were measured with a debugger
-//! breakpoint. The camera-cut field was checked by a static disassembly of the installed exe.
+//! breakpoint. The camera-cut field was checked by a static disassembly of the installed exe. The
+//! pipeline, frame, level and second-view offsets come from bg3-vr's recipe and a static disassembly.
 
 /// The camera controller pointer of a render view's `ReadState`, which the engine builds the view's
 /// `PerView` and `PerCamera` blocks from.
@@ -44,6 +45,115 @@ pub const CONTROLLER_VTABLE_SLOTS: usize = 96;
 
 /// The camera controller's vtable slot 9, `GetWorldTranslate`.
 pub const CONTROLLER_WORLD_TRANSLATE_SLOT: usize = 9 * size_of::<usize>();
+
+/// The main render view pointer in the render pipeline.
+pub const PIPELINE_MAIN_VIEW: usize = 0xA0;
+
+/// The special view pointer in the render pipeline. The special view composites the other views'
+/// output and the UI to the back buffer.
+pub const PIPELINE_SPECIAL_VIEW: usize = 0xA8;
+
+/// The pipeline's vtable slot 88, the game pipeline setup.
+pub const PIPELINE_SETUP_SLOT: usize = 88 * size_of::<usize>();
+
+/// The player manager's vtable slot 1, `CreatePlayerView`.
+pub const PLAYER_MANAGER_CREATE_VIEW_SLOT: usize = size_of::<usize>();
+
+/// The stage resource manager pointer of a `RenderFrame`.
+pub const FRAME_STAGE_RESOURCES: usize = 0x4250;
+
+/// The view list of a `RenderFrame`, a pointer to an array of render view pointers.
+pub const FRAME_VIEW_LIST: usize = 0x42E0;
+
+/// The number of views in a `RenderFrame`'s view list, one `u32`.
+pub const FRAME_VIEW_COUNT: usize = 0x42EC;
+
+/// The per-view records of a stage resource manager, a pointer to an array of record pointers. A
+/// record's first word is its render view.
+pub const STAGE_RESOURCES_RECORDS: usize = 0x58;
+
+/// The number of records of a stage resource manager, one `i32`.
+pub const STAGE_RESOURCES_RECORD_COUNT: usize = 0x64;
+
+/// The owner view of a render view's stage group. A view's own stages name the view itself.
+pub const VIEW_STAGE_OWNER: usize = 0x20;
+
+/// The stage array pointer of a render view's stage group.
+pub const VIEW_STAGE_ARRAY: usize = 0x28;
+
+/// The job context pointer of a render view.
+pub const VIEW_JOB_CONTEXT: usize = 0x40;
+
+/// The occlusion object pointer of a render view.
+pub const VIEW_OCCLUSION: usize = 0x48;
+
+/// The enabled byte of an occlusion object.
+pub const OCCLUSION_ENABLED: usize = 0x80;
+
+/// The Enabled byte of a render view's `WriteState`.
+pub const VIEW_WRITE_STATE_ENABLED: usize = 0x21E0;
+
+/// The camera controller pointer of a render view's `WriteState`.
+pub const VIEW_WRITE_STATE_CONTROLLER: usize = 0x2260;
+
+/// The split-screen index byte of a render view. 0 is the primary player and 1 the second.
+pub const VIEW_SPLIT_INDEX: usize = 0x2268;
+
+/// The split-screen side of a render view, one `i32`. 0 is the left half and 1 the right half.
+pub const VIEW_SPLIT_SIDE: usize = 0x226C;
+
+/// The atmosphere request id of a render view, one `i32`, which the atmosphere setter stores. The
+/// renderer's cull stage picks the view's environment probe by it.
+pub const VIEW_ATMOSPHERE_REQUEST: usize = 0x2888;
+
+/// The active atmosphere record pointer of a render view.
+pub const VIEW_ATMOSPHERE: usize = 0x28A0;
+
+/// The lighting request id of a render view, one `i32`, which the lighting setter stores.
+pub const VIEW_LIGHTING_REQUEST: usize = 0x28C0;
+
+/// The active lighting record pointer of a render view.
+pub const VIEW_LIGHTING: usize = 0x28D8;
+
+/// The id in an atmosphere or lighting record, one `i32`.
+pub const ENVIRONMENT_RECORD_ID: usize = 0x08;
+
+/// The lighting lock byte of a render view. A set lock makes the lighting setter only record the
+/// request.
+pub const VIEW_LIGHTING_LOCK: usize = 0x2AEB;
+
+/// The atmosphere lock byte of a render view, in the role of [`VIEW_LIGHTING_LOCK`].
+pub const VIEW_ATMOSPHERE_LOCK: usize = 0x2AEC;
+
+/// The scene pointer of a render view.
+pub const VIEW_SCENE: usize = 0x2B10;
+
+/// The active byte of a scene. The engine's stage gate runs a view's stages only while it is set.
+pub const SCENE_ACTIVE: usize = 0x08;
+
+/// The render view's vtable slot 10, `SetCamera`.
+pub const VIEW_SET_CAMERA_SLOT: usize = 10 * size_of::<usize>();
+
+/// The current level pointer of the level manager.
+pub const LEVEL_MANAGER_LEVEL: usize = 0x90;
+
+/// The environment object pointer of a level.
+pub const LEVEL_ENVIRONMENT: usize = 0x18;
+
+/// The scene pointer of a level.
+pub const LEVEL_SCENE: usize = 0x28;
+
+/// The pointer to the environment ids in a level's environment object.
+pub const LEVEL_ENVIRONMENT_IDS: usize = 0x08;
+
+/// The level atmosphere id in a level's environment ids.
+pub const LEVEL_ATMOSPHERE_ID: usize = 0x28;
+
+/// The level lighting id in a level's environment ids.
+pub const LEVEL_LIGHTING_ID: usize = 0x24;
+
+/// The list in the id pool that the id release takes.
+pub const ID_POOL_RELEASE_LIST: usize = 0xC600;
 
 const _: () = assert!(CONTROLLER_INVERSE_VIEW + 16 * size_of::<f32>() <= CONTROLLER_SIZE);
 const _: () =

@@ -25,13 +25,22 @@ pub struct Flag {
 }
 
 /// Every dev flag.
-pub const FLAGS: [Flag; 1] = [Flag {
-    name: "stereo.main_view_eye",
-    question: "Which eye position does the game's single render view use, for trials that run before \
-               a second view exists?",
-    added: Version { major: 0, minor: 1, patch: 0 },
-    expires: Version { major: 0, minor: 3, patch: 0 },
-}];
+pub const FLAGS: [Flag; 2] = [
+    Flag {
+        name: "stereo.main_view_eye",
+        question: "Which eye position does the game's single render view use, for trials that run \
+                   before a second view exists?",
+        added: Version { major: 0, minor: 1, patch: 0 },
+        expires: Version { major: 0, minor: 3, patch: 0 },
+    },
+    Flag {
+        name: "stereo.second_view",
+        question: "Does the engine draw a second render view beside the main view, each in one half of \
+                   the frame?",
+        added: Version { major: 0, minor: 1, patch: 0 },
+        expires: Version { major: 0, minor: 3, patch: 0 },
+    },
+];
 
 #[cfg(test)]
 mod tests {

@@ -1,8 +1,10 @@
-//! The hook thunk macro, hook installation and removal, and the render thread token and cell.
+//! The hook thunk macros, hook installation and removal, and the render and game thread tokens and the
+//! render thread cell.
 //!
-//! A mid hook's callback comes only from [`render_mid_hook!`]. The callback is `extern "C"`, since
-//! SafetyHook's mid hook stub has no unwind data, and it runs the handler inside `catch_unwind`. A
-//! caught panic latches the hook's feature off in the health registry, and the hook then does nothing.
+//! A mid hook's callback comes only from [`render_mid_hook!`] or [`game_mid_hook!`]. The callback is
+//! `extern "C"`, since SafetyHook's mid hook stub has no unwind data, and it runs the handler inside
+//! `catch_unwind`. A caught panic latches the hook's feature off in the health registry, and the hook
+//! then does nothing.
 
 use std::marker::PhantomData;
 use std::panic::{self, AssertUnwindSafe};
@@ -23,6 +25,22 @@ pub struct RenderThread {
 }
 
 impl RenderThread {
+    const fn new() -> Self {
+        Self { _not_send: PhantomData }
+    }
+}
+
+/// Proof that the code holding it runs on the engine's game thread, the thread that runs the game
+/// update.
+///
+/// Only the callback [`game_mid_hook!`] builds creates one, and it is neither `Send` nor `Sync`, so it
+/// never reaches another thread.
+#[derive(Debug)]
+pub struct GameThread {
+    _not_send: PhantomData<*const ()>,
+}
+
+impl GameThread {
     const fn new() -> Self {
         Self { _not_send: PhantomData }
     }
@@ -52,9 +70,7 @@ pub enum HookError {
 ///
 /// It creates a [`RenderThread`] token. Only a mid hook callback holds a [`Registers`], and
 /// [`install_mid_hook`]'s safety contract puts every hook whose callback calls this function on the
-/// render thread. It reads the context, skips the handler while `feature` is not running, and runs
-/// the handler inside `catch_unwind`. A panic in `read_context` or in the handler never leaves this
-/// function.
+/// render thread.
 #[doc(hidden)]
 pub fn run_render_mid_hook<'context, C: HookContext + 'context>(
     registers: &mut Registers,
@@ -62,12 +78,40 @@ pub fn run_render_mid_hook<'context, C: HookContext + 'context>(
     read_context: impl FnOnce() -> Option<&'context C>,
     handler: fn(&C, &RenderThread, &mut Registers),
 ) {
+    run_mid_hook(registers, feature, read_context, handler, &RenderThread::new());
+}
+
+/// The body of a callback that [`game_mid_hook!`] builds. Only that macro calls it.
+///
+/// It creates a [`GameThread`] token. Only a mid hook callback holds a [`Registers`], and
+/// [`install_mid_hook`]'s safety contract puts every hook whose callback calls this function on the
+/// game thread.
+#[doc(hidden)]
+pub fn run_game_mid_hook<'context, C: HookContext + 'context>(
+    registers: &mut Registers,
+    feature: Feature,
+    read_context: impl FnOnce() -> Option<&'context C>,
+    handler: fn(&C, &GameThread, &mut Registers),
+) {
+    run_mid_hook(registers, feature, read_context, handler, &GameThread::new());
+}
+
+/// Reads the context, skips the handler while `feature` is not running, and runs the handler with
+/// `thread` inside `catch_unwind`. A panic in `read_context` or in the handler never leaves this
+/// function.
+fn run_mid_hook<'context, C: HookContext + 'context, T>(
+    registers: &mut Registers,
+    feature: Feature,
+    read_context: impl FnOnce() -> Option<&'context C>,
+    handler: fn(&C, &T, &mut Registers),
+    thread: &T,
+) {
     let mut reached = None;
     let outcome = panic::catch_unwind(AssertUnwindSafe(|| {
         let Some(context) = read_context() else { return };
         reached = Some(context);
         if context.health().is_running(feature) {
-            handler(context, &RenderThread::new(), registers);
+            handler(context, thread, registers);
         }
     }));
     if outcome.is_err()
@@ -89,6 +133,19 @@ macro_rules! render_mid_hook {
     ($thunk:ident, $feature:expr, $context:expr, $handler:path $(,)?) => {
         extern "C" fn $thunk(registers: &mut $crate::Registers) {
             $crate::run_render_mid_hook(registers, $feature, || $context, $handler);
+        }
+    };
+}
+
+/// Defines `extern "C" fn $thunk(&mut Registers)`, a mid hook callback for a hook site that runs on
+/// the engine's game thread. Pass the thunk to [`install_mid_hook`].
+///
+/// It follows the rules of [`render_mid_hook!`], with `$handler(&C, &GameThread, &mut Registers)`.
+#[macro_export]
+macro_rules! game_mid_hook {
+    ($thunk:ident, $feature:expr, $context:expr, $handler:path $(,)?) => {
+        extern "C" fn $thunk(registers: &mut $crate::Registers) {
+            $crate::run_game_mid_hook(registers, $feature, || $context, $handler);
         }
     };
 }

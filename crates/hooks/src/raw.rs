@@ -36,7 +36,8 @@ impl Registers {
     }
 }
 
-/// A mid hook callback, as [`render_mid_hook!`](crate::render_mid_hook) defines it.
+/// A mid hook callback, as [`render_mid_hook!`](crate::render_mid_hook) and
+/// [`game_mid_hook!`](crate::game_mid_hook) define it.
 pub type MidThunk = extern "C" fn(registers: &mut Registers);
 
 /// An installed mid hook. Dropping it removes the hook and restores the target's bytes.
@@ -72,7 +73,10 @@ impl Drop for MidHook {
 /// no jump target of other code. When `thunk` passes its [`Registers`] to
 /// [`run_render_mid_hook`](crate::run_render_mid_hook), as every thunk from
 /// [`render_mid_hook!`](crate::render_mid_hook) does, only the engine's render thread runs `target`,
-/// since [`RenderCell`] relies on the [`RenderThread`] token that function creates.
+/// since [`RenderCell`] relies on the [`RenderThread`] token that function creates. When `thunk`
+/// passes them to [`run_game_mid_hook`](crate::run_game_mid_hook), as every thunk from
+/// [`game_mid_hook!`](crate::game_mid_hook) does, only the engine's game thread runs `target`, since
+/// the game functions the core calls with the [`GameThread`](crate::GameThread) token rely on it.
 ///
 /// # Errors
 ///

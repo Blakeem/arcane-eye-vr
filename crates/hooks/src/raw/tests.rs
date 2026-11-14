@@ -7,7 +7,7 @@ use game_bindings::state::{core_context, store_core_context};
 use game_mem::GameAddr;
 
 use super::{Registers, RenderCell, install_mid_hook};
-use crate::{HookContext, RenderThread};
+use crate::{GameThread, HookContext, RenderThread};
 
 type Target = extern "C" fn(u64, u64) -> u64;
 
@@ -16,6 +16,7 @@ type Target = extern "C" fn(u64, u64) -> u64;
 struct TestContext {
     health: Health,
     calls: RenderCell<u32>,
+    game_calls: RenderCell<u32>,
     first_argument: RenderCell<usize>,
 }
 
@@ -49,8 +50,25 @@ fn record_call_then_panic(context: &TestContext, thread: &RenderThread, register
     panic!("the handler panicked");
 }
 
+#[inline(never)]
+extern "C" fn difference(a: u64, b: u64) -> u64 {
+    a.wrapping_sub(b)
+}
+
+/// Counts a game thread call and keeps its `rcx`, then panics when `rcx` is [`PANIC_ARGUMENT`].
+fn record_game_call(context: &TestContext, _thread: &GameThread, registers: &mut Registers) {
+    let cells = RenderThread::new();
+    context.game_calls.with(&cells, |calls| *calls = calls.saturating_add(1));
+    context.first_argument.with(&cells, |argument| *argument = registers.rcx());
+    assert_ne!(registers.rcx(), PANIC_ARGUMENT, "the game thread handler panicked");
+}
+
+/// The first argument that makes the game thread handler panic.
+const PANIC_ARGUMENT: usize = 99;
+
 crate::render_mid_hook!(recording_thunk, Feature::PresentHook, context(), record_call);
 crate::render_mid_hook!(panicking_thunk, Feature::PresentHook, context(), record_call_then_panic);
+crate::game_mid_hook!(game_thunk, Feature::EyeView, context(), record_game_call);
 
 fn address(target: Target) -> GameAddr {
     GameAddr::new((target as *const ()).expose_provenance())
@@ -65,7 +83,11 @@ fn calls(context: &TestContext) -> u32 {
     context.calls.with(&RenderThread::new(), |calls| *calls).expect("the cell is free")
 }
 
-/// One test runs both hooks in turn, since they share the process's one core context slot and the
+fn game_calls(context: &TestContext) -> u32 {
+    context.game_calls.with(&RenderThread::new(), |calls| *calls).expect("the cell is free")
+}
+
+/// One test runs every hook in turn, since they share the process's one core context slot and a
 /// panic latches its feature off for the rest of the process.
 #[test]
 fn mid_hook_runs_its_handler_and_a_caught_panic_latches_the_feature_off() {
@@ -95,6 +117,27 @@ fn mid_hook_runs_its_handler_and_a_caught_panic_latches_the_feature_off() {
     assert_eq!(call(exclusive_or, 6, 3), 5);
     assert_eq!(calls(context), 2, "a failed feature's hook runs no handler");
     drop(panicking);
+
+    game_hook_runs_its_handler_and_a_caught_panic_latches_its_feature_off(context);
+}
+
+/// The game thread hook's part of the test above, with a feature of its own.
+fn game_hook_runs_its_handler_and_a_caught_panic_latches_its_feature_off(context: &TestContext) {
+    // SAFETY: `difference` is a function of this binary, and the hook sits on its first instruction.
+    let game = unsafe { install_mid_hook(address(difference), game_thunk) }.expect("install");
+    assert_eq!(call(difference, 9, 4), 5, "a pending feature's game hook runs no handler");
+    assert_eq!(game_calls(context), 0);
+    context.health.install_ok(Feature::EyeView);
+    assert_eq!(call(difference, 9, 4), 5, "the game hook leaves the result unchanged");
+    assert_eq!(game_calls(context), 1);
+    let argument = context.first_argument.with(&RenderThread::new(), |argument| *argument);
+    assert_eq!(argument, Some(9), "the game thread handler sees the target's rcx");
+    assert_eq!(call(difference, 99, 4), 95, "the target runs after a caught panic");
+    assert_eq!(game_calls(context), 2);
+    assert_eq!(context.health.state(Feature::EyeView), FeatureState::Failed);
+    assert_eq!(call(difference, 9, 4), 5);
+    assert_eq!(game_calls(context), 2, "a failed feature's game hook runs no handler");
+    drop(game);
 }
 
 #[test]

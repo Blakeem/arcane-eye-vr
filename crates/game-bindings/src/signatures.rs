@@ -74,9 +74,186 @@ pub const GET_WORLD_TRANSLATE: Signature = Signature {
     rip: None,
 };
 
+/// The render pipeline's main frame getter. It takes the pipeline in `rcx` and returns its main
+/// `RenderFrame`, or 0 when the pipeline's main frame index is -1. It only reads. From bg3-vr.
+pub const PIPELINE_MAIN_FRAME: Signature = Signature {
+    name: "pipeline_main_frame",
+    pattern: "4C 63 81 98 00 00 00 41 83 F8 FF 75 ?? 33 C0",
+    offset: 0,
+    rip: None,
+};
+
+/// `CreatePlayerView` (player manager vtable slot 1). It takes a `RenderFrame` in `rdx`, never reads
+/// `rcx`, builds a game render view with Scale (0, 1), adds it to the frame's view list and returns
+/// it. From bg3-vr, with the `mov edx,10h` opcode byte as a wildcard, since the spell check reads its
+/// hex as a word.
+pub const VIEW_CREATE_PLAYER: Signature = Signature {
+    name: "view_create_player",
+    pattern: "48 89 5C 24 08 48 89 74 24 18 57 48 81 EC D0 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 \
+              89 84 24 C0 00 00 00 48 8B F2 E8 ?? ?? ?? ?? 48 8B F8 ?? 10 00 00 00 B9 90 2D 00 00",
+    offset: 0,
+    rip: None,
+};
+
+/// The game pipeline setup (pipeline vtable slot 88). It takes the pipeline in `rcx` and a render
+/// view in `rdx`, and builds the view's stages. From bg3-vr.
+pub const GAME_PIPELINE_SETUP: Signature = Signature {
+    name: "game_pipeline_setup",
+    pattern: "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8B EC 48 83 EC 68 4C 8B EA",
+    offset: 0,
+    rip: None,
+};
+
+/// The game update (pipeline vtable slot 81). It runs on the game thread once per frame with the
+/// pipeline in `rcx`. The first instruction is `mov [rsp+18h],rbx`. Derived from a disassembly.
+pub const GAME_UPDATE: Signature = Signature {
+    name: "game_update",
+    pattern: "48 89 5C 24 18 55 56 57 41 56 41 57 48 83 EC 50 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 \
+              24 40 48 8B DA 48 8B F1 48 8B 89 38 01 00 00 48 85 C9 74",
+    offset: 0,
+    rip: None,
+};
+
+/// A render view's scene setter. It takes the view in `rcx` and a scene in `rdx`, and returns at
+/// once when the view holds that scene. From bg3-vr.
+pub const VIEW_SET_SCENE: Signature = Signature {
+    name: "view_set_scene",
+    pattern: "48 89 5C 24 18 48 89 54 24 10 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 D9 48 81 EC \
+              F0 00 00 00 4C 8B F1",
+    offset: 0,
+    rip: None,
+};
+
+/// The level atmosphere attach. It takes the view, a level environment id pointer, an `i32` request
+/// id pointer, `0.0` in `xmm3` and a flag byte on the stack, and returns a byte. The match is its
+/// call in the game's set-player-view-scene, followed through the `call`'s operand, since the
+/// lighting attach holds the same bytes. Derived from a disassembly.
+pub const VIEW_ATTACH_LEVEL_ATMOSPHERE: Signature = Signature {
+    name: "view_attach_level_atmosphere",
+    pattern: "48 83 C2 28 C6 44 24 20 00 0F 57 DB 4C 8D 44 24 78 48 8B CB E8 ?? ?? ?? ??",
+    offset: 20,
+    rip: Some(Rip { disp_offset: 1, instr_len: 5 }),
+};
+
+/// The level lighting attach, in the shape of [`VIEW_ATTACH_LEVEL_ATMOSPHERE`]. Derived from a
+/// disassembly.
+pub const VIEW_ATTACH_LEVEL_LIGHTING: Signature = Signature {
+    name: "view_attach_level_lighting",
+    pattern: "48 83 C2 24 C6 44 24 20 00 0F 57 DB 4C 8D 44 24 78 48 8B CB E8 ?? ?? ?? ??",
+    offset: 20,
+    rip: Some(Rip { disp_offset: 1, instr_len: 5 }),
+};
+
+/// The id pool release. It takes a pool list in `rcx` and a pointer to the `i32` id in `rdx`. From
+/// bg3-vr.
+pub const ID_POOL_RELEASE: Signature = Signature {
+    name: "id_pool_release",
+    pattern: "40 53 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 38 48 8B DA",
+    offset: 0,
+    rip: None,
+};
+
+/// A render view's atmosphere setter, in the shape of [`VIEW_ATTACH_LEVEL_ATMOSPHERE`] with an
+/// atmosphere record in `rdx`. From bg3-vr.
+pub const VIEW_SET_ATMOSPHERE: Signature = Signature {
+    name: "view_set_atmosphere",
+    pattern: "48 8B C4 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 68 A9 48 81 EC A8 00 00 00 0F 29 70 \
+              A8 0F 29 78 98 44 0F 29 40 88",
+    offset: 0,
+    rip: None,
+};
+
+/// A render view's lighting setter, in the shape of [`VIEW_SET_ATMOSPHERE`] with a lighting record.
+/// From bg3-vr.
+pub const VIEW_SET_LIGHTING: Signature = Signature {
+    name: "view_set_lighting",
+    pattern: "48 89 5C 24 20 55 57 41 56 48 81 EC 90 00 00 00",
+    offset: 0,
+    rip: None,
+};
+
+/// A render view's viewport setter. It takes the view in `rcx` and pointers to the Scale and the
+/// Offset, each two `f32`, in `rdx` and `r8`. From bg3-vr.
+pub const VIEW_SET_VIEWPORT: Signature = Signature {
+    name: "view_set_viewport",
+    pattern: "40 53 48 83 EC 20 F2 0F 10 02 0F 57 E4",
+    offset: 0,
+    rip: None,
+};
+
+/// The global that holds the render pipeline, from a `mov rcx,[rip+disp32]` that loads it. Derived
+/// from a disassembly.
+pub const G_PIPELINE: Signature = Signature {
+    name: "g_pipeline",
+    pattern: "48 8B 0D ?? ?? ?? ?? 4C 63 81 98 00 00 00 33 FF 41 83 F8 FF",
+    offset: 0,
+    rip: Some(Rip { disp_offset: 3, instr_len: 7 }),
+};
+
+/// The global that holds the player manager, from a `mov rcx,[rip+disp32]` that loads it. Derived
+/// from a disassembly.
+pub const G_PLAYER_MANAGER: Signature = Signature {
+    name: "g_player_manager",
+    pattern: "48 8B 0D ?? ?? ?? ?? 48 C7 87 98 02 00 00 00 00 00 00 E8 ?? ?? ?? ?? 48 8B 5C 24 30 B0 \
+              01",
+    offset: 0,
+    rip: Some(Rip { disp_offset: 3, instr_len: 7 }),
+};
+
+/// The global that holds the level manager, from the `mov rcx,[rip+disp32]` in the game's
+/// set-player-view-scene. Derived from a disassembly.
+pub const G_LEVEL_MANAGER: Signature = Signature {
+    name: "g_level_manager",
+    pattern: "C7 44 24 78 FF FF FF FF 48 8B 0D ?? ?? ?? ?? 48 8B 91 90 00 00 00 48 8B 42 18 48 8B 50 \
+              08 48 83 C2 28",
+    offset: 8,
+    rip: Some(Rip { disp_offset: 3, instr_len: 7 }),
+};
+
+/// The global that holds the id pool, from the `mov rcx,[rip+disp32]` before the id release in the
+/// game's set-player-view-scene. Derived from a disassembly.
+pub const G_ID_POOL: Signature = Signature {
+    name: "g_id_pool",
+    pattern: "8B 44 24 78 83 F8 FF 74 1D 89 44 24 78 48 8B 0D ?? ?? ?? ?? 48 81 C1 00 C6 00 00 48 8D \
+              54 24 78 E8 ?? ?? ?? ?? 90 C7 44 24 78 FF FF FF FF 48 8B 05 ?? ?? ?? ?? 48 8B 88 90 00 \
+              00 00",
+    offset: 13,
+    rip: Some(Rip { disp_offset: 3, instr_len: 7 }),
+};
+
+/// The game render view's vtable, from the `lea rax,[rip+disp32]` in the view's constructor that
+/// stores it. Derived from a disassembly.
+pub const VT_GAME_RENDER_VIEW: Signature = Signature {
+    name: "vt_game_render_view",
+    pattern: "F3 0F 11 4C 24 20 E8 ?? ?? ?? ?? 90 48 8D 05 ?? ?? ?? ?? 48 89 03 48 8D 05 ?? ?? ?? ?? \
+              48 89 83 80 22 00 00",
+    offset: 12,
+    rip: Some(Rip { disp_offset: 3, instr_len: 7 }),
+};
+
 /// Every signature the mod resolves at start-up and `sigcheck` checks against an exe.
-pub const SIGNATURES: &[Signature] =
-    &[DX11_PRESENT_CALL, RENDER_VIEW_BEGIN, RENDER_VIEW_CAMERA_BUILT, GET_WORLD_TRANSLATE];
+pub const SIGNATURES: &[Signature] = &[
+    DX11_PRESENT_CALL,
+    RENDER_VIEW_BEGIN,
+    RENDER_VIEW_CAMERA_BUILT,
+    GET_WORLD_TRANSLATE,
+    PIPELINE_MAIN_FRAME,
+    VIEW_CREATE_PLAYER,
+    GAME_PIPELINE_SETUP,
+    GAME_UPDATE,
+    VIEW_SET_SCENE,
+    VIEW_ATTACH_LEVEL_ATMOSPHERE,
+    VIEW_ATTACH_LEVEL_LIGHTING,
+    ID_POOL_RELEASE,
+    VIEW_SET_ATMOSPHERE,
+    VIEW_SET_LIGHTING,
+    VIEW_SET_VIEWPORT,
+    G_PIPELINE,
+    G_PLAYER_MANAGER,
+    G_LEVEL_MANAGER,
+    G_ID_POOL,
+    VT_GAME_RENDER_VIEW,
+];
 
 /// Why a signature yields no address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -174,116 +351,4 @@ fn rva_at(base: Rva, delta: i64) -> Result<Rva, SignatureError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{Rip, SIGNATURES, Signature, SignatureError};
-    use crate::pattern::Pattern;
-    use crate::pe::{CodeSection, Rva};
-
-    const BASE: Rva = Rva(0x1000);
-
-    fn signature(pattern: &'static str, offset: i32, rip: Option<Rip>) -> Signature {
-        Signature { name: "test", pattern, offset, rip }
-    }
-
-    fn resolve_in(signature: &Signature, bytes: &[u8]) -> Result<Rva, SignatureError> {
-        signature.resolve(&[CodeSection { rva: BASE, bytes }])
-    }
-
-    #[test]
-    fn one_match_yields_its_rva() {
-        let bytes = [0, 0, 0xAA, 0xBB, 0xCC, 0];
-        assert_eq!(resolve_in(&signature("AA ?? CC", 0, None), &bytes), Ok(Rva(0x1002)));
-    }
-
-    #[test]
-    fn zero_matches_yield_no_match() {
-        let bytes = [0, 0xAA, 0xBB, 0];
-        assert_eq!(resolve_in(&signature("AA CC", 0, None), &bytes), Err(SignatureError::NoMatch));
-    }
-
-    #[test]
-    fn two_matches_yield_ambiguous_with_the_count() {
-        let bytes = [0xAA, 0xBB, 0xAA, 0xBB];
-        let result = resolve_in(&signature("AA BB", 0, None), &bytes);
-        assert_eq!(result, Err(SignatureError::Ambiguous { matches: 2 }));
-    }
-
-    #[test]
-    fn matches_in_two_sections_are_ambiguous() {
-        let first = CodeSection { rva: Rva(0x1000), bytes: &[0xAA, 0xBB] };
-        let second = CodeSection { rva: Rva(0x5000), bytes: &[0, 0xAA, 0xBB] };
-        let result = signature("AA BB", 0, None).resolve(&[first, second]);
-        assert_eq!(result, Err(SignatureError::Ambiguous { matches: 2 }));
-    }
-
-    #[test]
-    fn match_in_a_later_section_counts_from_that_section() {
-        let first = CodeSection { rva: Rva(0x1000), bytes: &[0, 0] };
-        let second = CodeSection { rva: Rva(0x5000), bytes: &[0, 0, 0, 0xAA, 0xBB] };
-        let result = signature("AA BB", 0, None).resolve(&[first, second]);
-        assert_eq!(result, Ok(Rva(0x5003)));
-    }
-
-    #[test]
-    fn offset_moves_the_address_both_ways() {
-        let bytes = [0, 0, 0, 0, 0xAA, 0xBB, 0, 0];
-        assert_eq!(resolve_in(&signature("AA BB", 3, None), &bytes), Ok(Rva(0x1007)));
-        assert_eq!(resolve_in(&signature("AA BB", -4, None), &bytes), Ok(Rva(0x1000)));
-    }
-
-    #[test]
-    fn offset_below_rva_zero_is_out_of_range() {
-        let section = CodeSection { rva: Rva(0), bytes: &[0xAA, 0xBB] };
-        let result = signature("AA BB", -1, None).resolve(&[section]);
-        assert!(matches!(result, Err(SignatureError::AddressOutOfRange(_))));
-    }
-
-    #[test]
-    fn rip_follows_a_positive_and_a_negative_displacement() {
-        // mov rax,[rip+disp32] at offset 2: 48 8B 05 <disp32>, 7 bytes long.
-        let rip = Some(Rip { disp_offset: 3, instr_len: 7 });
-        let forward = [0, 0, 0x48, 0x8B, 0x05, 0x40, 0, 0, 0, 0x90];
-        assert_eq!(resolve_in(&signature("48 8B 05", 0, rip), &forward), Ok(Rva(0x1049)));
-        let backward = [0, 0, 0x48, 0x8B, 0x05, 0xF0, 0xFF, 0xFF, 0xFF, 0x90];
-        assert_eq!(resolve_in(&signature("48 8B 05", 0, rip), &backward), Ok(Rva(0x0FF9)));
-    }
-
-    #[test]
-    fn rip_applies_after_the_offset() {
-        // The pattern matches the byte before the call: E8 <rel32> at offset 1, 5 bytes long.
-        let rip = Some(Rip { disp_offset: 1, instr_len: 5 });
-        let bytes = [0xCC, 0xE8, 0x10, 0, 0, 0, 0x90];
-        assert_eq!(resolve_in(&signature("CC E8", 1, rip), &bytes), Ok(Rva(0x1016)));
-    }
-
-    #[test]
-    fn rip_displacement_past_the_section_end_is_rejected() {
-        let rip = Some(Rip { disp_offset: 3, instr_len: 7 });
-        let bytes = [0, 0x48, 0x8B, 0x05, 0x40, 0];
-        let result = resolve_in(&signature("48 8B 05", 0, rip), &bytes);
-        assert_eq!(result, Err(SignatureError::DisplacementOutOfSection { rva: Rva(0x1004) }));
-    }
-
-    #[test]
-    fn malformed_pattern_text_is_a_pattern_error() {
-        let result = resolve_in(&signature("AA X", 0, None), &[0xAA]);
-        assert!(matches!(result, Err(SignatureError::Pattern(_))));
-    }
-
-    #[test]
-    fn every_table_entry_parses_and_has_a_unique_name() {
-        for entry in SIGNATURES {
-            assert_eq!(Pattern::parse(entry.pattern).err(), None, "{} parses", entry.name);
-            let named = SIGNATURES.iter().filter(|other| other.name == entry.name).count();
-            assert_eq!(named, 1, "{} is unique", entry.name);
-            if let Some(rip) = entry.rip {
-                let disp_end = rip.disp_offset.checked_add(4);
-                assert!(
-                    disp_end.is_some_and(|end| end <= rip.instr_len),
-                    "{} rip fits",
-                    entry.name
-                );
-            }
-        }
-    }
-}
+mod tests;

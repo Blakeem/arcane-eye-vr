@@ -1,5 +1,6 @@
-//! The health registry: the run state of each feature. An install failure or a caught panic switches
-//! a feature off for the life of the loaded DLL, and the game keeps rendering without it.
+//! The health registry: the run state of each feature. An install failure, a caught panic or a failed
+//! check switches a feature off for the life of the loaded DLL, and the game keeps rendering without
+//! it.
 //!
 //! The registry is a field of the core context. Hook entries read it every frame, so each state is an
 //! atomic that a reader loads without a lock.
@@ -22,6 +23,9 @@ pub enum Feature {
     ViewCamera,
     /// The mid hook at a render view's begin-recording, which renders the main view from one eye.
     EyeCamera,
+    /// The mid hook at the game update, which with the Present call-site hook creates a second render
+    /// view beside the main view.
+    EyeView,
 }
 
 impl Feature {
@@ -31,6 +35,7 @@ impl Feature {
             Self::PresentHook => "present-hook",
             Self::ViewCamera => "view-camera",
             Self::EyeCamera => "eye-camera",
+            Self::EyeView => "eye-view",
         }
     }
 }
@@ -45,7 +50,7 @@ pub enum FeatureState {
     Active = 1,
     /// Its install failed. Terminal.
     Unavailable = 2,
-    /// A panic in its code switched it off. Terminal.
+    /// A panic in its code, or a check its code found failed, switched it off. Terminal.
     Failed = 3,
 }
 
@@ -76,6 +81,7 @@ enum Event {
     InstallOk,
     InstallFailed,
     PanicCaught,
+    CheckFailed,
 }
 
 impl Event {
@@ -84,6 +90,7 @@ impl Event {
             Self::InstallOk => "install_ok",
             Self::InstallFailed => "install_failed",
             Self::PanicCaught => "panic_caught",
+            Self::CheckFailed => "check_failed",
         }
     }
 }
@@ -93,7 +100,7 @@ const fn next(state: FeatureState, event: Event) -> Option<FeatureState> {
     match (state, event) {
         (FeatureState::Pending, Event::InstallOk) => Some(FeatureState::Active),
         (FeatureState::Pending, Event::InstallFailed) => Some(FeatureState::Unavailable),
-        (FeatureState::Pending | FeatureState::Active, Event::PanicCaught) => {
+        (FeatureState::Pending | FeatureState::Active, Event::PanicCaught | Event::CheckFailed) => {
             Some(FeatureState::Failed)
         }
         (FeatureState::Active, Event::InstallOk | Event::InstallFailed)
@@ -107,6 +114,7 @@ pub struct Health {
     present_hook: AtomicU8,
     view_camera: AtomicU8,
     eye_camera: AtomicU8,
+    eye_view: AtomicU8,
 }
 
 impl Health {
@@ -116,6 +124,7 @@ impl Health {
             present_hook: AtomicU8::new(FeatureState::Pending as u8),
             view_camera: AtomicU8::new(FeatureState::Pending as u8),
             eye_camera: AtomicU8::new(FeatureState::Pending as u8),
+            eye_view: AtomicU8::new(FeatureState::Pending as u8),
         }
     }
 
@@ -143,11 +152,18 @@ impl Health {
         self.apply(feature, Event::PanicCaught);
     }
 
+    /// A check in the feature's code failed in a way that a retry cannot mend, so its code never runs
+    /// again. The caller logs which check failed.
+    pub fn check_failed(&self, feature: Feature) {
+        self.apply(feature, Event::CheckFailed);
+    }
+
     const fn cell(&self, feature: Feature) -> &AtomicU8 {
         match feature {
             Feature::PresentHook => &self.present_hook,
             Feature::ViewCamera => &self.view_camera,
             Feature::EyeCamera => &self.eye_camera,
+            Feature::EyeView => &self.eye_view,
         }
     }
 
@@ -188,13 +204,17 @@ mod tests {
             (FeatureState::Pending, Event::InstallOk, Some(FeatureState::Active)),
             (FeatureState::Pending, Event::InstallFailed, Some(FeatureState::Unavailable)),
             (FeatureState::Pending, Event::PanicCaught, Some(FeatureState::Failed)),
+            (FeatureState::Pending, Event::CheckFailed, Some(FeatureState::Failed)),
             (FeatureState::Active, Event::InstallOk, None),
             (FeatureState::Active, Event::InstallFailed, None),
             (FeatureState::Active, Event::PanicCaught, Some(FeatureState::Failed)),
+            (FeatureState::Active, Event::CheckFailed, Some(FeatureState::Failed)),
             (FeatureState::Unavailable, Event::InstallOk, None),
             (FeatureState::Unavailable, Event::PanicCaught, None),
+            (FeatureState::Unavailable, Event::CheckFailed, None),
             (FeatureState::Failed, Event::InstallOk, None),
             (FeatureState::Failed, Event::PanicCaught, None),
+            (FeatureState::Failed, Event::CheckFailed, None),
         ];
         for (state, event, expected) in cases {
             assert_eq!(next(state, event), expected, "{state:?} on {event:?}");
@@ -228,6 +248,19 @@ mod tests {
         assert_eq!(Feature::ViewCamera.as_str(), "view-camera");
         assert_eq!(health.state(Feature::EyeCamera), FeatureState::Pending);
         assert_eq!(Feature::EyeCamera.as_str(), "eye-camera");
+        assert_eq!(health.state(Feature::EyeView), FeatureState::Pending);
+        assert_eq!(Feature::EyeView.as_str(), "eye-view");
+    }
+
+    #[test]
+    fn a_failed_check_latches_an_active_feature_off() {
+        let health = Health::new();
+        health.install_ok(Feature::EyeView);
+        health.check_failed(Feature::EyeView);
+        assert_eq!(health.state(Feature::EyeView), FeatureState::Failed);
+        health.install_ok(Feature::EyeView);
+        assert!(!health.is_running(Feature::EyeView), "Failed is terminal");
+        assert!(!health.is_running(Feature::EyeCamera), "only eye-view moved");
     }
 
     #[test]
