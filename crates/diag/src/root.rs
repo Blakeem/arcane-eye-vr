@@ -40,8 +40,12 @@ impl Root {
     ///
     /// Returns [`RootError::LocalAppData`] when the default root folder applies and Windows cannot
     /// resolve the local app data folder.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the root folder variable names the folder that holds the settings files"
+    )]
     pub fn find() -> Result<Self, RootError> {
-        match choose(home_value(env::vars_os())) {
+        match choose(env::var_os(HOME_VARIABLE)) {
             Choice::Given(path) => Ok(Self { path, ignored: None }),
             Choice::Default { ignored } => {
                 Ok(Self { path: raw::local_app_data()?.join(DEFAULT_FOLDER), ignored })
@@ -95,14 +99,6 @@ fn choose(value: Option<OsString>) -> Choice {
     }
 }
 
-/// The root folder variable's value among `variables`. Windows matches a variable name in any case.
-fn home_value(variables: impl IntoIterator<Item = (OsString, OsString)>) -> Option<OsString> {
-    // clippy bans `env::var_os` so that no setting comes from the environment. This variable is no
-    // setting: it names the folder that holds the settings files.
-    let mut variables = variables.into_iter();
-    variables.find(|(name, _)| name.eq_ignore_ascii_case(HOME_VARIABLE)).map(|(_, value)| value)
-}
-
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
@@ -111,7 +107,7 @@ mod tests {
 
     use tracing::dispatcher;
 
-    use super::{Choice, Root, choose, home_value};
+    use super::{Choice, Root, choose};
     use crate::logging::{self, LogName};
     use crate::test_dir;
 
@@ -141,14 +137,6 @@ mod tests {
         for relative in [r"trial-results\home", r"\home", "C:home", " "] {
             assert_eq!(chosen(Some(relative)), ignoring(relative), "{relative}");
         }
-    }
-
-    #[test]
-    fn the_variable_name_matches_in_any_case() {
-        let variable = |name: &str, value: &str| (OsString::from(name), OsString::from(value));
-        let lower = [variable("PATH", r"C:\bin"), variable("arcane_eye_vr_home", r"D:\home")];
-        assert_eq!(home_value(lower), Some(OsString::from(r"D:\home")));
-        assert_eq!(home_value([variable("ARCANE_EYE_VR_HOME_X", r"D:\home")]), None);
     }
 
     #[test]

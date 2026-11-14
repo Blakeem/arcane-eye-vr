@@ -3,6 +3,7 @@ crates/diag/src/alloc_guard.rs | expect(clippy::disallowed_types, reason = "the 
 crates/diag/src/health.rs | expect(clippy::disallowed_types, reason = "the health registry's feature states are atomics that hook entries read every frame")
 crates/diag/src/raw.rs | expect(unsafe_code, reason = "diag's Windows calls and the GlobalAlloc impl are unsafe")
 crates/diag/src/ring.rs | expect(clippy::disallowed_types, reason = "the log ring's slot protocol is built on atomics")
+crates/diag/src/root.rs | expect(clippy::disallowed_methods, reason = "the root folder variable names the folder that holds the settings files")
 crates/game-bindings/src/state.rs | expect(clippy::disallowed_types, reason = "the core context slot is the core's one global, a OnceLock")
 crates/game-mem/src/raw.rs | expect(unsafe_code, reason = "the guarded copy and the memory queries are foreign calls")
 crates/gfx/src/raw.rs | expect(unsafe_code, reason = "the viewer header mapping and the D3D11 and DXGI calls are Windows calls")
