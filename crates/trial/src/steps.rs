@@ -299,8 +299,8 @@ fn start(settings: &Settings, folder: &Path, game: &mut impl Game) -> Result<(),
 }
 
 /// Runs the steps from the first Present to the capture, the enter-level step when the scene is the
-/// level and the burst when the settings ask for one, and stops at the first that fails. Each step
-/// needs the game still running at its end.
+/// level and the perf step and the burst when the settings ask for one, and stops at the first that
+/// fails. Each step needs the game still running at its end.
 fn run_in_game(
     report: &mut Report,
     settings: &Settings,
@@ -325,9 +325,12 @@ fn run_in_game(
     if !report.record(Step::WarmUp, warm_up) {
         return;
     }
-    let perf = while_running(game, Step::Perf, |game| perf_step(game, settings.perf_lines, folder));
-    if !report.record(Step::Perf, perf) {
-        return;
+    if settings.perf_lines > 0 {
+        let lines = settings.perf_lines;
+        let perf = while_running(game, Step::Perf, |game| perf_step(game, lines, folder));
+        if !report.record(Step::Perf, perf) {
+            return;
+        }
     }
     let capture =
         while_running(game, Step::Capture, |_game| capture_step(frames, settings.captures, folder));

@@ -48,6 +48,26 @@ fn run_trial(
     (report, String::from_utf8(printed).expect("UTF-8 output"), result)
 }
 
+#[test]
+fn a_trial_of_0_perf_lines_and_0_captures_runs_no_perf_step_and_writes_no_frame() {
+    let dir = test_dir("no-perf-no-frames");
+    let folder = dir.path();
+    let mut options = options(folder);
+    options.settings.perf_lines = 0;
+    options.settings.captures = 0;
+    let mut game = StandInGame::failing_at(None);
+    let mut frames = StandInFrames::new(false);
+    trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
+    let result = fs::read_to_string(folder.join("result.txt")).expect("read result.txt");
+    let expected = "check: passed\ntoken: passed\nstart: passed\nfirst-present: passed\n\
+                    warm-up: passed\ncapture: passed\nclose: passed\ncopy-log: passed\n\
+                    outcome: passed\n";
+    assert_eq!(result, expected);
+    assert!(!game.ran.contains(&Step::Perf), "{:?}", game.ran);
+    assert!(!folder.join("perf.txt").exists() && !folder.join("frame-0001.png").exists());
+    assert!(frames.beating, "the capture step starts the heartbeat a burst needs");
+}
+
 /// The lines of `result.txt` for a trial that failed after the start.
 fn failed_after_start(middle: &str) -> String {
     format!(

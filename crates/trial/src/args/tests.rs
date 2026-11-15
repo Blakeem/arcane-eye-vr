@@ -166,16 +166,19 @@ fn a_number_outside_its_range_is_an_error_that_names_the_range() {
         Err(ArgsError::OutOfRange { option, value: value.to_owned(), min, max })
     };
     let with = |option: &str, value: &str| parse(args(&["--name", "a", option, value]));
-    assert_eq!(with("--captures", "0"), out_of_range("--captures", "0", 1, 9999));
-    assert_eq!(with("--captures", "10000"), out_of_range("--captures", "10000", 1, 9999));
-    assert_eq!(with("--perf-lines", "0"), out_of_range("--perf-lines", "0", 1, 4_294_967_295));
-    assert_eq!(with("--perf-lines", "two"), out_of_range("--perf-lines", "two", 1, 4_294_967_295));
+    assert_eq!(with("--captures", "-1"), out_of_range("--captures", "-1", 0, 9999));
+    assert_eq!(with("--captures", "10000"), out_of_range("--captures", "10000", 0, 9999));
+    assert_eq!(with("--perf-lines", "two"), out_of_range("--perf-lines", "two", 0, 4_294_967_295));
+    let no_captures = with("--captures", "0").expect("no captures").settings;
+    assert_eq!(no_captures.captures, 0);
+    let no_perf = with("--perf-lines", "0").expect("no perf step").settings;
+    assert_eq!(no_perf.perf_lines, 0);
     let max = u64::MAX;
     assert_eq!(with("--warmup-secs", "-1"), out_of_range("--warmup-secs", "-1", 0, max));
     assert_eq!(with("--warmup-secs", "1.5"), out_of_range("--warmup-secs", "1.5", 0, max));
     let message =
-        ArgsError::OutOfRange { option: "--captures", value: "0".to_owned(), min: 1, max: 9999 };
-    assert_eq!(message.to_string(), "--captures takes a whole number from 1 to 9999, not \"0\"");
+        ArgsError::OutOfRange { option: "--captures", value: "-1".to_owned(), min: 0, max: 9999 };
+    assert_eq!(message.to_string(), "--captures takes a whole number from 0 to 9999, not \"-1\"");
 }
 
 #[test]

@@ -73,7 +73,9 @@ pub(crate) struct Settings {
     /// The name of the save the level scene loads, or `None` for the latest save.
     pub(crate) save: Option<String>,
     pub(crate) warmup: Duration,
+    /// The count of perf summary lines the perf window holds, where 0 runs no perf step.
     pub(crate) perf_lines: u32,
+    /// The count of frames the capture step writes, where 0 writes none.
     pub(crate) captures: u32,
     pub(crate) burst: Burst,
     pub(crate) out: PathBuf,
@@ -238,8 +240,8 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options,
             Flag::Scene => settings.scene = scene(&text(&value))?,
             Flag::Save => settings.save = Some(text(&value)),
             Flag::WarmupSecs => settings.warmup = seconds(flag, &value)?,
-            Flag::PerfLines => settings.perf_lines = count(flag, &value, 1..=u32::MAX)?,
-            Flag::Captures => settings.captures = count(flag, &value, 1..=MAX_CAPTURES)?,
+            Flag::PerfLines => settings.perf_lines = count(flag, &value, 0..=u32::MAX)?,
+            Flag::Captures => settings.captures = count(flag, &value, 0..=MAX_CAPTURES)?,
             Flag::BurstFrames => {
                 settings.burst.frames = count(flag, &value, 0..=MAX_BURST_FRAMES)?;
             }
