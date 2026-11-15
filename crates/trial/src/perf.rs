@@ -10,8 +10,6 @@
 //! summary line it counts, the camera lines since the summary line before it, in log order, or none
 //! when the core logged none.
 
-use std::fs::{self, File};
-use std::io::{self, Read as _, Seek as _, SeekFrom};
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -19,6 +17,8 @@ use std::time::{Duration, Instant};
 
 use ipc_layout::camera_line::{self, CameraLine, CameraLineError};
 use ipc_layout::perf_line::{self, PerfLineError, PerfSummary};
+
+use crate::log_tail::{LogTail, TailError};
 
 /// The wait between two reads of the session log. The core writes one summary line per 600 frames.
 const POLL: Duration = Duration::from_millis(250);
@@ -35,8 +35,8 @@ const SETTLED_MAX_PER_P50: u32 = 4;
 /// Why the perf window yields no summary lines.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PerfError {
-    #[error("could not read the session log {}", path.display())]
-    Read { path: PathBuf, source: io::Error },
+    #[error(transparent)]
+    Tail(#[from] TailError),
     #[error("the session log {} holds a perf summary line the parser rejects", path.display())]
     Line { path: PathBuf, source: PerfLineError },
     #[error("the session log {} holds a camera line the parser rejects", path.display())]
@@ -54,68 +54,28 @@ pub(crate) enum PerfError {
     NotSettled { path: PathBuf, dropped: u32, timeout: Duration },
 }
 
-/// The end of a session log that a reader follows: the byte position read up to, and the bytes of a
-/// line the core has not finished.
-pub(crate) struct LogTail {
-    path: PathBuf,
-    position: u64,
-    partial: Vec<u8>,
+/// The perf summary and camera lines `tail` finished since its last read, in log order.
+fn read_lines(tail: &mut LogTail) -> Result<Vec<WindowLine>, PerfError> {
+    let mut lines = Vec::new();
+    for line in tail.finished_lines()? {
+        if let Some(window_line) = parse(tail.path(), &line)? {
+            lines.push(window_line);
+        }
+    }
+    Ok(lines)
 }
 
-impl LogTail {
-    /// A tail of the log at `path` that starts at the log's current end.
-    pub(crate) fn at_end(path: &Path) -> Result<Self, PerfError> {
-        match fs::metadata(path) {
-            Ok(metadata) => {
-                Ok(Self { path: path.to_path_buf(), position: metadata.len(), partial: Vec::new() })
-            }
-            Err(source) => Err(PerfError::Read { path: path.to_path_buf(), source }),
-        }
+/// The perf summary or camera line `line` of the log at `path` holds, or `None` for a line of
+/// another message.
+fn parse(path: &Path, line: &str) -> Result<Option<WindowLine>, PerfError> {
+    match perf_line::parse_line(line) {
+        Ok(Some(summary)) => return Ok(Some(WindowLine::Summary(summary))),
+        Ok(None) => {}
+        Err(source) => return Err(PerfError::Line { path: path.to_path_buf(), source }),
     }
-
-    /// The perf summary and camera lines the log finished since the last read, in log order.
-    fn read_lines(&mut self) -> Result<Vec<WindowLine>, PerfError> {
-        let appended = match self.read_appended() {
-            Ok(appended) => appended,
-            Err(source) => return Err(PerfError::Read { path: self.path.clone(), source }),
-        };
-        self.partial.extend(appended);
-        let finished_len = self
-            .partial
-            .iter()
-            .rposition(|byte| *byte == b'\n')
-            .map_or(0, |end| end.saturating_add(1));
-        let finished: Vec<u8> = self.partial.drain(..finished_len).collect();
-        let mut lines = Vec::new();
-        for line in String::from_utf8_lossy(&finished).lines() {
-            if let Some(window_line) = self.parse(line)? {
-                lines.push(window_line);
-            }
-        }
-        Ok(lines)
-    }
-
-    /// The perf summary or camera line `line` holds, or `None` for a line of another message.
-    fn parse(&self, line: &str) -> Result<Option<WindowLine>, PerfError> {
-        match perf_line::parse_line(line) {
-            Ok(Some(summary)) => return Ok(Some(WindowLine::Summary(summary))),
-            Ok(None) => {}
-            Err(source) => return Err(PerfError::Line { path: self.path.clone(), source }),
-        }
-        match camera_line::parse_line(line) {
-            Ok(camera) => Ok(camera.map(WindowLine::Camera)),
-            Err(source) => Err(PerfError::CameraLine { path: self.path.clone(), source }),
-        }
-    }
-
-    /// The bytes after the position, which then moves past them.
-    fn read_appended(&mut self) -> io::Result<Vec<u8>> {
-        let mut file = File::open(&self.path)?;
-        file.seek(SeekFrom::Start(self.position))?;
-        let mut appended = Vec::new();
-        let read = file.read_to_end(&mut appended)?;
-        self.position = self.position.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
-        Ok(appended)
+    match camera_line::parse_line(line) {
+        Ok(camera) => Ok(camera.map(WindowLine::Camera)),
+        Err(source) => Err(PerfError::CameraLine { path: path.to_path_buf(), source }),
     }
 }
 
@@ -236,7 +196,7 @@ pub(crate) fn collect(
     let started = Instant::now();
     let mut last_line = started;
     loop {
-        let read = tail.read_lines()?;
+        let read = read_lines(tail)?;
         if !read.is_empty() {
             last_line = Instant::now();
         }
@@ -247,7 +207,7 @@ pub(crate) fn collect(
         let since = if window.phase == Phase::Counting { last_line } else { started };
         let remaining = line_timeout.saturating_sub(since.elapsed());
         if remaining.is_zero() {
-            return Err(window.timeout(tail.path.clone(), count, line_timeout));
+            return Err(window.timeout(tail.path().to_path_buf(), count, line_timeout));
         }
         // thread::sleep is banned for game threads. Parking waits the same, and an early wake only
         // reads early.

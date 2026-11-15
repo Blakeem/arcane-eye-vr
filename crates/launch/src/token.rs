@@ -13,8 +13,9 @@ pub use crate::raw::{TokenCreateError, TokenMapping};
 ///
 /// # Errors
 ///
-/// Returns [`TokenCreateError::Exists`] when another process holds the token, and
-/// [`TokenCreateError::Create`] or [`TokenCreateError::Map`] when Windows cannot create or map it.
+/// Returns [`TokenCreateError::Exists`] when a token already exists, including one this process
+/// still holds, and [`TokenCreateError::Create`] or [`TokenCreateError::Map`] when Windows cannot
+/// create or map it.
 pub fn create(mode: Mode) -> Result<TokenMapping, TokenCreateError> {
     let token = LaunchToken::new(mode, process::id(), unix_ms_now());
     TokenMapping::create(launch_token::MAPPING_NAME, &token)

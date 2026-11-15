@@ -10,9 +10,9 @@ use ipc_layout::launch_token::Mode;
 use viewer_client::region::Region;
 
 pub(crate) const USAGE: &str = "usage: trial --name <name> [--mode vr|desktop-stereo] \
-     [--warmup-secs <n>] [--perf-lines <n>] [--captures <n>] [--burst-frames <n>] \
-     [--burst-region <x>,<y>,<width>,<height>] [--burst-step <k>] [--out <folder>] \
-     [--game-dir <folder>] [--settings-file <path>] [--dev-file <path>]";
+     [--scene title|level] [--warmup-secs <n>] [--perf-lines <n>] [--captures <n>] \
+     [--burst-frames <n>] [--burst-region <x>,<y>,<width>,<height>] [--burst-step <k>] \
+     [--out <folder>] [--game-dir <folder>] [--settings-file <path>] [--dev-file <path>]";
 
 /// The most frames one trial captures, since a frame file's number has 4 digits.
 const MAX_CAPTURES: u32 = 9999;
@@ -44,10 +44,31 @@ impl TrialName {
     }
 }
 
+/// Where in the game a trial runs its steps from the warm-up on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Scene {
+    /// The title screen the game shows after its start.
+    Title,
+    /// The level of the latest save, which a priming session before the trial's session unlocks.
+    Level,
+}
+
+impl Scene {
+    const ALL: [Self; 2] = [Self::Title, Self::Level];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::Level => "level",
+        }
+    }
+}
+
 /// Everything the command line sets apart from the name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Settings {
     pub(crate) mode: Mode,
+    pub(crate) scene: Scene,
     pub(crate) warmup: Duration,
     pub(crate) perf_lines: u32,
     pub(crate) captures: u32,
@@ -65,6 +86,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             mode: Mode::DesktopStereo,
+            scene: Scene::Title,
             warmup: Duration::from_secs(20),
             perf_lines: 3,
             captures: 1,
@@ -116,6 +138,8 @@ pub(crate) enum ArgsError {
     BadName(String),
     #[error("trial got the unknown mode \"{0}\"")]
     UnknownMode(String),
+    #[error("trial got the unknown scene \"{0}\"")]
+    UnknownScene(String),
     #[error("{option} takes a whole number from {min} to {max}, not \"{value}\"")]
     OutOfRange { option: &'static str, value: String, min: u64, max: u64 },
     #[error(
@@ -132,6 +156,7 @@ pub(crate) enum ArgsError {
 enum Flag {
     Name,
     Mode,
+    Scene,
     WarmupSecs,
     PerfLines,
     Captures,
@@ -145,9 +170,10 @@ enum Flag {
 }
 
 impl Flag {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::Name,
         Self::Mode,
+        Self::Scene,
         Self::WarmupSecs,
         Self::PerfLines,
         Self::Captures,
@@ -164,6 +190,7 @@ impl Flag {
         match self {
             Self::Name => "--name",
             Self::Mode => "--mode",
+            Self::Scene => "--scene",
             Self::WarmupSecs => "--warmup-secs",
             Self::PerfLines => "--perf-lines",
             Self::Captures => "--captures",
@@ -199,6 +226,7 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options,
         match flag {
             Flag::Name => name = Some(TrialName::new(&text(&value))?),
             Flag::Mode => settings.mode = mode(&text(&value))?,
+            Flag::Scene => settings.scene = scene(&text(&value))?,
             Flag::WarmupSecs => settings.warmup = seconds(flag, &value)?,
             Flag::PerfLines => settings.perf_lines = count(flag, &value, 1..=u32::MAX)?,
             Flag::Captures => settings.captures = count(flag, &value, 1..=MAX_CAPTURES)?,
@@ -248,6 +276,11 @@ fn text(value: &OsStr) -> String {
 fn mode(value: &str) -> Result<Mode, ArgsError> {
     let found = Mode::ALL.into_iter().find(|candidate| value == candidate.as_str());
     found.ok_or_else(|| ArgsError::UnknownMode(value.to_owned()))
+}
+
+fn scene(value: &str) -> Result<Scene, ArgsError> {
+    let found = Scene::ALL.into_iter().find(|candidate| value == candidate.as_str());
+    found.ok_or_else(|| ArgsError::UnknownScene(value.to_owned()))
 }
 
 /// A whole number of seconds.

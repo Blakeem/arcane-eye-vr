@@ -1,5 +1,5 @@
 //! The launch crate's unsafe edge: registry reads, the launch token mapping, the Steam URL, the
-//! window close and the process wait and end.
+//! window close, the key post and the process wait and end.
 
 #![expect(
     unsafe_code,
@@ -33,10 +33,12 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowThreadProcessId, PostMessageW, SW_SHOWNORMAL, WM_CLOSE,
+    EnumWindows, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, SW_SHOWNORMAL, WM_CLOSE,
+    WM_KEYDOWN, WM_KEYUP,
 };
 use windows::core::{BOOL, HSTRING, PCWSTR, w};
 
+use crate::key::KeyPress;
 use crate::registry::{RegistryError, RegistryValue};
 use crate::stop::{ProcessState, StopError};
 
@@ -129,8 +131,8 @@ pub struct TokenMapping {
 impl TokenMapping {
     /// Creates the mapping `name` and writes `token` into it.
     ///
-    /// Returns [`TokenCreateError::Exists`] when another process already created the mapping, and
-    /// writes nothing then.
+    /// Returns [`TokenCreateError::Exists`] when a mapping `name` already exists, including one
+    /// this process holds, and writes nothing then.
     pub(crate) fn create(name: &str, token: &LaunchToken) -> Result<Self, TokenCreateError> {
         let name = HSTRING::from(name);
         // SAFETY: a pagefile-backed mapping with default security and a NUL-terminated name.
@@ -304,17 +306,22 @@ struct WindowSearch {
     windows: Vec<HWND>,
 }
 
-/// Posts `WM_CLOSE` to every top-level window of process `pid`, hidden windows included. Returns the
-/// number of windows that got the message.
-pub(crate) fn ask_windows_to_close(pid: u32) -> usize {
+/// The top-level windows of process `pid`, hidden windows included.
+fn top_level_windows(pid: u32) -> Vec<HWND> {
     let mut search = WindowSearch { pid, windows: Vec::new() };
     let search_address = LPARAM((&raw mut search).expose_provenance().cast_signed());
     // SAFETY: `collect_window` reads `search_address` as `search`, which outlives the call.
     if let Err(error) = unsafe { EnumWindows(Some(collect_window), search_address) } {
-        warn!(pid, error = %error, "the window list stopped early, so some windows may not close");
+        warn!(pid, error = %error, "the window list stopped early, so some windows get no message");
     }
+    search.windows
+}
+
+/// Posts `WM_CLOSE` to every top-level window of process `pid`, hidden windows included. Returns
+/// the number of windows that got the message.
+pub(crate) fn ask_windows_to_close(pid: u32) -> usize {
     let mut asked = 0usize;
-    for window in search.windows {
+    for window in top_level_windows(pid) {
         // SAFETY: a posted message carries no pointer, and a window gone since the search fails it.
         match unsafe { PostMessageW(Some(window), WM_CLOSE, WPARAM(0), LPARAM(0)) } {
             Ok(()) => asked = asked.saturating_add(1),
@@ -324,13 +331,44 @@ pub(crate) fn ask_windows_to_close(pid: u32) -> usize {
     asked
 }
 
+/// Posts `key` as `WM_KEYDOWN`, then `WM_KEYUP`, to each visible top-level window of process `pid`.
+/// Returns the number of windows that got both messages.
+pub(crate) fn post_key(pid: u32, key: &KeyPress) -> usize {
+    let mut posted = 0usize;
+    for window in top_level_windows(pid) {
+        // SAFETY: IsWindowVisible has no pointer arguments, and a window gone since the search is
+        // not visible.
+        if !unsafe { IsWindowVisible(window) }.as_bool() {
+            continue;
+        }
+        let pressed = post_key_message(pid, window, WM_KEYDOWN, key.virtual_key, key.down)
+            && post_key_message(pid, window, WM_KEYUP, key.virtual_key, key.up);
+        if pressed {
+            posted = posted.saturating_add(1);
+        }
+    }
+    posted
+}
+
+/// Posts one key message to `window` of process `pid` and returns whether the window took it.
+fn post_key_message(pid: u32, window: HWND, message: u32, w: usize, l: isize) -> bool {
+    // SAFETY: a posted message carries no pointer, and a window gone since the search fails it.
+    match unsafe { PostMessageW(Some(window), message, WPARAM(w), LPARAM(l)) } {
+        Ok(()) => true,
+        Err(error) => {
+            warn!(pid, message, error = %error, "a window did not take the key message");
+            false
+        }
+    }
+}
+
 /// `EnumWindows` calls this once per top-level window. `search` is the address of a `WindowSearch`.
 extern "system" fn collect_window(window: HWND, search: LPARAM) -> BOOL {
     let search = ptr::with_exposed_provenance_mut::<WindowSearch>(search.0.cast_unsigned());
     let mut owner = 0u32;
     // SAFETY: `window` is a handle EnumWindows passes, and `owner` is a writable local.
     unsafe { GetWindowThreadProcessId(window, Some(&raw mut owner)) };
-    // SAFETY: `search` is the `WindowSearch` that `ask_windows_to_close` owns for the EnumWindows
+    // SAFETY: `search` is the `WindowSearch` that `top_level_windows` owns for the EnumWindows
     // call, and nothing else touches it during the call.
     let search = unsafe { &mut *search };
     if owner == search.pid {
@@ -339,5 +377,7 @@ extern "system" fn collect_window(window: HWND, search: LPARAM) -> BOOL {
     TRUE
 }
 
+#[cfg(test)]
+mod key_tests;
 #[cfg(test)]
 mod tests;

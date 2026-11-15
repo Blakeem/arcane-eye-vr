@@ -1,5 +1,6 @@
 //! The trial's steps in order, against the game and the frame reader behind two traits, so a test
 //! drives stand-ins. A failure after the start still closes the game and copies its session log.
+//! A trial of the level scene adds the prime step and the enter-level step of `level.rs`.
 
 use std::error::Error;
 use std::io::{self, Write};
@@ -9,8 +10,9 @@ use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
 use diag::error_chain;
+use ipc_layout::game_state_line::Place;
 use launch::checks::{GameRunning, RuntimeError};
-use launch::direct::StartError;
+use launch::direct::{Save, StartError};
 use launch::game_dir::GameDirError;
 use launch::status::WaitError;
 use launch::stop::StopError;
@@ -19,12 +21,15 @@ use tracing::{info, warn};
 use viewer_client::frame::{Frame, ReadError};
 use viewer_client::region::Region;
 
-use crate::args::{Options, Settings};
+use crate::args::{Options, Scene, Settings};
 use crate::burst::{self, BurstError, BurstFrame};
 use crate::folder::{self, FolderError, RESULT_FILE, TRIAL_FILE};
-use crate::home::{self, HomeError};
+use crate::home::{self, HOME_FOLDER, HomeError};
+use crate::level::{self, NotReached};
+use crate::log_tail::TailError;
 use crate::perf::{self, PerfError, PerfWindow};
 use crate::pixels::{self, SizeError};
+use crate::place::PlaceError;
 use crate::png_file::{self, PngError};
 use crate::report::Report;
 
@@ -50,9 +55,11 @@ pub(crate) const TRIAL_FAILED: u8 = 1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Step {
     Check,
+    Prime,
     Token,
     Start,
     FirstPresent,
+    EnterLevel,
     WarmUp,
     Perf,
     Capture,
@@ -65,9 +72,11 @@ impl Step {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Check => "check",
+            Self::Prime => "prime",
             Self::Token => "token",
             Self::Start => "start",
             Self::FirstPresent => "first-present",
+            Self::EnterLevel => "enter-level",
             Self::WarmUp => "warm-up",
             Self::Perf => "perf",
             Self::Capture => "capture",
@@ -78,7 +87,7 @@ impl Step {
     }
 }
 
-/// How the game went at the close step.
+/// How the game went at its close, in the close step or the prime step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Closed {
     /// The game exited after its windows were asked to close.
@@ -90,10 +99,17 @@ pub(crate) enum Closed {
 /// The game as the steps drive it. Each method is one step.
 pub(crate) trait Game {
     fn check(&mut self) -> Result<(), StepError>;
+    /// Creates the launch token of the next start. A token of an earlier start goes first.
     fn create_token(&mut self) -> Result<(), StepError>;
-    /// Starts the game with `home`, an absolute path, as its root folder.
-    fn start(&mut self, home: &Path) -> Result<(), StepError>;
+    /// Starts the game with `home`, an absolute path, as its root folder, and the save option
+    /// `save`.
+    fn start(&mut self, home: &Path, save: Save) -> Result<(), StepError>;
     fn wait_first_present(&mut self) -> Result<(), StepError>;
+    /// The place of the last game state line of the core's session log, or `None` while the log
+    /// holds none.
+    fn place(&mut self) -> Result<Option<Place>, StepError>;
+    /// Posts the key that moves the title screen on to the game's visible windows.
+    fn post_key(&mut self) -> Result<(), StepError>;
     /// Waits `time`.
     fn warm_up(&mut self, time: Duration);
     /// The game's exit status once it exited, or `None` while it runs.
@@ -162,7 +178,13 @@ pub(crate) enum StepError {
     #[error("the core wrote no session log in {} after the game started", log_dir.display())]
     NoCoreLog { log_dir: PathBuf },
     #[error(transparent)]
+    Tail(#[from] TailError),
+    #[error(transparent)]
     Perf(#[from] PerfError),
+    #[error(transparent)]
+    Place(#[from] PlaceError),
+    #[error(transparent)]
+    NotReached(#[from] NotReached),
     #[error(transparent)]
     Folder(#[from] FolderError),
     #[error("could not start the heartbeat thread")]
@@ -216,6 +238,7 @@ fn run(options: &Options, folder: &Path, game: &mut impl Game, frames: &mut impl
     let settings = &options.settings;
     let mut report = Report::default();
     let started = report.record(Step::Check, check(settings, game))
+        && primed(&mut report, settings, folder, game)
         && report.record(Step::Token, game.create_token())
         && report.record(Step::Start, start(settings, folder, game));
     if !started {
@@ -226,7 +249,7 @@ fn run(options: &Options, folder: &Path, game: &mut impl Game, frames: &mut impl
     if closed.is_ok() {
         wait_steam_cleared(game);
     }
-    report.record_close(closed);
+    report.record_close(Step::Close, closed);
     report.record(Step::CopyLog, game.copy_log(&folder.join(CORE_LOG_COPY)));
     report
 }
@@ -234,7 +257,7 @@ fn run(options: &Options, folder: &Path, game: &mut impl Game, frames: &mut impl
 /// Reads Steam's running state until it clears. Steam keeps the state for a few seconds after the
 /// game's exit, and the check step of a trial started then fails on it. The game exited, so a state
 /// still set at the timeout is a warning and no failed step.
-fn wait_steam_cleared(game: &mut impl Game) {
+pub(crate) fn wait_steam_cleared(game: &mut impl Game) {
     let mut waited = Duration::ZERO;
     while game.steam_reports_running() {
         if waited >= STEAM_CLEAR_TIMEOUT {
@@ -252,14 +275,29 @@ fn check(settings: &Settings, game: &mut impl Game) -> Result<(), StepError> {
     game.check()
 }
 
-/// Fills the game's root folder in the result folder `folder`, then starts the game with it.
-fn start(settings: &Settings, folder: &Path, game: &mut impl Game) -> Result<(), StepError> {
-    let home = home::prepare(folder, settings)?;
-    game.start(&home)
+/// Runs the prime step when the scene needs a priming session, and returns whether the trial goes
+/// on.
+fn primed(report: &mut Report, settings: &Settings, folder: &Path, game: &mut impl Game) -> bool {
+    match settings.scene {
+        Scene::Title => true,
+        Scene::Level => report.record_close(Step::Prime, level::prime(settings, folder, game)),
+    }
 }
 
-/// Runs the steps from the first Present to the capture, and the burst when the settings ask for
-/// one, and stops at the first that fails. Each step needs the game still running at its end.
+/// Fills the game's root folder in the result folder `folder`, then starts the game with it and
+/// with the save option the scene needs.
+fn start(settings: &Settings, folder: &Path, game: &mut impl Game) -> Result<(), StepError> {
+    let home = home::prepare(folder, HOME_FOLDER, settings)?;
+    let save = match settings.scene {
+        Scene::Title => Save::NoLoad,
+        Scene::Level => Save::LoadLatest,
+    };
+    game.start(&home, save)
+}
+
+/// Runs the steps from the first Present to the capture, the enter-level step when the scene is the
+/// level and the burst when the settings ask for one, and stops at the first that fails. Each step
+/// needs the game still running at its end.
 fn run_in_game(
     report: &mut Report,
     settings: &Settings,
@@ -270,6 +308,12 @@ fn run_in_game(
     let first_present = while_running(game, Step::FirstPresent, Game::wait_first_present);
     if !report.record(Step::FirstPresent, first_present) {
         return;
+    }
+    if settings.scene == Scene::Level {
+        let entered = while_running(game, Step::EnterLevel, level::enter_level);
+        if !report.record(Step::EnterLevel, entered) {
+            return;
+        }
     }
     let warm_up = while_running(game, Step::WarmUp, |game| {
         game.warm_up(settings.warmup);
@@ -295,7 +339,7 @@ fn run_in_game(
 /// Runs `step`, then fails it with the game's exit when the game no longer runs. The exit leads the
 /// cause, since a crash explains a failed wait such as a timeout, and a crash after a passed step is
 /// the trial's finding.
-fn while_running<G: Game>(
+pub(crate) fn while_running<G: Game>(
     game: &mut G,
     step: Step,
     run_step: impl FnOnce(&mut G) -> Result<(), StepError>,

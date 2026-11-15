@@ -1,6 +1,7 @@
 //! The direct start: runs the game exe itself, so no Larian launcher and no Play click are needed.
 //!
-//! The command line and the working directory are the ones the Larian launcher gives the game. The
+//! The command line and the working directory are the ones the Larian launcher gives the game. A
+//! caller that asks for the latest save gets `-continueGame` after the launcher's arguments. The
 //! two Steam variables keep the game from handing the start back to Steam. The root folder variable
 //! gives the game's core the caller's root folder.
 
@@ -14,6 +15,18 @@ use tracing::info;
 use crate::game_dir::GameDir;
 
 const GAME_ARGS: [&str; 5] = ["-externalcrashhandler", "-stats", "1", "-modded", "1"];
+
+/// The game option that makes a key on the title screen load the latest save.
+const CONTINUE_ARG: &str = "-continueGame";
+
+/// Whether the game loads the latest save once a key moves its title screen on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Save {
+    /// The key loads the latest save.
+    LoadLatest,
+    /// The key brings up the main menu.
+    NoLoad,
+}
 
 /// The environment variables that tell the game Steam started it.
 const STEAM_VARIABLES: [&str; 2] = ["SteamAppId", "SteamGameId"];
@@ -31,20 +44,21 @@ pub struct StartError {
 }
 
 /// Starts the game exe in `game_dir` with `home` as its root folder, an absolute path as
-/// [`HOME_VARIABLE`] requires. The returned child holds the game's process id and a handle to wait
-/// on.
+/// [`HOME_VARIABLE`] requires, and with the save option `save`. The returned child holds the game's
+/// process id and a handle to wait on.
 ///
 /// # Errors
 ///
 /// Returns [`StartError`] when Windows cannot start the game exe.
-pub fn start(game_dir: &GameDir, home: &Path) -> Result<Child, StartError> {
-    let mut command = command(game_dir, home);
+pub fn start(game_dir: &GameDir, home: &Path, save: Save) -> Result<Child, StartError> {
+    let mut command = command(game_dir, home, save);
     match command.spawn() {
         Ok(child) => {
             info!(
                 pid = child.id(),
                 exe = %game_dir.exe().display(),
                 home = %home.display(),
+                save = ?save,
                 "game started directly"
             );
             Ok(child)
@@ -55,11 +69,14 @@ pub fn start(game_dir: &GameDir, home: &Path) -> Result<Child, StartError> {
     }
 }
 
-/// The command that starts the game exe in `game_dir` with the root folder `home`. The Steam
-/// variables and the root folder variable reach only the child.
-fn command(game_dir: &GameDir, home: &Path) -> Command {
+/// The command that starts the game exe in `game_dir` with the root folder `home` and the save
+/// option `save`. The Steam variables and the root folder variable reach only the child.
+fn command(game_dir: &GameDir, home: &Path, save: Save) -> Command {
     let mut command = Command::new(game_dir.exe());
     command.args(GAME_ARGS).current_dir(working_dir(game_dir));
+    if save == Save::LoadLatest {
+        command.arg(CONTINUE_ARG);
+    }
     for name in STEAM_VARIABLES {
         command.env(name, steam_app_id!());
     }
@@ -73,7 +90,7 @@ fn working_dir(game_dir: &GameDir) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{command, start};
+    use super::{Save, command, start};
     use crate::game_dir::GameDir;
     use crate::test_dir;
     use std::ffi::OsStr;
@@ -94,7 +111,8 @@ mod tests {
         let dir = stand_in_game("direct");
         let game = dir.path();
         let home = Path::new(r"D:\trial-results\2026-11-13T143530Z-menu\home");
-        let command = command(&GameDir::new(game.to_path_buf()).expect("a game folder"), home);
+        let game_dir = GameDir::new(game.to_path_buf()).expect("a game folder");
+        let command = command(&game_dir, home, Save::NoLoad);
         assert_eq!(command.get_program(), game.join(r"bin\bg3_dx11.exe"));
         let args: Vec<&OsStr> = command.get_args().collect();
         assert_eq!(args, ["-externalcrashhandler", "-stats", "1", "-modded", "1"]);
@@ -110,11 +128,21 @@ mod tests {
     }
 
     #[test]
+    fn the_command_that_loads_the_latest_save_ends_with_the_continue_option() {
+        let dir = stand_in_game("direct-continue");
+        let game_dir = GameDir::new(dir.path().to_path_buf()).expect("a game folder");
+        let command = command(&game_dir, Path::new(r"D:\home"), Save::LoadLatest);
+        let args: Vec<&OsStr> = command.get_args().collect();
+        let expected = ["-externalcrashhandler", "-stats", "1", "-modded", "1", "-continueGame"];
+        assert_eq!(args, expected);
+    }
+
+    #[test]
     fn a_start_that_fails_names_the_program_and_the_working_directory() {
         let dir = stand_in_game("direct-fails");
         let game = dir.path();
         let game_dir = GameDir::new(game.to_path_buf()).expect("a game folder");
-        let error = start(&game_dir, &game.join("home"))
+        let error = start(&game_dir, &game.join("home"), Save::NoLoad)
             .expect_err("an empty exe in a folder with no Launcher folder does not start");
         assert_eq!(error.program, game.join(r"bin\bg3_dx11.exe"));
         assert_eq!(error.working_dir, game.join("Launcher"));

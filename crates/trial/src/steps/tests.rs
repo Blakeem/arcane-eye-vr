@@ -1,6 +1,7 @@
 //! The steps against stand-ins for the game and the frame reader.
 
 mod burst;
+mod level;
 mod stand_in;
 
 use std::fs;
@@ -11,15 +12,17 @@ use std::time::Duration;
 
 use ipc_layout::camera_line::{CameraEye, CameraLine};
 use ipc_layout::launch_token::Mode;
+use launch::direct::Save;
 
 use self::stand_in::{Exits, LOG_TEXT, StandInFrames, StandInGame};
 use super::{Closed, Report, Step, cause, trial};
-use crate::args::{Burst, Options, Settings, TrialName};
+use crate::args::{Burst, Options, Scene, Settings, TrialName};
 use crate::test_dir;
 
 fn options(out: &Path) -> Options {
     let settings = Settings {
         mode: Mode::DesktopStereo,
+        scene: Scene::Title,
         warmup: Duration::from_secs(7),
         perf_lines: 2,
         captures: 2,
@@ -231,9 +234,9 @@ fn a_passed_trial_writes_every_file_of_the_result_folder() {
     let (report, printed, result) = run_trial(folder, &mut game, &mut frames);
     let read = |file: &str| fs::read_to_string(folder.join(file)).expect("read a result file");
     let trial_text = format!(
-        "name: menu\nmode: desktop-stereo\nwarmup-secs: 7\nperf-lines: 2\ncaptures: 2\n\
-         burst-frames: 0\nburst-region: entire frame\nburst-step: 1\nout: {}\ngame-dir: D:\\Game\n\
-         settings-file: none\ndev-file: none\nmod-version: {}\n",
+        "name: menu\nmode: desktop-stereo\nscene: title\nwarmup-secs: 7\nperf-lines: 2\n\
+         captures: 2\nburst-frames: 0\nburst-region: entire frame\nburst-step: 1\nout: {}\n\
+         game-dir: D:\\Game\nsettings-file: none\ndev-file: none\nmod-version: {}\n",
         folder.display(),
         env!("CARGO_PKG_VERSION")
     );
@@ -257,7 +260,7 @@ dropped lines=3
     assert!(folder.join("frame-0002.png").is_file());
     assert!(!folder.join("frame-0003.png").exists());
     assert_eq!(game.warmup, Some(Duration::from_secs(7)));
-    assert_eq!(game.home.as_deref(), Some(folder.join("home").as_path()));
+    assert_eq!(game.starts, [(folder.join("home"), Save::NoLoad)], "one start with no save");
     assert!(folder.join("home").is_dir());
     assert_eq!(report.exit_code(), ExitCode::SUCCESS);
 }
@@ -313,7 +316,7 @@ fn the_given_settings_files_land_in_home_before_the_game_starts_with_it() {
     let mut frames = StandInFrames::new(false);
     trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
     let home = folder.join("home");
-    assert_eq!(game.home.as_deref(), Some(home.as_path()));
+    assert_eq!(game.starts, [(home.clone(), Save::NoLoad)]);
     let read = |file: &Path| fs::read_to_string(file).expect("read a file");
     assert_eq!(read(&home.join("settings.toml")), "[stereo]\nipd_mm = 60\n");
     assert_eq!(read(&home.join("dev.toml")), "[stereo]\nmain_view_eye = \"right\"\n");

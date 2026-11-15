@@ -9,8 +9,10 @@ use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
 use ipc_layout::camera_line::CameraLine;
+use ipc_layout::game_state_line::Place;
 use ipc_layout::perf_line::PerfSummary;
 use launch::checks::GameRunning;
+use launch::direct::Save;
 use launch::status::WaitError;
 use launch::stop::StopError;
 use viewer_client::frame::{Frame, PixelFormat, ReadError};
@@ -53,8 +55,15 @@ pub(super) struct StandInGame {
     pub(super) closed: Closed,
     pub(super) ran: Vec<Step>,
     pub(super) warmup: Option<Duration>,
-    /// The root folder the start step gave the game.
-    pub(super) home: Option<PathBuf>,
+    /// The root folder and the save option of each start, in order.
+    pub(super) starts: Vec<(PathBuf, Save)>,
+    /// The places that the reads of each start's game return in order, the last one again for every
+    /// later read. A start with no list, or an empty one, reads `None`.
+    pub(super) places: Vec<Vec<Option<Place>>>,
+    /// The reads of the place since the last start.
+    place_reads: usize,
+    /// The start's index and the place read count at each key, in order.
+    pub(super) keys: Vec<(usize, usize)>,
     /// The cameras of each of the perf window's two summary lines.
     pub(super) cameras: [Vec<CameraLine>; 2],
     /// The reads of Steam's running state that report the game running, or `None` for every read.
@@ -73,7 +82,10 @@ impl StandInGame {
             closed: Closed::Exited,
             ran: Vec::new(),
             warmup: None,
-            home: None,
+            starts: Vec::new(),
+            places: Vec::new(),
+            place_reads: 0,
+            keys: Vec::new(),
             cameras: [Vec::new(), Vec::new()],
             steam_running_reads: Some(0),
             steam_reads: 0,
@@ -96,13 +108,28 @@ impl Game for StandInGame {
         self.step(Step::Token, StepError::Needs(Step::Check))
     }
 
-    fn start(&mut self, home: &Path) -> Result<(), StepError> {
-        self.home = Some(home.to_path_buf());
+    fn start(&mut self, home: &Path, save: Save) -> Result<(), StepError> {
+        self.starts.push((home.to_path_buf(), save));
+        self.place_reads = 0;
         self.step(Step::Start, StepError::Needs(Step::Token))
     }
 
     fn wait_first_present(&mut self) -> Result<(), StepError> {
         self.step(Step::FirstPresent, WaitError::CoreLoadFailed.into())
+    }
+
+    fn place(&mut self) -> Result<Option<Place>, StepError> {
+        let start = self.starts.len().saturating_sub(1);
+        let script = self.places.get(start).map_or(&[][..], Vec::as_slice);
+        let read = script.get(self.place_reads).or_else(|| script.last()).copied().flatten();
+        self.place_reads = self.place_reads.saturating_add(1);
+        Ok(read)
+    }
+
+    fn post_key(&mut self) -> Result<(), StepError> {
+        let start = self.starts.len().saturating_sub(1);
+        self.keys.push((start, self.place_reads));
+        Ok(())
     }
 
     fn warm_up(&mut self, time: Duration) {

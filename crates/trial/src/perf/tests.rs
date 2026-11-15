@@ -13,9 +13,10 @@ use ipc_layout::camera_line::{CameraEye, CameraLine};
 use ipc_layout::perf_line::PerfSummary;
 
 use super::{
-    CountedLine, LogTail, PerfError, PerfWindow, Totals, Window, WindowLine, collect, is_settled,
-    text, totals,
+    CountedLine, PerfError, PerfWindow, Totals, Window, WindowLine, collect, is_settled,
+    read_lines, text, totals,
 };
+use crate::log_tail::LogTail;
 use crate::test_dir;
 
 const PREFIX: &str = "2026-11-13T12:35:25.951 INFO  thread=29780 arcane_eye_core::frame";
@@ -342,10 +343,10 @@ fn a_line_the_core_has_not_finished_waits_for_its_line_ending() {
     let full = line(600, 16_000, 20_000, 30_000);
     let (head, rest) = full.split_at(40);
     append(&log, head);
-    assert_eq!(tail.read_lines().expect("a read"), []);
+    assert_eq!(read_lines(&mut tail).expect("a read"), []);
     append(&log, rest);
     let finished = [WindowLine::Summary(summary(600, 16_000, 20_000, 30_000))];
-    assert_eq!(tail.read_lines().expect("a read"), finished);
+    assert_eq!(read_lines(&mut tail).expect("a read"), finished);
 }
 
 #[test]
@@ -361,16 +362,6 @@ fn a_window_with_no_line_in_time_is_a_timeout_that_names_the_count() {
         log.display()
     );
     assert_eq!(error.to_string(), expected);
-}
-
-#[test]
-fn a_missing_log_is_a_read_error_that_names_it() {
-    let dir = test_dir("perf-missing");
-    let log = dir.path().join("arcane-eye-vr.log");
-    let Err(error) = LogTail::at_end(&log) else {
-        panic!("a missing log has no end");
-    };
-    assert_eq!(error.to_string(), format!("could not read the session log {}", log.display()));
 }
 
 #[test]

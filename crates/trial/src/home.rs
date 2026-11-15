@@ -1,4 +1,5 @@
 //! The game's root folder of a trial, `home` in the result folder, and the settings files it gets.
+//! The priming session of a level trial gets its own root folder, `prime`, with the same files.
 //!
 //! The game reads its settings and writes its session log there, so a trial never reads or changes
 //! the player's root folder, and the result folder holds the settings the trial ran with.
@@ -14,7 +15,10 @@ use settings::{dev, player};
 use crate::args::Settings;
 
 /// The game's root folder's name in the result folder.
-const HOME_FOLDER: &str = "home";
+pub(crate) const HOME_FOLDER: &str = "home";
+
+/// The priming session's root folder's name in the result folder.
+pub(crate) const PRIME_FOLDER: &str = "prime";
 
 /// Why a given settings file failed the check, or why the game's root folder was not filled.
 #[derive(Debug, thiserror::Error)]
@@ -108,13 +112,17 @@ fn check_file(given: &Given<'_>, path: &Path) -> Result<String, HomeError> {
     }
 }
 
-/// Creates the game's root folder in the result folder `folder`, writes each given settings file into
-/// it under its fixed name and returns the root folder as an absolute path.
+/// Creates the game's root folder `name` in the result folder `folder`, writes each given settings
+/// file into it under its fixed name and returns the root folder as an absolute path.
 ///
 /// Each file is checked again and its checked text is written, since the file may change after the
 /// check step and the game must read the text that passed.
-pub(crate) fn prepare(folder: &Path, settings: &Settings) -> Result<PathBuf, HomeError> {
-    let home = home_path(folder)?;
+pub(crate) fn prepare(
+    folder: &Path,
+    name: &str,
+    settings: &Settings,
+) -> Result<PathBuf, HomeError> {
+    let home = home_path(folder, name)?;
     if let Err(source) = fs::create_dir_all(&home) {
         return Err(HomeError::Create { path: home, source });
     }
@@ -130,10 +138,10 @@ pub(crate) fn prepare(folder: &Path, settings: &Settings) -> Result<PathBuf, Hom
     Ok(home)
 }
 
-/// The game's root folder in `folder` as an absolute path, as
+/// The game's root folder `name` in `folder` as an absolute path, as
 /// [`HOME_VARIABLE`](ipc_layout::root_folder::HOME_VARIABLE) requires.
-fn home_path(folder: &Path) -> Result<PathBuf, HomeError> {
-    let home = folder.join(HOME_FOLDER);
+fn home_path(folder: &Path, name: &str) -> Result<PathBuf, HomeError> {
+    let home = folder.join(name);
     match path::absolute(&home) {
         Ok(absolute) => Ok(absolute),
         Err(source) => Err(HomeError::Absolute { path: home, source }),
@@ -148,7 +156,7 @@ mod tests {
 
     use settings::rejection::Position;
 
-    use super::{HomeError, check, home_path, prepare};
+    use super::{HOME_FOLDER, HomeError, check, home_path};
     use crate::args::Settings;
     use crate::test_dir;
 
@@ -156,9 +164,15 @@ mod tests {
         Settings { player_file, dev_file, ..Settings::default() }
     }
 
+    /// The game's root folder `home` in `folder`, as the trial's own session gets it.
+    fn prepare(folder: &Path, settings: &Settings) -> Result<PathBuf, HomeError> {
+        super::prepare(folder, HOME_FOLDER, settings)
+    }
+
     #[test]
     fn a_relative_result_folder_gives_an_absolute_home() {
-        let home = home_path(Path::new(r"trial-results\2026-11-13T143530Z-menu")).expect("a path");
+        let folder = Path::new(r"trial-results\2026-11-13T143530Z-menu");
+        let home = home_path(folder, HOME_FOLDER).expect("a path");
         let current = env::current_dir().expect("the current folder");
         assert_eq!(home, current.join(r"trial-results\2026-11-13T143530Z-menu\home"));
         assert!(home.is_absolute());

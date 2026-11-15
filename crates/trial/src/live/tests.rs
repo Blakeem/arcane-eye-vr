@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
+use ipc_layout::game_state_line::Place;
+use launch::direct::Save;
 use launch::registry::{Hive, RegistryError, RegistryValue};
 use launch::stop::StopError;
 use test_support::TestDir;
@@ -93,7 +95,8 @@ fn a_close_that_cannot_open_the_game_fails_with_the_open_error() {
 #[test]
 fn a_step_whose_earlier_step_did_not_pass_names_that_step() {
     let mut game = LiveGame::new(&Settings::default());
-    assert!(matches!(game.start(Path::new(r"C:\home")), Err(StepError::Needs(Step::Check))));
+    let start = game.start(Path::new(r"C:\home"), Save::NoLoad);
+    assert!(matches!(start, Err(StepError::Needs(Step::Check))));
     assert!(matches!(game.wait_first_present(), Err(StepError::Needs(Step::Token))));
     assert!(matches!(game.exit_status(), Err(StepError::Needs(Step::Start))));
     assert!(matches!(game.perf_window(1), Err(StepError::Needs(Step::Start))));
@@ -102,6 +105,39 @@ fn a_step_whose_earlier_step_did_not_pass_names_that_step() {
     assert!(matches!(copy, Err(StepError::Needs(Step::Start))));
     let message = StepError::Needs(Step::Check).to_string();
     assert_eq!(message, "the check step did not pass first");
+}
+
+#[test]
+fn the_place_and_the_key_need_the_start() {
+    let mut game = LiveGame::new(&Settings::default());
+    assert!(matches!(game.place(), Err(StepError::Needs(Step::Start))));
+    assert!(matches!(game.post_key(), Err(StepError::Needs(Step::Start))));
+}
+
+#[test]
+fn the_place_comes_from_the_game_state_lines_of_the_core_log_in_the_home_log_folder() {
+    let dir = test_dir("home-place");
+    let log_dir = dir.path().join(r"home\logs");
+    fs::create_dir_all(&log_dir).expect("create the home log folder");
+    let line = "2026-11-14T09:12:03.418 INFO  thread=1 arcane_eye_core::game_state \
+                msg=\"game state\" place=main-menu state_id=7\n";
+    fs::write(log_dir.join("arcane-eye-vr.log"), line).expect("write");
+    let mut game = LiveGame::new(&Settings::default());
+    let at = SystemTime::UNIX_EPOCH;
+    game.game = Some(Started { child: exited_game(), at, log_dir, places: None });
+    assert_eq!(game.place().expect("a place"), Some(Place::MainMenu));
+    assert_eq!(game.place().expect("a place"), Some(Place::MainMenu), "a second read");
+}
+
+#[test]
+fn a_place_read_with_no_core_log_names_the_log_folder() {
+    let dir = test_dir("home-place-no-log");
+    let log_dir = dir.path().join(r"home\logs");
+    let mut game = LiveGame::new(&Settings::default());
+    let at = SystemTime::UNIX_EPOCH;
+    game.game = Some(Started { child: exited_game(), at, log_dir: log_dir.clone(), places: None });
+    let error = game.place().expect_err("no core log");
+    assert!(matches!(&error, StepError::NoCoreLog { log_dir: named } if *named == log_dir));
 }
 
 /// A stand-in game process that already exited with code 0.
@@ -124,7 +160,8 @@ fn the_core_log_and_its_copy_come_from_the_home_log_folder() {
     fs::write(log_dir.join("arcane-eye-vr.log"), "the core's session log\n").expect("write");
     let started = SystemTime::UNIX_EPOCH;
     let mut game = LiveGame::new(&Settings::default());
-    game.game = Some(Started { child: exited_game(), at: started, log_dir: log_dir.clone() });
+    let child = exited_game();
+    game.game = Some(Started { child, at: started, log_dir: log_dir.clone(), places: None });
     assert_eq!(game.core_log().expect("the core log"), log_dir.join("arcane-eye-vr.log"));
     let copy = dir.path().join("arcane-eye-vr.log");
     game.copy_log(&copy).expect("copy the core log");
@@ -135,7 +172,8 @@ fn the_core_log_and_its_copy_come_from_the_home_log_folder() {
 fn a_game_that_exited_reports_its_exit_status_and_passes_the_close() {
     let mut game = LiveGame::new(&Settings::default());
     let log_dir = PathBuf::from(r"C:\home\logs");
-    game.game = Some(Started { child: exited_game(), at: SystemTime::now(), log_dir });
+    let child = exited_game();
+    game.game = Some(Started { child, at: SystemTime::now(), log_dir, places: None });
     let status = game.exit_status().expect("an exit status").expect("an exited game");
     assert_eq!(status.code(), Some(0));
     assert!(matches!(game.close(), Ok(Closed::Exited)));

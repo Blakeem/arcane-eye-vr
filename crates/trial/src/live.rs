@@ -1,6 +1,6 @@
-//! The game and the frame reader of a real trial. The launch crate starts and closes the game, the
-//! core's session log in the game's root folder holds the perf window, and the viewer-client crate
-//! reads the frames.
+//! The game and the frame reader of a real trial. The launch crate starts and closes the game and
+//! posts its key, the core's session log in the game's root folder holds the perf window and the
+//! game's place, and the viewer-client crate reads the frames.
 
 use std::fs;
 use std::num::NonZeroU32;
@@ -12,13 +12,15 @@ use std::time::{Duration, Instant, SystemTime};
 use diag::logging::{self, LogName};
 use diag::root::Root;
 use ipc_layout::core_init::CORE_DLL;
+use ipc_layout::game_state_line::Place;
 use ipc_layout::launch_token::Mode;
+use launch::direct::{self, Save};
 use launch::game_dir::{self, GameDir};
 use launch::registry::RegistryError;
 use launch::status::{self, Goal};
 use launch::stop::{self, ProcessState};
 use launch::token::{self, TokenMapping};
-use launch::{checks, direct};
+use launch::{checks, key};
 use tracing::warn;
 use viewer_client::frame::{Frame, FrameReader};
 use viewer_client::header::Names;
@@ -27,7 +29,9 @@ use viewer_client::region::Region;
 
 use crate::args::Settings;
 use crate::burst::BurstFrame;
-use crate::perf::{self, LogTail, PerfWindow};
+use crate::log_tail::LogTail;
+use crate::perf::{self, PerfWindow};
+use crate::place::PlaceLog;
 use crate::steps::{Closed, Frames, Game, Step, StepError};
 
 /// The files the mod puts in the game's bin folder.
@@ -58,17 +62,20 @@ pub(crate) struct LiveGame {
     /// The game folder the command line names, or `None` to find it through Steam.
     given_dir: Option<PathBuf>,
     game_dir: Option<GameDir>,
-    /// Lives until the trial ends, so the game finds the token at its start.
+    /// Lives until the next token step or the trial's end, so the game of the next start finds it.
     token: Option<TokenMapping>,
     game: Option<Started>,
 }
 
-/// The game process, the time just before it started and its core's session log folder.
+/// The game process, the time just before it started, its core's session log folder and the game
+/// state lines read from that log.
 struct Started {
-    /// Keeps the game's process id bound to the game until the trial ends.
+    /// Keeps the game's process id bound to the game until the next start or the trial's end.
     child: Child,
     at: SystemTime,
     log_dir: PathBuf,
+    /// `None` until the first read of the game's place.
+    places: Option<PlaceLog>,
 }
 
 impl LiveGame {
@@ -119,15 +126,18 @@ impl Game for LiveGame {
     }
 
     fn create_token(&mut self) -> Result<(), StepError> {
+        // A token this process still holds makes the create fail as a token that exists.
+        self.token = None;
         self.token = Some(token::create(self.mode)?);
         Ok(())
     }
 
-    fn start(&mut self, home: &Path) -> Result<(), StepError> {
+    fn start(&mut self, home: &Path, save: Save) -> Result<(), StepError> {
         let game_dir = self.game_dir.as_ref().ok_or(StepError::Needs(Step::Check))?;
         let log_dir = Root::new(home.to_path_buf()).log_dir();
         let at = SystemTime::now();
-        self.game = Some(Started { child: direct::start(game_dir, home)?, at, log_dir });
+        let child = direct::start(game_dir, home, save)?;
+        self.game = Some(Started { child, at, log_dir, places: None });
         Ok(())
     }
 
@@ -136,6 +146,21 @@ impl Game for LiveGame {
         // Both modes wait for the first Present, since the perf window and the capture need frames
         // and no VR session.
         status::wait_for_goal(mapping, Goal::FirstPresent, STATUS_POLL, FIRST_PRESENT_TIMEOUT)?;
+        Ok(())
+    }
+
+    fn place(&mut self) -> Result<Option<Place>, StepError> {
+        let places = match self.game()?.places.take() {
+            Some(places) => places,
+            None => PlaceLog::new(&self.core_log()?),
+        };
+        Ok(self.game()?.places.insert(places).read()?)
+    }
+
+    fn post_key(&mut self) -> Result<(), StepError> {
+        let pid = self.game()?.child.id();
+        // A key that reached no window is a warn line, and the next key period posts again.
+        key::post_space(pid);
         Ok(())
     }
 
@@ -199,7 +224,7 @@ fn close_game(pid: u32, timeout: Duration) -> Result<Closed, StepError> {
             Ok(Closed::Forced { waited: timeout })
         }
         Err(error) => {
-            // The game may still run, so it is ended before the close step fails.
+            // The game may still run, so it is ended before the step that closes it fails.
             if let Err(end_error) = stop::end(pid) {
                 warn!(pid, error = %end_error, "the game could not be ended after a failed close");
             }

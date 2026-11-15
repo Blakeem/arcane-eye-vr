@@ -31,13 +31,15 @@ impl Report {
         self.push(step, outcome)
     }
 
-    pub(crate) fn record_close(&mut self, result: Result<Closed, StepError>) {
+    /// Records the result of `step`, which closes the game, and returns whether it passed. A forced
+    /// close passes and is named in `result.txt`.
+    pub(crate) fn record_close(&mut self, step: Step, result: Result<Closed, StepError>) -> bool {
         let outcome = match result {
             Ok(Closed::Exited) => Outcome::Passed,
             Ok(Closed::Forced { waited }) => Outcome::Forced { waited },
             Err(error) => Outcome::Failed { cause: cause(&error) },
         };
-        self.push(Step::Close, outcome);
+        self.push(step, outcome)
     }
 
     fn push(&mut self, step: Step, outcome: Outcome) -> bool {

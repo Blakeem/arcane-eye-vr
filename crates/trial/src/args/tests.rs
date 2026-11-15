@@ -8,7 +8,7 @@ use std::time::Duration;
 use ipc_layout::launch_token::Mode;
 use viewer_client::region::Region;
 
-use super::{ArgsError, Burst, Options, Settings, TrialName, USAGE, parse};
+use super::{ArgsError, Burst, Options, Scene, Settings, TrialName, USAGE, parse};
 
 fn args(list: &[&str]) -> Vec<OsString> {
     list.iter().map(OsString::from).collect()
@@ -26,6 +26,7 @@ fn step(step: u32) -> NonZeroU32 {
 fn a_name_alone_takes_every_default() {
     let expected = Settings {
         mode: Mode::DesktopStereo,
+        scene: Scene::Title,
         warmup: Duration::from_secs(20),
         perf_lines: 3,
         captures: 1,
@@ -58,6 +59,8 @@ fn each_option_sets_its_setting() {
         "0",
         "--mode",
         "vr",
+        "--scene",
+        "level",
         "--dev-file",
         r"C:\trials\left.toml",
         "--settings-file",
@@ -72,6 +75,7 @@ fn each_option_sets_its_setting() {
     let region = Region { x: 1920, y: 0, width: 1920, height: 2160 };
     let expected = Settings {
         mode: Mode::Vr,
+        scene: Scene::Level,
         warmup: Duration::ZERO,
         perf_lines: 5,
         captures: 9999,
@@ -137,6 +141,19 @@ fn a_mode_matches_its_name_exactly() {
     let unknown = |text: &str| Err(ArgsError::UnknownMode(text.to_owned()));
     assert_eq!(parse(args(&["--name", "a", "--mode", "VR"])), unknown("VR"));
     assert_eq!(parse(args(&["--name", "a", "--mode", "desktop"])), unknown("desktop"));
+}
+
+#[test]
+fn a_scene_is_title_or_level_and_title_by_default() {
+    let scene = |line: &[&str]| parse(args(line)).map(|options| options.settings.scene);
+    assert_eq!(scene(&["--name", "a", "--scene", "title"]), Ok(Scene::Title));
+    assert_eq!(scene(&["--name", "a", "--scene", "level"]), Ok(Scene::Level));
+    assert_eq!(scene(&["--name", "a"]), Ok(Scene::Title));
+    let unknown = |text: &str| Err(ArgsError::UnknownScene(text.to_owned()));
+    assert_eq!(scene(&["--name", "a", "--scene", "Level"]), unknown("Level"));
+    assert_eq!(scene(&["--name", "a", "--scene", "menu"]), unknown("menu"));
+    let message = ArgsError::UnknownScene("menu".to_owned()).to_string();
+    assert_eq!(message, "trial got the unknown scene \"menu\"");
 }
 
 #[test]
@@ -237,6 +254,7 @@ fn the_usage_names_every_option() {
     let options = [
         "--name",
         "--mode",
+        "--scene",
         "--warmup-secs",
         "--perf-lines",
         "--captures",

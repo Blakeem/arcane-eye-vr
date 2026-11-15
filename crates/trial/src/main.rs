@@ -4,6 +4,8 @@
 //! frame times from the core's perf summary lines, records the cameras from its camera lines, saves
 //! frames as PNG files, saves a burst of published frames of one region when asked, closes the
 //! game and writes `<out>/<UTC time>-<name>/`. The game's root folder is `home` in that folder.
+//! With `--scene level`, a priming session first reaches the main menu and closes, and the trial's
+//! session then posts a key on the title screen and waits until the latest save's level runs.
 //! `steps.rs` runs the steps against two traits, and `live.rs` drives the game and the viewer link
 //! through the `launch` and `viewer-client` crates. It exits with 0 when every step passed, 1 when a
 //! step failed or the result could not be recorded, and 2 for a bad command line.
@@ -14,9 +16,12 @@ mod args;
 mod burst;
 mod folder;
 mod home;
+mod level;
 mod live;
+mod log_tail;
 mod perf;
 mod pixels;
+mod place;
 mod png_file;
 mod report;
 mod steps;

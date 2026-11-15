@@ -15,6 +15,7 @@ pub mod checks;
 mod decide;
 pub mod direct;
 pub mod game_dir;
+pub mod key;
 mod raw;
 pub mod registry;
 pub mod status;
