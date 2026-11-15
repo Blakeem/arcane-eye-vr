@@ -4,7 +4,8 @@
 //! Each matches bg3-vr's layout. The view and `PerCamera` offsets were measured with a debugger
 //! breakpoint. The camera-cut field was checked by a static disassembly of the installed exe. The
 //! pipeline, frame, level, second-view and shadow stage offsets come from bg3-vr's recipe and a
-//! static disassembly.
+//! static disassembly. The game client offsets come from a static disassembly and debugger reads of
+//! the state id.
 
 /// The camera controller pointer of a render view's `ReadState`, which the engine builds the view's
 /// `PerView` and `PerCamera` blocks from.
@@ -162,6 +163,12 @@ pub const LEVEL_LIGHTING_ID: usize = 0x24;
 
 /// The list in the id pool that the id release takes.
 pub const ID_POOL_RELEASE_LIST: usize = 0xC600;
+
+/// The state machine pointer of the game client.
+pub const GAME_CLIENT_STATE_MACHINE: usize = 0x90;
+
+/// The state id of the game client's state machine, one `u32`. The game thread writes it.
+pub const STATE_MACHINE_STATE_ID: usize = 0x08;
 
 /// The render view pointer of a shadow stage, the stage with stage id 0x02, which is entry 0x12 of
 /// the view's stage array ([`VIEW_STAGE_ARRAY`]).

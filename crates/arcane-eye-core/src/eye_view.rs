@@ -22,7 +22,6 @@ mod place;
 mod set_up;
 
 use std::mem::ManuallyDrop;
-use std::panic::{self, AssertUnwindSafe};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -43,6 +42,7 @@ use self::set_up::{Update, observe};
 use crate::config::Config;
 use crate::context::CoreContext;
 use crate::install::{GameCode, InstallError};
+use crate::present;
 use crate::raw::eye_view::{self as raw_eye_view, EngineFns, GameCalls, RenderCalls};
 
 hooks::game_mid_hook!(
@@ -184,7 +184,7 @@ fn on_game_update(context: &CoreContext, thread: &GameThread, registers: &mut Re
 pub(crate) fn on_present_call(context: &CoreContext, thread: &RenderThread) {
     let Some(state) = &context.eye_view else { return };
     let health = &context.health;
-    guarded(health, || {
+    present::guarded(health, Feature::EyeView, || {
         let mut calls = RenderCalls::new(&state.fns, thread);
         state.render.with(thread, |render| {
             state.view.on_present_call(&mut calls, render, health, Instant::now());
@@ -198,17 +198,6 @@ pub(crate) fn frame_layout(context: &CoreContext, thread: &RenderThread) -> Layo
     let Some(state) = &context.eye_view else { return Layout::MainOnly };
     let layout = state.render.with(thread, |render| state.view.layout(render, &context.health));
     layout.unwrap_or_default()
-}
-
-/// Runs `work` while `eye-view` is running, inside `catch_unwind`, so a panic in it latches
-/// `eye-view` off.
-fn guarded(health: &Health, work: impl FnOnce()) {
-    if !health.is_running(Feature::EyeView) {
-        return;
-    }
-    if panic::catch_unwind(AssertUnwindSafe(work)).is_err() {
-        health.panic_caught(Feature::EyeView);
-    }
 }
 
 impl EyeView {

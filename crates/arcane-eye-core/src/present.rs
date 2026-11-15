@@ -3,9 +3,11 @@
 //! The install resolves the `dx11_present_call` signature in the game exe's code and puts a mid hook
 //! on the match. The handler reads the eye view's layout for the next frame, ends the frames of the
 //! eye camera, the shadow cache and the view camera, runs the frame work before the engine's `Present`
-//! call, reports the first frame through the launch token and runs the eye view's create.
+//! call, reports the first frame through the launch token, reads the game state and runs the eye
+//! view's create.
 
 use std::mem::ManuallyDrop;
+use std::panic::{self, AssertUnwindSafe};
 
 use diag::health::{Feature, Health};
 use game_bindings::signatures::DX11_PRESENT_CALL;
@@ -19,6 +21,7 @@ use crate::context::CoreContext;
 use crate::eye_camera;
 use crate::eye_view;
 use crate::frame::{self, FrameReport};
+use crate::game_state;
 use crate::install::{GameCode, InstallError};
 use crate::raw::{self, StatusView};
 use crate::shadow_cache;
@@ -94,12 +97,24 @@ fn on_present_call(context: &CoreContext, thread: &RenderThread, registers: &mut
     if frame == Some(FrameReport::FirstPresent) {
         report(context.status.as_ref(), Status::FirstPresent);
     }
+    game_state::on_present_call(context, thread);
     eye_view::on_present_call(context, thread);
+}
+
+/// Runs `work`, a feature's part of the handler, while `feature` is running, inside `catch_unwind`,
+/// so a panic in it latches `feature` off and leaves the Present call-site hook running.
+pub(crate) fn guarded(health: &Health, feature: Feature, work: impl FnOnce()) {
+    if !health.is_running(feature) {
+        return;
+    }
+    if panic::catch_unwind(AssertUnwindSafe(work)).is_err() {
+        health.panic_caught(feature);
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{failure_status, install};
+    use super::{failure_status, guarded, install};
     use crate::install::{GameCode, InstallError, LocateError};
     use diag::health::{Feature, FeatureState, Health};
     use game_bindings::pe::Rva;
@@ -121,5 +136,24 @@ mod tests {
         let health = Health::new();
         assert!(install(&health, None, &GameCode::copy()).is_none());
         assert_eq!(health.state(Feature::PresentHook), FeatureState::Unavailable);
+    }
+
+    #[test]
+    fn a_panic_in_a_features_part_latches_only_that_feature_off() {
+        for feature in [Feature::EyeView, Feature::GameState] {
+            let health = Health::new();
+            health.install_ok(Feature::PresentHook);
+            let mut runs = 0;
+            guarded(&health, feature, || runs += 1);
+            assert_eq!(runs, 0, "a pending {feature:?} runs nothing");
+            health.install_ok(feature);
+            guarded(&health, feature, || runs += 1);
+            assert_eq!(runs, 1, "{feature:?}");
+            guarded(&health, feature, || panic!("the feature's present work panicked"));
+            assert_eq!(health.state(feature), FeatureState::Failed);
+            assert!(health.is_running(Feature::PresentHook), "the Present call-site hook runs on");
+            guarded(&health, feature, || runs += 1);
+            assert_eq!(runs, 1, "a failed {feature:?} runs nothing");
+        }
     }
 }

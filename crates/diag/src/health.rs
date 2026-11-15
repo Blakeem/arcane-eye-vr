@@ -29,6 +29,9 @@ pub enum Feature {
     /// The mid hook at the exit of a shadow stage's execute, which gives the eye view's shadow stage
     /// the main view's distant shadow cache state.
     ShadowCache,
+    /// The read of the game client's state id at each Present call site, which logs each change of
+    /// the id.
+    GameState,
 }
 
 impl Feature {
@@ -40,6 +43,7 @@ impl Feature {
             Self::EyeCamera => "eye-camera",
             Self::EyeView => "eye-view",
             Self::ShadowCache => "shadow-cache",
+            Self::GameState => "game-state",
         }
     }
 }
@@ -120,6 +124,7 @@ pub struct Health {
     eye_camera: AtomicU8,
     eye_view: AtomicU8,
     shadow_cache: AtomicU8,
+    game_state: AtomicU8,
 }
 
 impl Health {
@@ -131,6 +136,7 @@ impl Health {
             eye_camera: AtomicU8::new(FeatureState::Pending as u8),
             eye_view: AtomicU8::new(FeatureState::Pending as u8),
             shadow_cache: AtomicU8::new(FeatureState::Pending as u8),
+            game_state: AtomicU8::new(FeatureState::Pending as u8),
         }
     }
 
@@ -171,6 +177,7 @@ impl Health {
             Feature::EyeCamera => &self.eye_camera,
             Feature::EyeView => &self.eye_view,
             Feature::ShadowCache => &self.shadow_cache,
+            Feature::GameState => &self.game_state,
         }
     }
 
@@ -259,6 +266,8 @@ mod tests {
         assert_eq!(Feature::EyeView.as_str(), "eye-view");
         assert_eq!(health.state(Feature::ShadowCache), FeatureState::Pending);
         assert_eq!(Feature::ShadowCache.as_str(), "shadow-cache");
+        assert_eq!(health.state(Feature::GameState), FeatureState::Pending);
+        assert_eq!(Feature::GameState.as_str(), "game-state");
     }
 
     #[test]

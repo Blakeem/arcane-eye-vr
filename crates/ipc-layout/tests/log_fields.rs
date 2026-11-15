@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     use ipc_layout::log_fields::is_written_quoted;
-    use ipc_layout::{camera_line, perf_line};
+    use ipc_layout::{camera_line, game_state_line, perf_line};
 
     #[test]
     fn an_empty_value_or_one_with_a_space_quote_equals_backslash_or_control_is_quoted() {
@@ -17,7 +17,7 @@ mod tests {
 
     #[test]
     fn no_parsed_message_holds_a_character_the_session_log_escapes() {
-        for message in [camera_line::MESSAGE, perf_line::MESSAGE] {
+        for message in [camera_line::MESSAGE, game_state_line::MESSAGE, perf_line::MESSAGE] {
             let escaped = message.chars().any(|c| c == '"' || c == '\\' || c.is_control());
             assert!(!escaped, "{message:?}");
         }

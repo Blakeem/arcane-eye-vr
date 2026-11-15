@@ -234,6 +234,16 @@ pub const G_ID_POOL: Signature = Signature {
     rip: Some(Rip { disp_offset: 3, instr_len: 7 }),
 };
 
+/// The global that holds the game client, from a `mov rax,[rip+disp32]` that loads it. The code after
+/// it reads the client's state machine pointer at +90h and compares the state machine's state id at +8
+/// with 12h, the id of a running level. Derived from a disassembly.
+pub const G_GAME_CLIENT: Signature = Signature {
+    name: "g_game_client",
+    pattern: "48 8B 05 ?? ?? ?? ?? 48 8B 90 90 00 00 00 83 7A 08 12 75 16 48 8B 01 41",
+    offset: 0,
+    rip: Some(Rip { disp_offset: 3, instr_len: 7 }),
+};
+
 /// The game render view's vtable, from the `lea rax,[rip+disp32]` in the view's constructor that
 /// stores it. Derived from a disassembly.
 pub const VT_GAME_RENDER_VIEW: Signature = Signature {
@@ -266,6 +276,7 @@ pub const SIGNATURES: &[Signature] = &[
     G_PLAYER_MANAGER,
     G_LEVEL_MANAGER,
     G_ID_POOL,
+    G_GAME_CLIENT,
     VT_GAME_RENDER_VIEW,
 ];
 

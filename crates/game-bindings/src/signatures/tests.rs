@@ -1,6 +1,6 @@
 //! The signature resolve against hand-built sections, and the table's own checks.
 
-use super::{Rip, SHADOW_STAGE_EXIT, SIGNATURES, Signature, SignatureError};
+use super::{G_GAME_CLIENT, Rip, SHADOW_STAGE_EXIT, SIGNATURES, Signature, SignatureError};
 use crate::pattern::Pattern;
 use crate::pe::{CodeSection, Rva};
 
@@ -16,11 +16,22 @@ const SHADOW_STAGE_EXIT_BYTES: [u8; 42] = [
 /// The shadow stage's exit instruction, `add rsp,260h`.
 const ADD_RSP_260H: [u8; 7] = [0x48, 0x81, 0xC4, 0x60, 0x02, 0x00, 0x00];
 
+/// The bytes of the game client global's match, with the displacement 0x2000 in the load.
+const GAME_CLIENT_BYTES: [u8; 24] = [
+    0x48, 0x8B, 0x05, 0x00, 0x20, 0x00, 0x00, 0x48, 0x8B, 0x90, 0x90, 0x00, 0x00, 0x00, 0x83, 0x7A,
+    0x08, 0x12, 0x75, 0x16, 0x48, 0x8B, 0x01, 0x41,
+];
+
 /// Int3 padding with the shadow stage's exit match at each of `starts`.
 fn code_with_shadow_stage_exits(starts: &[usize]) -> Vec<u8> {
+    code_with(&SHADOW_STAGE_EXIT_BYTES, starts)
+}
+
+/// Int3 padding with `matched` at each of `starts`.
+fn code_with(matched: &[u8], starts: &[usize]) -> Vec<u8> {
     let mut bytes = vec![0xCC; 0x100];
     for start in starts {
-        bytes[*start..][..SHADOW_STAGE_EXIT_BYTES.len()].copy_from_slice(&SHADOW_STAGE_EXIT_BYTES);
+        bytes[*start..][..matched.len()].copy_from_slice(matched);
     }
     bytes
 }
@@ -134,6 +145,28 @@ fn a_shadow_stage_exit_with_a_function_less_than_5_bytes_past_its_ret_has_no_mat
     let last_padding = bytes[0x40..][..SHADOW_STAGE_EXIT_BYTES.len()].last_mut();
     *last_padding.expect("the last padding byte") = 0x40;
     assert_eq!(resolve_in(&SHADOW_STAGE_EXIT, &bytes), Err(SignatureError::NoMatch));
+}
+
+#[test]
+fn the_game_client_global_is_the_target_of_the_load_at_its_one_match() {
+    let bytes = code_with(&GAME_CLIENT_BYTES, &[0x40]);
+    // The load ends 7 bytes past the match at 0x1040, and its displacement adds 0x2000.
+    assert_eq!(resolve_in(&G_GAME_CLIENT, &bytes), Ok(Rva(0x3047)));
+}
+
+#[test]
+fn the_game_client_global_twice_in_the_code_is_ambiguous() {
+    let bytes = code_with(&GAME_CLIENT_BYTES, &[0x10, 0x80]);
+    let result = resolve_in(&G_GAME_CLIENT, &bytes);
+    assert_eq!(result, Err(SignatureError::Ambiguous { matches: 2 }));
+}
+
+#[test]
+fn a_game_client_load_that_compares_another_state_id_has_no_match() {
+    let mut bytes = code_with(&GAME_CLIENT_BYTES, &[0x40]);
+    // The compare's immediate, 12h, sits 17 bytes past the match.
+    bytes[0x40 + 17] = 0x07;
+    assert_eq!(resolve_in(&G_GAME_CLIENT, &bytes), Err(SignatureError::NoMatch));
 }
 
 #[test]

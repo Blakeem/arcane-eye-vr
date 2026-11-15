@@ -5,6 +5,7 @@ mod context;
 mod eye_camera;
 mod eye_view;
 mod frame;
+mod game_state;
 mod init;
 mod install;
 mod present;

@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod camera;
+pub mod game_client;
 pub mod offsets;
 pub mod pattern;
 pub mod pe;

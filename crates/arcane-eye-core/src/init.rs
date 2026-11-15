@@ -3,9 +3,10 @@
 //! [`start`] takes its inputs as parameters and returns the log handle and the subscriber without
 //! installing either, so tests run it in isolation. Only [`init_process`] finds the root folder, sets
 //! the process-wide subscriber, reads the settings files, opens the launch token, installs the Present
-//! call-site, view camera, eye camera, eye view and shadow cache hooks and fills the core context
-//! slot.
+//! call-site, view camera, eye camera, eye view and shadow cache hooks and the game state read, and
+//! fills the core context slot.
 
+use std::mem::ManuallyDrop;
 use std::panic::{self, UnwindSafe};
 use std::path::Path;
 
@@ -13,16 +14,17 @@ use diag::health::Health;
 use diag::logging::{self, LogError, LogHandle, LogName};
 use diag::root::{Root, RootError};
 use game_bindings::state::{self, StateError};
-use hooks::RenderCell;
+use hooks::{MidHook, RenderCell};
 use ipc_layout::core_init::INIT_STARTED;
 use ipc_layout::launch_token::{self, Mode, UnknownMode};
 use tracing::dispatcher::{self, SetGlobalDefaultError};
 use tracing::{Dispatch, info, warn};
 
-use crate::config;
+use crate::config::{self, Config};
 use crate::context::CoreContext;
 use crate::eye_camera;
 use crate::eye_view;
+use crate::game_state::{self, GameStateWatch};
 use crate::install::GameCode;
 use crate::present;
 use crate::raw::StatusView;
@@ -116,10 +118,7 @@ fn guarded(init: impl FnOnce() -> Result<(), InitError> + UnwindSafe) -> u32 {
 /// the launch token's mapping.
 ///
 /// The hook installs run after every other step that can fail but the store, and the check above found
-/// the slot empty, so a failed init leaves the game unmodified. The view camera, eye camera and eye
-/// view installs follow the Present call-site install, which all three need, and the shadow cache
-/// install follows the eye view install, which it needs. All five scan one copy of the game exe's
-/// code, which drops before the store.
+/// the slot empty, so a failed init leaves the game unmodified.
 fn run(
     mode: u32,
     root: impl FnOnce() -> Result<Root, RootError>,
@@ -136,22 +135,15 @@ fn run(
     let config = config::load(root.path());
     let health = Health::new();
     let status = open_status(token_name);
-    let (present_hook, view_installed, eye_installed, eye_view_installed, shadow_installed) = {
-        let game_code = GameCode::copy();
-        let present_hook = present::install(&health, status.as_ref(), &game_code);
-        let view_installed = view_camera::install(&health, &game_code);
-        let eye_installed = eye_camera::install(&health, &game_code, config);
-        let eye_view_installed = eye_view::install(&health, &game_code, config);
-        let shadow_installed = shadow_cache::install(&health, &game_code, config);
-        (present_hook, view_installed, eye_installed, eye_view_installed, shadow_installed)
-    };
+    let installs = install_all(&health, status.as_ref(), config);
+    let view_installed = installs.view_camera;
     let world_translate = view_installed.as_ref().map(|installed| installed.world_translate);
     let (eye_camera_hook, eye_state) =
-        eye_installed.map(|installed| (installed.hook, installed.state)).unzip();
+        installs.eye_camera.map(|installed| (installed.hook, installed.state)).unzip();
     let (eye_view_hook, eye_view_state) =
-        eye_view_installed.map(|installed| (installed.hook, installed.state)).unzip();
+        installs.eye_view.map(|installed| (installed.hook, installed.state)).unzip();
     let (shadow_cache_hook, shadow_state) =
-        shadow_installed.map(|installed| (installed.hook, installed.state)).unzip();
+        installs.shadow_cache.map(|installed| (installed.hook, installed.state)).unzip();
     let context = CoreContext {
         _log: core.log,
         _config: config,
@@ -162,7 +154,8 @@ fn run(
         eye_camera: RenderCell::new(eye_state),
         eye_view: eye_view_state,
         shadow_cache: RenderCell::new(shadow_state),
-        _present_hook: present_hook,
+        game_state: RenderCell::new(installs.game_state),
+        _present_hook: installs.present_hook,
         _view_camera_hook: view_installed.map(|installed| installed.hook),
         _eye_camera_hook: eye_camera_hook,
         _eye_view_hook: eye_view_hook,
@@ -170,6 +163,32 @@ fn run(
     };
     state::store_core_context(context)?;
     Ok(())
+}
+
+/// What each install that scans the game exe's code returned.
+struct Installs {
+    present_hook: Option<ManuallyDrop<MidHook>>,
+    game_state: Option<GameStateWatch>,
+    view_camera: Option<view_camera::Installed>,
+    eye_camera: Option<eye_camera::Installed>,
+    eye_view: Option<eye_view::Installed>,
+    shadow_cache: Option<shadow_cache::Installed>,
+}
+
+/// Runs every install against one copy of the game exe's code, which drops on return. The installs
+/// run in field order. The game state, view camera, eye camera and eye view installs follow the
+/// Present call-site install, which all four need, and the shadow cache install follows the eye view
+/// install, which it needs.
+fn install_all(health: &Health, status: Option<&StatusView>, config: Config) -> Installs {
+    let code = GameCode::copy();
+    Installs {
+        present_hook: present::install(health, status, &code),
+        game_state: game_state::install(health, &code),
+        view_camera: view_camera::install(health, &code),
+        eye_camera: eye_camera::install(health, &code, config),
+        eye_view: eye_view::install(health, &code, config),
+        shadow_cache: shadow_cache::install(health, &code, config),
+    }
 }
 
 /// The launch token's status view, or `None` when the token is missing or cannot be mapped. The core
@@ -229,6 +248,7 @@ mod tests {
         let context = state::core_context::<CoreContext>().expect("the stored context");
         assert_eq!(context.health.state(Feature::PresentHook), FeatureState::Unavailable);
         assert_eq!(context.health.state(Feature::ViewCamera), FeatureState::Unavailable);
+        assert_eq!(context.health.state(Feature::GameState), FeatureState::Unavailable);
         assert_eq!(
             context.health.state(Feature::EyeCamera),
             FeatureState::Pending,

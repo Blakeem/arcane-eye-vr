@@ -13,7 +13,7 @@ use settings::dev::{DevFlags, MainViewEye, SecondView, StereoFlags};
 use settings::player::Settings;
 
 use super::decide::{Action, Observed, RETRY_PERIOD, Readiness, Retry, Stale, decide, readiness};
-use super::{guarded, install};
+use super::install;
 use crate::config::Config;
 use crate::install::GameCode;
 use crate::logged;
@@ -138,23 +138,6 @@ fn an_eye_view_is_ready_only_when_its_four_values_equal_the_main_views() {
     same_ids.atmosphere.target = GameAddr::new(0x9000);
     same_ids.split_index = 1;
     assert_eq!(readiness(&main, &same_ids), Readiness::Ready, "records and guards do not count");
-}
-
-#[test]
-fn a_panic_at_the_present_call_latches_only_the_eye_view_off() {
-    let health = Health::new();
-    health.install_ok(Feature::PresentHook);
-    let mut runs = 0;
-    guarded(&health, || runs += 1);
-    assert_eq!(runs, 0, "a pending feature runs nothing");
-    health.install_ok(Feature::EyeView);
-    guarded(&health, || runs += 1);
-    assert_eq!(runs, 1);
-    guarded(&health, || panic!("the eye view's present work panicked"));
-    assert_eq!(health.state(Feature::EyeView), FeatureState::Failed);
-    assert!(health.is_running(Feature::PresentHook), "the Present call-site hook keeps running");
-    guarded(&health, || runs += 1);
-    assert_eq!(runs, 1, "a failed feature runs nothing");
 }
 
 #[test]
