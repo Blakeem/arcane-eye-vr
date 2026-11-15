@@ -127,6 +127,11 @@ pub const VIEW_LIGHTING: usize = 0x28D8;
 /// The id in an atmosphere or lighting record, one `i32`.
 pub const ENVIRONMENT_RECORD_ID: usize = 0x08;
 
+/// The fog variant byte of a render view. The view's fog layer comes from this variant of its
+/// atmosphere record. The game set it to 1 on each player view at the start of a cutscene and to 0
+/// at its end (measured in one cutscene with a debugger).
+pub const VIEW_FOG_VARIANT: usize = 0x2961;
+
 /// The lighting lock byte of a render view. A set lock makes the lighting setter only record the
 /// request.
 pub const VIEW_LIGHTING_LOCK: usize = 0x2AEB;

@@ -257,13 +257,14 @@ impl World {
     }
 
     /// Stand-in game calls whose main frame is this world's frame and whose `CreatePlayerView`
-    /// returns this world's eye view.
+    /// returns this world's eye view. They store no value in a view.
     pub(crate) fn recorder(&self) -> Recorder {
         Recorder {
             calls: Vec::with_capacity(64),
             frame: self.frame.address(),
             created: self.eye.address(),
             level_request: -1,
+            stores: false,
         }
     }
 

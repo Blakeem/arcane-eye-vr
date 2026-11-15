@@ -13,10 +13,11 @@ use game_bindings::offsets::VIEW_SET_CAMERA_SLOT;
 use game_bindings::pipeline::{Pipeline, RenderFrame};
 use game_bindings::render_view::RenderView;
 use game_bindings::signatures::{
-    G_ID_POOL, G_LEVEL_MANAGER, G_PIPELINE, G_PLAYER_MANAGER, GAME_PIPELINE_SETUP, GAME_UPDATE,
-    ID_POOL_RELEASE, PIPELINE_MAIN_FRAME, Signature, VIEW_ATTACH_LEVEL_ATMOSPHERE,
-    VIEW_ATTACH_LEVEL_LIGHTING, VIEW_CREATE_PLAYER, VIEW_SET_ATMOSPHERE, VIEW_SET_LIGHTING,
-    VIEW_SET_SCENE, VIEW_SET_VIEWPORT, VT_GAME_RENDER_VIEW,
+    G_ID_POOL, G_LEVEL_MANAGER, G_PIPELINE, G_PLAYER_MANAGER, GAME_PIPELINE_SETUP,
+    GAME_UPDATE_LOGIC_END, ID_POOL_RELEASE, PIPELINE_MAIN_FRAME, Signature,
+    VIEW_ATTACH_LEVEL_ATMOSPHERE, VIEW_ATTACH_LEVEL_LIGHTING, VIEW_CREATE_PLAYER,
+    VIEW_SET_ATMOSPHERE, VIEW_SET_FOG_VARIANT, VIEW_SET_LIGHTING, VIEW_SET_SCENE,
+    VIEW_SET_VIEWPORT, VT_GAME_RENDER_VIEW,
 };
 use game_mem::{GameAddr, WriteDest, try_read};
 use hooks::{GameThread, HookError, MidHook, MidThunk, RenderThread};
@@ -33,6 +34,7 @@ type SetSceneFn = extern "system" fn(view: usize, scene: usize);
 type EnvironmentFn =
     extern "system" fn(view: usize, source: usize, request: *mut i32, blend: f32, flag: u8);
 type ReleaseIdFn = extern "system" fn(list: usize, id: *mut i32);
+type SetFogVariantFn = extern "system" fn(view: usize, variant: u8);
 type SetViewportFn =
     extern "system" fn(view: usize, scale: *const [f32; 2], offset: *const [f32; 2]);
 
@@ -55,6 +57,7 @@ pub(crate) struct EngineFns {
     release_id: usize,
     set_atmosphere: usize,
     set_lighting: usize,
+    set_fog_variant: usize,
     set_viewport: usize,
 }
 
@@ -62,7 +65,7 @@ pub(crate) struct EngineFns {
 pub(crate) struct Located {
     pub(crate) fns: EngineFns,
     pub(crate) addresses: Addresses,
-    /// The entry of the game update, the hook site.
+    /// The end of the game update's logic calls, the hook site.
     pub(crate) site: GameAddr,
 }
 
@@ -82,7 +85,7 @@ pub(crate) fn locate(code: &GameCode) -> Result<Located, EyeViewError> {
         create_player_view: located(code, &VIEW_CREATE_PLAYER)?,
         pipeline_setup: located(code, &GAME_PIPELINE_SETUP)?,
     };
-    let site = located(code, &GAME_UPDATE)?;
+    let site = located(code, &GAME_UPDATE_LOGIC_END)?;
     let fns = EngineFns {
         main_frame: located(code, &PIPELINE_MAIN_FRAME)?.get(),
         create_player_view: addresses.create_player_view.get(),
@@ -94,6 +97,7 @@ pub(crate) fn locate(code: &GameCode) -> Result<Located, EyeViewError> {
         release_id: located(code, &ID_POOL_RELEASE)?.get(),
         set_atmosphere: located(code, &VIEW_SET_ATMOSPHERE)?.get(),
         set_lighting: located(code, &VIEW_SET_LIGHTING)?.get(),
+        set_fog_variant: located(code, &VIEW_SET_FOG_VARIANT)?.get(),
         set_viewport: located(code, &VIEW_SET_VIEWPORT)?.get(),
     };
     Ok(Located { fns, addresses, site })
@@ -110,19 +114,22 @@ fn set_camera_slot(vtable: GameAddr) -> Result<usize, EyeViewError> {
     set_camera.ok_or(EyeViewError::SetCameraSlot)
 }
 
-/// Installs `thunk` as the mid hook at the game update entry `address`.
+/// Installs `thunk` as the mid hook at `address`, the end of the game update's logic calls.
 ///
-/// `address` must be the one match of the `game_update` signature in the loaded game exe. The hook
-/// never drops, so it stays installed for the process life, and no game thread runs a freed stub.
+/// `address` must be the one match of the `game_update_logic_end` signature in the loaded game exe.
+/// The hook never drops, so it stays installed for the process life, and no game thread runs a freed
+/// stub.
 pub(crate) fn install_game_update_hook(
     address: GameAddr,
     thunk: MidThunk,
 ) -> Result<ManuallyDrop<MidHook>, HookError> {
-    // SAFETY: the signature's one match is a function entry that starts with `mov [rsp+18h],rbx`, a
-    // 5-byte instruction with no RIP-relative operand that SafetyHook's 5-byte jump moves, and no jump
-    // targets a byte past a function's entry. The game thread runs the game update, the only thread
-    // the game thunk's token allows: its one caller is the game thread's run function, through
-    // pipeline vtable slot 81.
+    // SAFETY: the signature's one match holds `mov rdx,rbx`, `mov rcx,[rdi+98h]` and a `call` with a
+    // 32-bit relative target at the site, 15 bytes with no RIP-relative data operand and no short
+    // jump. SafetyHook's 5-byte jump moves the first two and its 14-byte jump all three, and it
+    // relocates a moved `call`. The `je` before the site targets the site's first byte, and no jump
+    // targets a later byte of the 15. The game thread runs the game update, the only thread the game
+    // thunk's token allows: its one caller is the game thread's run function, through pipeline
+    // vtable slot 81.
     let hook = unsafe { hooks::install_mid_hook(address, thunk) }?;
     Ok(ManuallyDrop::new(hook))
 }
@@ -274,6 +281,13 @@ impl SetUpCalls for GameCalls<'_> {
         apply: Apply,
     ) {
         environment(self.fns.set_lighting, view, record, request, apply);
+    }
+
+    fn set_fog_variant(&mut self, view: RenderView, variant: u8) {
+        // SAFETY: `set_fog_variant` is the `view_set_fog_variant` match, which takes a view and a
+        // variant byte. `variant` is the fog variant byte read from the main view.
+        let set_fog_variant = unsafe { function::<SetFogVariantFn>(self.fns.set_fog_variant) };
+        set_fog_variant(view.address().get(), variant);
     }
 
     fn set_viewport(&mut self, view: RenderView, scale: [f32; 2], offset: [f32; 2]) {

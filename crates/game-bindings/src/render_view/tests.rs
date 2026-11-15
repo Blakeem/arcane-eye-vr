@@ -9,10 +9,10 @@ use crate::offsets::{
     CONTROLLER_SIZE, CONTROLLER_VIEW, CONTROLLER_VTABLE_SLOTS, CONTROLLER_WORLD_TRANSLATE_SLOT,
     ENVIRONMENT_RECORD_ID, PER_CAMERA_FAR, PER_CAMERA_NEAR, PER_CAMERA_POSITION,
     PER_CAMERA_PROJECTION, PER_CAMERA_VIEW, SCENE_ACTIVE, VIEW_ATMOSPHERE, VIEW_ATMOSPHERE_LOCK,
-    VIEW_ATMOSPHERE_REQUEST, VIEW_ATMOSPHERE_TARGET, VIEW_JOB_CONTEXT, VIEW_LAST_SEEN_CONTROLLER,
-    VIEW_LIGHTING_LOCK, VIEW_LIGHTING_REQUEST, VIEW_LIGHTING_TARGET, VIEW_OCCLUSION,
-    VIEW_PER_CAMERA, VIEW_READ_STATE_CONTROLLER, VIEW_SCENE, VIEW_SPLIT_INDEX, VIEW_STAGE_ARRAY,
-    VIEW_STAGE_OWNER, VIEW_WRITE_STATE_CONTROLLER,
+    VIEW_ATMOSPHERE_REQUEST, VIEW_ATMOSPHERE_TARGET, VIEW_FOG_VARIANT, VIEW_JOB_CONTEXT,
+    VIEW_LAST_SEEN_CONTROLLER, VIEW_LIGHTING_LOCK, VIEW_LIGHTING_REQUEST, VIEW_LIGHTING_TARGET,
+    VIEW_OCCLUSION, VIEW_PER_CAMERA, VIEW_READ_STATE_CONTROLLER, VIEW_SCENE, VIEW_SPLIT_INDEX,
+    VIEW_STAGE_ARRAY, VIEW_STAGE_OWNER, VIEW_WRITE_STATE_CONTROLLER,
 };
 
 /// Windows reserves the lowest 64 KiB of every process, so no read there succeeds.
@@ -157,6 +157,7 @@ fn a_view_yields_its_content_with_the_scene_byte_and_the_environment_and_request
     put(&mut view, VIEW_ATMOSPHERE_REQUEST, &33_i32.to_ne_bytes());
     put(&mut view, VIEW_LIGHTING_TARGET, &address_of(&lighting_target).get().to_ne_bytes());
     put(&mut view, VIEW_LIGHTING_REQUEST, &(-1_i32).to_ne_bytes());
+    view[VIEW_FOG_VARIANT] = 4;
     view[VIEW_SPLIT_INDEX] = 1;
     view[VIEW_ATMOSPHERE_LOCK] = 2;
     view[VIEW_LIGHTING_LOCK] = 3;
@@ -177,6 +178,7 @@ fn a_view_yields_its_content_with_the_scene_byte_and_the_environment_and_request
             target_id: Some(23),
             request: -1,
         },
+        fog_variant: 4,
         split_index: 1,
         atmosphere_lock: 2,
         lighting_lock: 3,

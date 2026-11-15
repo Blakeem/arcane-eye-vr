@@ -1,8 +1,9 @@
 //! Stand-in game calls that record their arguments, for the tests of the create and the game update.
 
+use game_bindings::offsets::{VIEW_FOG_VARIANT, VIEW_WRITE_STATE_CONTROLLER};
 use game_bindings::pipeline::{Pipeline, RenderFrame};
 use game_bindings::render_view::RenderView;
-use game_mem::{GameAddr, WriteDest};
+use game_mem::{GameAddr, Plain, WriteDest, try_write};
 
 use super::engine::{Apply, CreateCalls, GameMemory, SetUpCalls};
 use crate::raw::test_support::test_dest;
@@ -60,6 +61,10 @@ pub(crate) enum Call {
         request: i32,
         flag: u8,
     },
+    SetFogVariant {
+        view: GameAddr,
+        variant: u8,
+    },
     SetViewport {
         view: GameAddr,
         scale: [f32; 2],
@@ -68,7 +73,9 @@ pub(crate) enum Call {
 }
 
 /// Stand-in game calls. Each records its call and makes no other change, except that the level
-/// atmosphere attach writes `level_request` into its request id, as the game may.
+/// atmosphere attach writes `level_request` into its request id, as the game may, and that
+/// `SetCamera` and the fog variant setter store their value in the view while `stores` is set, as
+/// the game does.
 pub(crate) struct Recorder {
     pub(crate) calls: Vec<Call>,
     /// What the main frame getter returns.
@@ -76,6 +83,8 @@ pub(crate) struct Recorder {
     /// What `CreatePlayerView` returns.
     pub(crate) created: GameAddr,
     pub(crate) level_request: i32,
+    /// Whether `SetCamera` and the fog variant setter store their value in the view.
+    pub(crate) stores: bool,
 }
 
 impl Recorder {
@@ -89,6 +98,12 @@ impl Recorder {
         self.calls.clear();
         calls
     }
+}
+
+/// Stores `value` at `offset` in the test view `view`.
+fn store<T: Plain>(view: RenderView, offset: usize, value: T) {
+    let address = view.address().checked_add(offset).expect("a test address");
+    try_write(test_dest(address, size_of::<T>()), value).expect("a write to a test view");
 }
 
 impl GameMemory for Recorder {
@@ -122,6 +137,9 @@ impl SetUpCalls for Recorder {
 
     fn set_camera(&mut self, view: RenderView, controller: GameAddr) {
         self.record(Call::SetCamera { view: view.address(), controller });
+        if self.stores {
+            store(view, VIEW_WRITE_STATE_CONTROLLER, controller.get());
+        }
     }
 
     fn set_scene(&mut self, view: RenderView, scene: GameAddr) {
@@ -175,6 +193,13 @@ impl SetUpCalls for Recorder {
     ) {
         let (view, flag) = (view.address(), apply.flag());
         self.record(Call::SetLighting { view, record, request: *request, flag });
+    }
+
+    fn set_fog_variant(&mut self, view: RenderView, variant: u8) {
+        self.record(Call::SetFogVariant { view: view.address(), variant });
+        if self.stores {
+            store(view, VIEW_FOG_VARIANT, variant);
+        }
     }
 
     fn set_viewport(&mut self, view: RenderView, scale: [f32; 2], offset: [f32; 2]) {

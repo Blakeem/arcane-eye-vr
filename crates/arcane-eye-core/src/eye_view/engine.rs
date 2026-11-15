@@ -126,6 +126,9 @@ pub(crate) trait SetUpCalls: GameMemory {
     /// sets when the game applies the source.
     fn set_lighting(&mut self, view: RenderView, record: GameAddr, request: &mut i32, apply: Apply);
 
+    /// Gives `view` the fog variant `variant`, which rebuilds the view's fog.
+    fn set_fog_variant(&mut self, view: RenderView, variant: u8);
+
     /// Places `view` at `offset` with the size `scale`, each a fraction of the frame (steps 14, 15).
     fn set_viewport(&mut self, view: RenderView, scale: [f32; 2], offset: [f32; 2]);
 }

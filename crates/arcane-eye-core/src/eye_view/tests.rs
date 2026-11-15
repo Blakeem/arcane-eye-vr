@@ -2,6 +2,7 @@
 //! world in test memory in the submodules.
 
 mod create;
+mod follow;
 mod update;
 
 use std::time::{Duration, Instant};
@@ -40,6 +41,7 @@ fn set_main() -> ViewContent {
         scene_active: 1,
         atmosphere: environment(11),
         lighting: environment(22),
+        fog_variant: 0,
         split_index: 0,
         atmosphere_lock: 0,
         lighting_lock: 0,
@@ -121,7 +123,7 @@ fn a_main_view_without_a_controller_scene_or_environment_is_unset() {
 }
 
 #[test]
-fn an_eye_view_is_ready_only_when_its_four_values_equal_the_main_views() {
+fn an_eye_view_is_ready_only_when_its_five_values_equal_the_main_views() {
     let main = set_main();
     assert_eq!(readiness(&main, &main), Readiness::Ready);
     let mut fresh = main;
@@ -134,6 +136,9 @@ fn an_eye_view_is_ready_only_when_its_four_values_equal_the_main_views() {
     let mut other_lighting = main;
     other_lighting.lighting = environment(23);
     assert_eq!(readiness(&main, &other_lighting), Readiness::NeedsSetUp);
+    let mut other_fog = main;
+    other_fog.fog_variant = 1;
+    assert_eq!(readiness(&main, &other_fog), Readiness::NeedsSetUp);
     let mut same_ids = main;
     same_ids.atmosphere.target = GameAddr::new(0x9000);
     same_ids.split_index = 1;

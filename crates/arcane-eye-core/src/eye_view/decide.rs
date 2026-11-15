@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 
 use game_bindings::render_view::ViewContent;
 
-/// The shortest time between two create attempts, and between two set up runs.
+/// The shortest time between two create attempts, and from a set up run that left the eye view not
+/// ready to the next run.
 pub(crate) const RETRY_PERIOD: Duration = Duration::from_secs(1);
 
 /// What the feature read at a call site.
@@ -44,9 +45,10 @@ pub(crate) enum Stale {
 pub(crate) enum Readiness {
     /// The main view lacks its controller, its active scene, its atmosphere or its lighting.
     MainUnset,
-    /// The eye view's controller, scene, atmosphere id or lighting id differs from the main view's.
+    /// The eye view's controller, scene, atmosphere id, lighting id or fog variant differs from the
+    /// main view's.
     NeedsSetUp,
-    /// The eye view's four values equal the main view's, which are set.
+    /// The eye view's five values equal the main view's, which are set.
     Ready,
 }
 
@@ -58,7 +60,9 @@ pub(crate) enum Action {
     Create,
     /// Drops the held eye view and gives the main view the entire frame.
     Forget,
-    /// Runs the differing steps of 8 to 13, then places the views as [`Action::FullFrame`] does.
+    /// Runs the differing steps of 8 to 13 and the fog variant step. A run that leaves the eye view
+    /// ready places the views as [`Action::SideBySide`] does, and any other as
+    /// [`Action::FullFrame`] does.
     SetUp,
     /// Places the main view in the left half and the eye view in the right half (steps 14, 15).
     SideBySide,
@@ -113,6 +117,7 @@ pub(crate) fn readiness(main: &ViewContent, eye: &ViewContent) -> Readiness {
     let same = eye.controller == main.controller
         && eye.scene == main.scene
         && eye.atmosphere.active_id == main.atmosphere.active_id
-        && eye.lighting.active_id == main.lighting.active_id;
+        && eye.lighting.active_id == main.lighting.active_id
+        && eye.fog_variant == main.fog_variant;
     if same { Readiness::Ready } else { Readiness::NeedsSetUp }
 }

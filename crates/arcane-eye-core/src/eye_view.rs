@@ -2,11 +2,13 @@
 //! view in the same frame.
 //!
 //! The feature follows bg3-vr's recipe. At the Present call site, on the render thread, it creates the
-//! eye view through the game's own functions (steps 1 to 7). At the entry of the game update, on the
-//! game thread, it re-reads the pipeline, the main view and the main frame, gives the eye view the
-//! main view's camera controller, scene, atmosphere and lighting when they differ (steps 8 to 13), and
-//! places the two views side by side while the eye view is ready (steps 14 and 15). Otherwise the main
-//! view covers the frame. The feature never destroys the eye view.
+//! eye view through the game's own functions (steps 1 to 7). At the end of the game update's logic
+//! calls, on the game thread, it re-reads the pipeline, the main view and the main frame, gives the
+//! eye view the main view's camera controller, scene, atmosphere, lighting and fog variant when they
+//! differ (steps 8 to 13 and the fog variant step), and places the two views side by side while the
+//! eye view is ready (steps 14 and 15). Otherwise the main view covers the frame. The game's logic
+//! changes the main view before the hook and the game builds the frame after it, so the eye view
+//! follows the main view in the same frame. The feature never destroys the eye view.
 //!
 //! The two threads share the held eye view through one mutex. The game thread holds it while its hook
 //! handler runs. The render thread only tries it and never holds it across a game call, so neither
@@ -171,10 +173,11 @@ fn hook_at(site: GameAddr) -> Result<ManuallyDrop<MidHook>, InstallError> {
     Ok(raw_eye_view::install_game_update_hook(site, game_update_thunk)?)
 }
 
-/// The hook's handler, on the game thread at the entry of each game update. `rcx` holds the pipeline.
+/// The hook's handler, on the game thread at the end of each game update's logic calls. `rsi` holds
+/// the pipeline.
 fn on_game_update(context: &CoreContext, thread: &GameThread, registers: &mut Registers) {
     let Some(state) = &context.eye_view else { return };
-    let pipeline = GameAddr::new(registers.rcx());
+    let pipeline = GameAddr::new(registers.rsi());
     let mut calls = GameCalls::new(&state.fns, thread);
     state.view.on_game_update(&mut calls, pipeline, Instant::now());
 }
@@ -299,10 +302,7 @@ impl EyeView {
                 forget(shared, &update);
                 Placement::FullFrame
             }
-            Action::SetUp => {
-                self.set_up(calls, shared, &update, now);
-                Placement::FullFrame
-            }
+            Action::SetUp => self.set_up(calls, shared, &update, now),
             Action::FullFrame => Placement::FullFrame,
             Action::SideBySide => Placement::SideBySide,
         };
@@ -321,29 +321,39 @@ impl EyeView {
         }
     }
 
-    /// Runs the differing steps of 8 to 13 after their guards, and waits [`decide::RETRY_PERIOD`]
-    /// before the next run.
+    /// Runs the differing steps of 8 to 13 and the fog variant step after their guards, and returns
+    /// the placement of this frame. A run that leaves the eye view ready places the views side by
+    /// side. A failed guard or any other run gives the main view the entire frame and waits
+    /// [`decide::RETRY_PERIOD`] before the next run.
     fn set_up(
         &self,
         calls: &mut impl SetUpCalls,
         shared: &mut Shared,
         update: &Update,
         now: Instant,
-    ) {
-        shared.set_up_retry.wait(now);
-        let (Some(held), Some(contents)) = (shared.held, update.contents) else { return };
-        match set_up::plan(&self.addresses, &contents) {
-            Ok(plan) => {
-                set_up::run(calls, held.eye, &plan);
-                let [camera, scene, atmosphere, lighting] = plan.steps();
-                // The set up retry limits this line to one per RETRY_PERIOD, so it needs no
-                // rate-limit macro.
-                info!(camera, scene, atmosphere, lighting, "eye view set up ran");
-            }
+    ) -> Placement {
+        let (Some(held), Some(contents)) = (shared.held, update.contents) else {
+            return Placement::FullFrame;
+        };
+        let plan = match set_up::plan(&self.addresses, &contents) {
+            Ok(plan) => plan,
             Err(guard) => {
+                shared.set_up_retry.wait(now);
                 warn_every!(shared.set_up_log, LOG_PERIOD, guard = %guard, "eye view set up waits");
+                return Placement::FullFrame;
             }
+        };
+        set_up::run(calls, held.eye, &plan);
+        let ready = set_up::is_ready(held);
+        let [camera, scene, atmosphere, lighting, fog_variant] = plan.steps();
+        // A ready eye view runs no set up until the main view changes, and any other run waits
+        // RETRY_PERIOD, so this line needs no rate-limit macro.
+        info!(camera, scene, atmosphere, lighting, fog_variant, ready, "eye view set up ran");
+        if ready {
+            return Placement::SideBySide;
         }
+        shared.set_up_retry.wait(now);
+        Placement::FullFrame
     }
 }
 

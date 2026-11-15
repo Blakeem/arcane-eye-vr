@@ -1,16 +1,19 @@
-//! The game update's reads of the held eye view, and recipe steps 8 to 13, which give the eye view the
-//! main view's camera controller, the level's scene and the main view's atmosphere and lighting.
+//! The game update's reads of the held eye view, recipe steps 8 to 13, which give the eye view the
+//! main view's camera controller, the level's scene and the main view's atmosphere and lighting, and
+//! the fog variant step, which gives it the main view's fog variant.
 //!
-//! Both run on the game thread at the game update, since the steps change game thread state. The
+//! All run on the game thread at the game update, since the steps change game thread state. The
 //! feature re-reads the pipeline, the main view and the main frame every frame, since the game may
-//! rebuild them or clear the eye view's camera and scene at a level unload.
+//! rebuild them or clear the eye view's camera and scene at a level unload. The game's logic gives
+//! only a player's view a new camera controller and fog variant, at each cut of a cutscene, so the
+//! feature compares both every frame.
 
 use game_bindings::offsets::{ID_POOL_RELEASE_LIST, LEVEL_ATMOSPHERE_ID, LEVEL_LIGHTING_ID};
 use game_bindings::pipeline::{Level, LevelManager, Pipeline};
 use game_bindings::render_view::{Environment, RenderView, ViewContent};
 use game_mem::{GameAddr, try_read};
 
-use super::decide::{Observed, Stale, readiness};
+use super::decide::{Observed, Readiness, Stale, readiness};
 use super::engine::{Addresses, Apply, Held, SetUpCalls};
 
 /// The request id that names no request, which the game's own scene setup passes to the level
@@ -117,11 +120,18 @@ pub(crate) fn observe(
     if vtable != addresses.game_render_view {
         return Ok(Update::of(Observed::Stale(Stale::NotGameRenderView), main));
     }
-    let main_content = held.main.content().ok_or(ReadFault::Content)?;
-    let eye_content = held.eye.content().ok_or(ReadFault::Content)?;
-    let contents = Contents { main: main_content, eye: eye_content };
+    let contents = contents(held).ok_or(ReadFault::Content)?;
     let observed = Observed::Live(readiness(&contents.main, &contents.eye));
     Ok(Update { observed, main, contents: Some(contents) })
+}
+
+fn contents(held: Held) -> Option<Contents> {
+    Some(Contents { main: held.main.content()?, eye: held.eye.content()? })
+}
+
+/// Whether the eye view of `held` is ready now, read again after a set up run changed it.
+pub(crate) fn is_ready(held: Held) -> bool {
+    contents(held).is_some_and(|after| readiness(&after.main, &after.eye) == Readiness::Ready)
 }
 
 /// One environment step pair: the level attach (step 10 or 11) and the main view's target record
@@ -148,16 +158,19 @@ pub(crate) struct SetUpPlan {
     /// The id pool list that step 10's attach may hand an id to release.
     release_list: Option<GameAddr>,
     lighting: Option<EnvironmentSteps>,
+    fog_variant: Option<u8>,
 }
 
 impl SetUpPlan {
-    /// Which of the camera, scene, atmosphere and lighting steps the plan runs, for the log.
-    pub(crate) const fn steps(&self) -> [bool; 4] {
+    /// Which of the camera, scene, atmosphere, lighting and fog variant steps the plan runs, for
+    /// the log.
+    pub(crate) const fn steps(&self) -> [bool; 5] {
         [
             self.camera.is_some(),
             self.scene.is_some(),
             self.atmosphere.is_some(),
             self.lighting.is_some(),
+            self.fog_variant.is_some(),
         ]
     }
 }
@@ -175,6 +188,9 @@ pub(crate) fn plan(addresses: &Addresses, contents: &Contents) -> Result<SetUpPl
     let mut plan = SetUpPlan::default();
     if eye.controller != main.controller {
         plan.camera = Some(main.controller);
+    }
+    if eye.fog_variant != main.fog_variant {
+        plan.fog_variant = Some(main.fog_variant);
     }
     let needs_scene = eye.scene != main.scene;
     let needs_atmosphere = eye.atmosphere.active_id != main.atmosphere.active_id;
@@ -240,6 +256,9 @@ pub(crate) fn run(calls: &mut impl SetUpCalls, eye: RenderView, plan: &SetUpPlan
     if let Some(steps) = plan.lighting {
         let mut request = steps.request;
         calls.set_lighting(eye, steps.target, &mut request, Apply::AtOnce);
+    }
+    if let Some(variant) = plan.fog_variant {
+        calls.set_fog_variant(eye, variant);
     }
 }
 
