@@ -26,6 +26,16 @@ pub enum RootError {
     LocalAppData(#[from] windows::core::Error),
 }
 
+/// The `%LOCALAPPDATA%` folder of the current user, which holds the default root folder and the
+/// game's profile folder.
+///
+/// # Errors
+///
+/// Returns [`RootError::LocalAppData`] when Windows cannot resolve the folder.
+pub fn local_app_data() -> Result<PathBuf, RootError> {
+    Ok(raw::local_app_data()?)
+}
+
 /// The mod's root folder, and the value of the root folder variable that it ignored.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Root {
@@ -48,7 +58,7 @@ impl Root {
         match choose(env::var_os(HOME_VARIABLE)) {
             Choice::Given(path) => Ok(Self { path, ignored: None }),
             Choice::Default { ignored } => {
-                Ok(Self { path: raw::local_app_data()?.join(DEFAULT_FOLDER), ignored })
+                Ok(Self { path: local_app_data()?.join(DEFAULT_FOLDER), ignored })
             }
         }
     }

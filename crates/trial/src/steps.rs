@@ -25,8 +25,9 @@ use crate::args::{Options, Scene, Settings};
 use crate::burst::{self, BurstError, BurstFrame};
 use crate::folder::{self, FolderError, RESULT_FILE, TRIAL_FILE};
 use crate::home::{self, HOME_FOLDER, HomeError};
-use crate::level::{self, NotReached};
+use crate::level::{self, WaitFailed};
 use crate::log_tail::TailError;
+use crate::mod_check::{ModCheckError, ModCheckFolder};
 use crate::perf::{self, PerfError, PerfWindow};
 use crate::pixels::{self, SizeError};
 use crate::place::PlaceError;
@@ -108,7 +109,9 @@ pub(crate) trait Game {
     /// The place of the last game state line of the core's session log, or `None` while the log
     /// holds none.
     fn place(&mut self) -> Result<Option<Place>, StepError>;
-    /// Posts the key that moves the title screen on to the game's visible windows.
+    /// Whether the game's mod check folder exists.
+    fn mod_check_folder(&mut self) -> Result<ModCheckFolder, StepError>;
+    /// Posts the key that the "Press any key" screen takes to the game's visible windows.
     fn post_key(&mut self) -> Result<(), StepError>;
     /// Waits `time`.
     fn warm_up(&mut self, time: Duration);
@@ -184,7 +187,9 @@ pub(crate) enum StepError {
     #[error(transparent)]
     Place(#[from] PlaceError),
     #[error(transparent)]
-    NotReached(#[from] NotReached),
+    LevelWait(#[from] WaitFailed),
+    #[error(transparent)]
+    ModCheckFolder(#[from] ModCheckError),
     #[error(transparent)]
     Folder(#[from] FolderError),
     #[error("could not start the heartbeat thread")]
@@ -275,12 +280,14 @@ fn check(settings: &Settings, game: &mut impl Game) -> Result<(), StepError> {
     game.check()
 }
 
-/// Runs the prime step when the scene needs a priming session, and returns whether the trial goes
-/// on.
+/// Runs the prime step when the scene is the level, and returns whether the trial goes on.
 fn primed(report: &mut Report, settings: &Settings, folder: &Path, game: &mut impl Game) -> bool {
-    match settings.scene {
-        Scene::Title => true,
-        Scene::Level => report.record_close(Step::Prime, level::prime(settings, folder, game)),
+    if settings.scene == Scene::Title {
+        return true;
+    }
+    match level::prime(settings, folder, game).transpose() {
+        Some(closed) => report.record_close(Step::Prime, closed),
+        None => report.record(Step::Prime, Ok(())),
     }
 }
 

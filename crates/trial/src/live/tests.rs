@@ -120,13 +120,13 @@ fn the_place_comes_from_the_game_state_lines_of_the_core_log_in_the_home_log_fol
     let log_dir = dir.path().join(r"home\logs");
     fs::create_dir_all(&log_dir).expect("create the home log folder");
     let line = "2026-11-14T09:12:03.418 INFO  thread=1 arcane_eye_core::game_state \
-                msg=\"game state\" place=main-menu state_id=7\n";
+                msg=\"game state\" place=menu state_id=7\n";
     fs::write(log_dir.join("arcane-eye-vr.log"), line).expect("write");
     let mut game = LiveGame::new(&Settings::default());
     let at = SystemTime::UNIX_EPOCH;
     game.game = Some(Started { child: exited_game(), at, log_dir, places: None });
-    assert_eq!(game.place().expect("a place"), Some(Place::MainMenu));
-    assert_eq!(game.place().expect("a place"), Some(Place::MainMenu), "a second read");
+    assert_eq!(game.place().expect("a place"), Some(Place::Menu));
+    assert_eq!(game.place().expect("a place"), Some(Place::Menu), "a second read");
 }
 
 #[test]

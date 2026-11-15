@@ -73,12 +73,12 @@ mod tests {
         let mut places = PlaceLog::new(&log);
         assert_eq!(places.read().expect("a read"), None, "a log with no game state line");
         append(&log, &format!("{PREFIX} msg=\"game state\" place=other state_id=1\n"));
-        append(&log, &format!("{PREFIX} msg=\"game state\" place=title-screen state_id=6\n"));
-        assert_eq!(places.read().expect("a read"), Some(Place::TitleScreen));
+        append(&log, &format!("{PREFIX} msg=\"game state\" place=level state_id=18\n"));
+        assert_eq!(places.read().expect("a read"), Some(Place::Level));
         append(&log, &format!("{PREFIX} msg=\"perf summary\" frames=600\n"));
-        assert_eq!(places.read().expect("a read"), Some(Place::TitleScreen), "no new state line");
-        append(&log, &format!("{PREFIX} msg=\"game state\" place=main-menu state_id=7\n"));
-        assert_eq!(places.read().expect("a read"), Some(Place::MainMenu));
+        assert_eq!(places.read().expect("a read"), Some(Place::Level), "no new state line");
+        append(&log, &format!("{PREFIX} msg=\"game state\" place=menu state_id=7\n"));
+        assert_eq!(places.read().expect("a read"), Some(Place::Menu));
     }
 
     #[test]

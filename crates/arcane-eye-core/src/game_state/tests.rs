@@ -82,21 +82,20 @@ const fn state(place: Place, state_id: u32) -> GameStateLine {
 
 #[test]
 fn the_measured_ids_name_their_places_and_every_other_id_names_other() {
-    assert_eq!(place(StateId::new(6)), Place::TitleScreen);
-    assert_eq!(place(StateId::new(7)), Place::MainMenu);
+    assert_eq!(place(StateId::new(7)), Place::Menu);
     assert_eq!(place(StateId::new(0x12)), Place::Level);
-    for id in [0, 0x09, 0x0A, 0x0B, 0x0C, 0x11, 0x16, 0x17, u32::MAX] {
+    for id in [0, 6, 0x09, 0x0A, 0x0B, 0x0C, 0x11, 0x16, 0x17, u32::MAX] {
         assert_eq!(place(StateId::new(id)), Place::Other, "{id:#x}");
     }
 }
 
 #[test]
 fn the_first_id_and_each_changed_id_get_a_line_and_an_equal_id_none() {
-    let title = StateId::new(6);
-    assert_eq!(line(None, title), Some(state(Place::TitleScreen, 6)), "the first id");
-    assert_eq!(line(Some(title), title), None, "an equal id");
-    let menu = line(Some(title), StateId::new(7));
-    assert_eq!(menu, Some(state(Place::MainMenu, 7)), "a changed id");
+    let load_menu = StateId::new(6);
+    assert_eq!(line(None, load_menu), Some(state(Place::Other, 6)), "the first id");
+    assert_eq!(line(Some(load_menu), load_menu), None, "an equal id");
+    let menu = line(Some(load_menu), StateId::new(7));
+    assert_eq!(menu, Some(state(Place::Menu, 7)), "a changed id");
     let loading = line(Some(StateId::new(0x12)), StateId::new(0x0A));
     assert_eq!(loading, Some(state(Place::Other, 0x0A)), "a changed id of no measured place");
 }
@@ -113,16 +112,16 @@ fn each_change_of_the_state_id_logs_one_line_that_parses_back_to_its_place_and_i
     });
     let expected = [
         state(Place::Other, 0x16),
-        state(Place::TitleScreen, 6),
-        state(Place::MainMenu, 7),
+        state(Place::Other, 6),
+        state(Place::Menu, 7),
         state(Place::Other, 0x0A),
         state(Place::Level, 0x12),
     ];
     assert_eq!(game_states(&text), expected, "{text}");
     let lines: Vec<&str> = text.lines().collect();
-    let [_, title, ..] = lines.as_slice() else { panic!("five lines: {text}") };
-    assert!(title.contains(" INFO  "), "{title}");
-    assert!(title.ends_with(" msg=\"game state\" place=title-screen state_id=6"), "{title}");
+    let [_, _, menu, ..] = lines.as_slice() else { panic!("five lines: {text}") };
+    assert!(menu.contains(" INFO  "), "{menu}");
+    assert!(menu.ends_with(" msg=\"game state\" place=menu state_id=7"), "{menu}");
 }
 
 #[test]
@@ -139,7 +138,7 @@ fn a_null_client_or_state_machine_pointer_logs_nothing_and_keeps_the_last_id() {
         memory.set_machine(0);
         watch.on_frame();
     });
-    assert_eq!(game_states(&text), [state(Place::TitleScreen, 6)], "{text}");
+    assert_eq!(game_states(&text), [state(Place::Other, 6)], "{text}");
     assert_eq!(text.lines().count(), 1, "{text}");
 }
 
@@ -159,7 +158,7 @@ fn a_failed_read_logs_one_rate_limited_warning_and_keeps_the_last_id() {
         memory.set_id(0x12);
         watch.on_frame();
     });
-    assert_eq!(game_states(&text), [state(Place::MainMenu, 7), state(Place::Level, 0x12)]);
+    assert_eq!(game_states(&text), [state(Place::Menu, 7), state(Place::Level, 0x12)]);
     let warnings: Vec<&str> = text.lines().filter(|line| line.contains(READ_FAILED)).collect();
     let [warning] = warnings.as_slice() else { panic!("one warning: {text}") };
     let global = format!(" global={:#x}", address_of(&memory.global));

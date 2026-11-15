@@ -8,15 +8,14 @@ use game_mem::{GameAddr, try_read};
 
 use crate::offsets::{GAME_CLIENT_STATE_MACHINE, STATE_MACHINE_STATE_ID};
 
-/// A state id of the game client's state machine. Only the ids of the constants were measured.
+/// A state id of the game client's state machine. The ids are the values of the Script Extender's
+/// `ecl::GameState` enum. Only the ids of the constants were measured.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StateId(u32);
 
 impl StateId {
-    /// The title screen with "Press any key to continue".
-    pub const TITLE_SCREEN: Self = Self(6);
-    /// The main menu.
-    pub const MAIN_MENU: Self = Self(7);
+    /// The menu state: the "Press any key to continue" screen and the main menu after it.
+    pub const MENU: Self = Self(7);
     /// A running level.
     pub const LEVEL: Self = Self(0x12);
 

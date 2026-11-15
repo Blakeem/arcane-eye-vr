@@ -13,12 +13,8 @@ mod tests {
 
     #[test]
     fn a_line_of_each_place_yields_its_place_and_state_id() {
-        let cases = [
-            ("title-screen", 6, Place::TitleScreen),
-            ("main-menu", 7, Place::MainMenu),
-            ("level", 18, Place::Level),
-            ("other", 10, Place::Other),
-        ];
+        let cases =
+            [("menu", 7, Place::Menu), ("level", 18, Place::Level), ("other", 10, Place::Other)];
         for (name, state_id, place) in cases {
             let line = game_state_line(&format!("place={name} state_id={state_id}"));
             assert_eq!(parse_line(&line), Ok(Some(GameStateLine { place, state_id })), "{name}");
@@ -76,8 +72,7 @@ mod tests {
         assert_eq!(error, GameStateLineError::UnknownPlace { value: "Level".to_owned() });
         assert_eq!(
             error.to_string(),
-            "the game state field place holds \"Level\", which is not title-screen, main-menu, \
-             level or other"
+            "the game state field place holds \"Level\", which is not menu, level or other"
         );
     }
 

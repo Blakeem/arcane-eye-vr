@@ -30,6 +30,7 @@ use viewer_client::region::Region;
 use crate::args::Settings;
 use crate::burst::BurstFrame;
 use crate::log_tail::LogTail;
+use crate::mod_check::{self, ModCheckFolder};
 use crate::perf::{self, PerfWindow};
 use crate::place::PlaceLog;
 use crate::steps::{Closed, Frames, Game, Step, StepError};
@@ -155,6 +156,10 @@ impl Game for LiveGame {
             None => PlaceLog::new(&self.core_log()?),
         };
         Ok(self.game()?.places.insert(places).read()?)
+    }
+
+    fn mod_check_folder(&mut self) -> Result<ModCheckFolder, StepError> {
+        Ok(mod_check::read()?)
     }
 
     fn post_key(&mut self) -> Result<(), StepError> {

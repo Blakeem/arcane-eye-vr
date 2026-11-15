@@ -7,8 +7,7 @@ use ipc_layout::game_state_line::{GameStateLine, Place};
 /// The place that `id` names. An id that is none of the measured ids names [`Place::Other`].
 pub(crate) const fn place(id: StateId) -> Place {
     match id {
-        StateId::TITLE_SCREEN => Place::TitleScreen,
-        StateId::MAIN_MENU => Place::MainMenu,
+        StateId::MENU => Place::Menu,
         StateId::LEVEL => Place::Level,
         _ => Place::Other,
     }

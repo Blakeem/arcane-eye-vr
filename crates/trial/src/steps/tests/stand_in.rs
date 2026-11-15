@@ -19,6 +19,7 @@ use viewer_client::frame::{Frame, PixelFormat, ReadError};
 use viewer_client::region::Region;
 
 use crate::burst::BurstFrame;
+use crate::mod_check::ModCheckFolder;
 use crate::perf::{CountedLine, PerfError, PerfWindow};
 use crate::steps::{Closed, Frames, Game, Step, StepError};
 
@@ -62,6 +63,13 @@ pub(super) struct StandInGame {
     pub(super) places: Vec<Vec<Option<Place>>>,
     /// The reads of the place since the last start.
     place_reads: usize,
+    /// Whether the mod check folder exists before the first start.
+    pub(super) folder_before: ModCheckFolder,
+    /// Whether the mod check folder exists at the reads of each start's game in order, the last one
+    /// again for every later read. A start with no list, or an empty one, reads `Present`.
+    pub(super) folders: Vec<Vec<ModCheckFolder>>,
+    /// The reads of the mod check folder since the last start.
+    folder_reads: usize,
     /// The start's index and the place read count at each key, in order.
     pub(super) keys: Vec<(usize, usize)>,
     /// The cameras of each of the perf window's two summary lines.
@@ -85,6 +93,9 @@ impl StandInGame {
             starts: Vec::new(),
             places: Vec::new(),
             place_reads: 0,
+            folder_before: ModCheckFolder::Present,
+            folders: Vec::new(),
+            folder_reads: 0,
             keys: Vec::new(),
             cameras: [Vec::new(), Vec::new()],
             steam_running_reads: Some(0),
@@ -111,6 +122,7 @@ impl Game for StandInGame {
     fn start(&mut self, home: &Path, save: Save) -> Result<(), StepError> {
         self.starts.push((home.to_path_buf(), save));
         self.place_reads = 0;
+        self.folder_reads = 0;
         self.step(Step::Start, StepError::Needs(Step::Token))
     }
 
@@ -124,6 +136,16 @@ impl Game for StandInGame {
         let read = script.get(self.place_reads).or_else(|| script.last()).copied().flatten();
         self.place_reads = self.place_reads.saturating_add(1);
         Ok(read)
+    }
+
+    fn mod_check_folder(&mut self) -> Result<ModCheckFolder, StepError> {
+        let Some(start) = self.starts.len().checked_sub(1) else {
+            return Ok(self.folder_before);
+        };
+        let script = self.folders.get(start).map_or(&[][..], Vec::as_slice);
+        let read = script.get(self.folder_reads).or_else(|| script.last()).copied();
+        self.folder_reads = self.folder_reads.saturating_add(1);
+        Ok(read.unwrap_or(ModCheckFolder::Present))
     }
 
     fn post_key(&mut self) -> Result<(), StepError> {

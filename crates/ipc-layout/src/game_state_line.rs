@@ -23,9 +23,8 @@ const STATE_ID_FIELD: &str = "state_id";
 /// Where the game is, by the state id of its game client.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Place {
-    /// The title screen with "Press any key to continue".
-    TitleScreen,
-    MainMenu,
+    /// The "Press any key to continue" screen or the main menu after it. One state id holds both.
+    Menu,
     /// A running level.
     Level,
     /// A state id with no measured place, such as a start-up or loading state.
@@ -36,8 +35,7 @@ impl Place {
     /// The value of the line's `place` field.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::TitleScreen => "title-screen",
-            Self::MainMenu => "main-menu",
+            Self::Menu => "menu",
             Self::Level => "level",
             Self::Other => "other",
         }
@@ -53,8 +51,7 @@ impl FromStr for Place {
 
     fn from_str(text: &str) -> Result<Self, UnknownPlace> {
         match text {
-            "title-screen" => Ok(Self::TitleScreen),
-            "main-menu" => Ok(Self::MainMenu),
+            "menu" => Ok(Self::Menu),
             "level" => Ok(Self::Level),
             "other" => Ok(Self::Other),
             _ => Err(UnknownPlace),
@@ -82,10 +79,7 @@ pub enum GameStateLineError {
         #[source]
         source: ParseIntError,
     },
-    #[error(
-        "the game state field place holds {value:?}, which is not title-screen, main-menu, level \
-         or other"
-    )]
+    #[error("the game state field place holds {value:?}, which is not menu, level or other")]
     UnknownPlace { value: String },
 }
 
