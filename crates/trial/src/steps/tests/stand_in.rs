@@ -119,8 +119,8 @@ impl Game for StandInGame {
         self.step(Step::Token, StepError::Needs(Step::Check))
     }
 
-    fn start(&mut self, home: &Path, save: Save) -> Result<(), StepError> {
-        self.starts.push((home.to_path_buf(), save));
+    fn start(&mut self, home: &Path, save: &Save) -> Result<(), StepError> {
+        self.starts.push((home.to_path_buf(), save.clone()));
         self.place_reads = 0;
         self.folder_reads = 0;
         self.step(Step::Start, StepError::Needs(Step::Token))

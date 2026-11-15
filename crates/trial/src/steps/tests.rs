@@ -23,6 +23,7 @@ fn options(out: &Path) -> Options {
     let settings = Settings {
         mode: Mode::DesktopStereo,
         scene: Scene::Title,
+        save: None,
         warmup: Duration::from_secs(7),
         perf_lines: 2,
         captures: 2,
@@ -234,8 +235,8 @@ fn a_passed_trial_writes_every_file_of_the_result_folder() {
     let (report, printed, result) = run_trial(folder, &mut game, &mut frames);
     let read = |file: &str| fs::read_to_string(folder.join(file)).expect("read a result file");
     let trial_text = format!(
-        "name: menu\nmode: desktop-stereo\nscene: title\nwarmup-secs: 7\nperf-lines: 2\n\
-         captures: 2\nburst-frames: 0\nburst-region: entire frame\nburst-step: 1\nout: {}\n\
+        "name: menu\nmode: desktop-stereo\nscene: title\nsave: none\nwarmup-secs: 7\n\
+         perf-lines: 2\ncaptures: 2\nburst-frames: 0\nburst-region: entire frame\nburst-step: 1\nout: {}\n\
          game-dir: D:\\Game\nsettings-file: none\ndev-file: none\nmod-version: {}\n",
         folder.display(),
         env!("CARGO_PKG_VERSION")

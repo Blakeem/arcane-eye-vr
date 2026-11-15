@@ -89,6 +89,21 @@ fn a_level_trial_with_no_mod_check_folder_starts_no_priming_session() {
 }
 
 #[test]
+fn a_level_trial_with_a_save_name_starts_its_level_session_with_that_save() {
+    let dir = test_dir("level-named-save");
+    let folder = dir.path();
+    let mut game = loading_game(None);
+    let mut options = options(folder);
+    options.settings.scene = Scene::Level;
+    options.settings.save = Some("Tav-22151264102__AutoSave_0".to_owned());
+    let mut frames = StandInFrames::new(false);
+    trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
+    let named = Save::LoadNamed("Tav-22151264102__AutoSave_0".to_owned());
+    let starts = [(folder.join("prime"), Save::NoLoad), (folder.join("home"), named)];
+    assert_eq!(game.starts, starts);
+}
+
+#[test]
 fn a_title_trial_runs_neither_the_prime_step_nor_the_enter_level_step() {
     let dir = test_dir("level-title-scene");
     let folder = dir.path();

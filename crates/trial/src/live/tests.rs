@@ -95,7 +95,7 @@ fn a_close_that_cannot_open_the_game_fails_with_the_open_error() {
 #[test]
 fn a_step_whose_earlier_step_did_not_pass_names_that_step() {
     let mut game = LiveGame::new(&Settings::default());
-    let start = game.start(Path::new(r"C:\home"), Save::NoLoad);
+    let start = game.start(Path::new(r"C:\home"), &Save::NoLoad);
     assert!(matches!(start, Err(StepError::Needs(Step::Check))));
     assert!(matches!(game.wait_first_present(), Err(StepError::Needs(Step::Token))));
     assert!(matches!(game.exit_status(), Err(StepError::Needs(Step::Start))));

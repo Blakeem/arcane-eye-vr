@@ -10,7 +10,8 @@ use ipc_layout::launch_token::Mode;
 use viewer_client::region::Region;
 
 pub(crate) const USAGE: &str = "usage: trial --name <name> [--mode vr|desktop-stereo] \
-     [--scene title|level] [--warmup-secs <n>] [--perf-lines <n>] [--captures <n>] \
+     [--scene title|level] [--save <name>] [--warmup-secs <n>] [--perf-lines <n>] \
+     [--captures <n>] \
      [--burst-frames <n>] [--burst-region <x>,<y>,<width>,<height>] [--burst-step <k>] \
      [--out <folder>] [--game-dir <folder>] [--settings-file <path>] [--dev-file <path>]";
 
@@ -49,7 +50,7 @@ impl TrialName {
 pub(crate) enum Scene {
     /// The title screen the game shows after its start.
     Title,
-    /// The level of the latest save, which a priming session before the trial's session unlocks.
+    /// The level of a save, the latest one unless the command line names one.
     Level,
 }
 
@@ -69,6 +70,8 @@ impl Scene {
 pub(crate) struct Settings {
     pub(crate) mode: Mode,
     pub(crate) scene: Scene,
+    /// The name of the save the level scene loads, or `None` for the latest save.
+    pub(crate) save: Option<String>,
     pub(crate) warmup: Duration,
     pub(crate) perf_lines: u32,
     pub(crate) captures: u32,
@@ -87,6 +90,7 @@ impl Default for Settings {
         Self {
             mode: Mode::DesktopStereo,
             scene: Scene::Title,
+            save: None,
             warmup: Duration::from_secs(20),
             perf_lines: 3,
             captures: 1,
@@ -149,6 +153,8 @@ pub(crate) enum ArgsError {
     BadRegion(String),
     #[error("trial got {0}, which needs --burst-frames above 0")]
     BurstWithoutFrames(&'static str),
+    #[error("trial got --save, which needs --scene level")]
+    SaveWithoutLevel,
 }
 
 /// The options the command line takes.
@@ -157,6 +163,7 @@ enum Flag {
     Name,
     Mode,
     Scene,
+    Save,
     WarmupSecs,
     PerfLines,
     Captures,
@@ -170,10 +177,11 @@ enum Flag {
 }
 
 impl Flag {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 14] = [
         Self::Name,
         Self::Mode,
         Self::Scene,
+        Self::Save,
         Self::WarmupSecs,
         Self::PerfLines,
         Self::Captures,
@@ -191,6 +199,7 @@ impl Flag {
             Self::Name => "--name",
             Self::Mode => "--mode",
             Self::Scene => "--scene",
+            Self::Save => "--save",
             Self::WarmupSecs => "--warmup-secs",
             Self::PerfLines => "--perf-lines",
             Self::Captures => "--captures",
@@ -227,6 +236,7 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options,
             Flag::Name => name = Some(TrialName::new(&text(&value))?),
             Flag::Mode => settings.mode = mode(&text(&value))?,
             Flag::Scene => settings.scene = scene(&text(&value))?,
+            Flag::Save => settings.save = Some(text(&value)),
             Flag::WarmupSecs => settings.warmup = seconds(flag, &value)?,
             Flag::PerfLines => settings.perf_lines = count(flag, &value, 1..=u32::MAX)?,
             Flag::Captures => settings.captures = count(flag, &value, 1..=MAX_CAPTURES)?,
@@ -243,6 +253,9 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options,
     }
     let name = name.ok_or(ArgsError::MissingName)?;
     burst_has_frames(&seen, &settings.burst)?;
+    if settings.save.is_some() && settings.scene != Scene::Level {
+        return Err(ArgsError::SaveWithoutLevel);
+    }
     Ok(Options { name, settings })
 }
 

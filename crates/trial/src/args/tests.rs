@@ -27,6 +27,7 @@ fn a_name_alone_takes_every_default() {
     let expected = Settings {
         mode: Mode::DesktopStereo,
         scene: Scene::Title,
+        save: None,
         warmup: Duration::from_secs(20),
         perf_lines: 3,
         captures: 1,
@@ -61,6 +62,8 @@ fn each_option_sets_its_setting() {
         "vr",
         "--scene",
         "level",
+        "--save",
+        "Tav-22151264102__AutoSave_0",
         "--dev-file",
         r"C:\trials\left.toml",
         "--settings-file",
@@ -76,6 +79,7 @@ fn each_option_sets_its_setting() {
     let expected = Settings {
         mode: Mode::Vr,
         scene: Scene::Level,
+        save: Some("Tav-22151264102__AutoSave_0".to_owned()),
         warmup: Duration::ZERO,
         perf_lines: 5,
         captures: 9999,
@@ -250,11 +254,25 @@ fn a_burst_region_or_step_without_burst_frames_above_0_is_an_error_that_names_it
 }
 
 #[test]
+fn a_save_name_needs_the_level_scene() {
+    let save = |line: &[&str]| parse(args(line)).map(|options| options.settings.save);
+    let named = ["--name", "a", "--scene", "level", "--save", "Lae'zel-1916__Quick Save_4"];
+    assert_eq!(save(&named), Ok(Some("Lae'zel-1916__Quick Save_4".to_owned())));
+    assert_eq!(save(&["--name", "a", "--scene", "level"]), Ok(None), "the latest save");
+    assert_eq!(save(&["--name", "a", "--save", "b"]), Err(ArgsError::SaveWithoutLevel));
+    let title = ["--name", "a", "--save", "b", "--scene", "title"];
+    assert_eq!(save(&title), Err(ArgsError::SaveWithoutLevel));
+    let message = ArgsError::SaveWithoutLevel.to_string();
+    assert_eq!(message, "trial got --save, which needs --scene level");
+}
+
+#[test]
 fn the_usage_names_every_option() {
     let options = [
         "--name",
         "--mode",
         "--scene",
+        "--save",
         "--warmup-secs",
         "--perf-lines",
         "--captures",

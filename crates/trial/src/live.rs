@@ -133,7 +133,7 @@ impl Game for LiveGame {
         Ok(())
     }
 
-    fn start(&mut self, home: &Path, save: Save) -> Result<(), StepError> {
+    fn start(&mut self, home: &Path, save: &Save) -> Result<(), StepError> {
         let game_dir = self.game_dir.as_ref().ok_or(StepError::Needs(Step::Check))?;
         let log_dir = Root::new(home.to_path_buf()).log_dir();
         let at = SystemTime::now();

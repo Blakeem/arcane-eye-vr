@@ -5,7 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::args::{Options, TrialName};
+use crate::args::{Options, Scene, TrialName};
 
 pub(crate) const TRIAL_FILE: &str = "trial.txt";
 pub(crate) const RESULT_FILE: &str = "result.txt";
@@ -52,10 +52,15 @@ pub(crate) fn write(folder: &Path, file: &str, text: &str) -> Result<(), FolderE
     }
 }
 
-/// The text of `trial.txt`: the name, the mode, the scene, each option's value and the mod version.
-/// The burst region reads as the command line writes it.
+/// The text of `trial.txt`: the name, the mode, the scene, the save, each option's value and the mod
+/// version. The burst region reads as the command line writes it.
 pub(crate) fn trial_text(options: &Options) -> String {
     let settings = &options.settings;
+    let save = match (settings.scene, &settings.save) {
+        (Scene::Title, _) => "none",
+        (Scene::Level, None) => "latest",
+        (Scene::Level, Some(name)) => name,
+    };
     let game_dir = path_or(settings.game_dir.as_deref(), "found through Steam");
     let player_file = path_or(settings.player_file.as_deref(), "none");
     let dev_file = path_or(settings.dev_file.as_deref(), "none");
@@ -63,12 +68,13 @@ pub(crate) fn trial_text(options: &Options) -> String {
     let burst_region =
         burst.region.map_or_else(|| "entire frame".to_owned(), |region| region.to_string());
     format!(
-        "name: {}\nmode: {}\nscene: {}\nwarmup-secs: {}\nperf-lines: {}\ncaptures: {}\n\
-         burst-frames: {}\nburst-region: {}\nburst-step: {}\nout: {}\ngame-dir: {}\n\
+        "name: {}\nmode: {}\nscene: {}\nsave: {}\nwarmup-secs: {}\nperf-lines: {}\n\
+         captures: {}\nburst-frames: {}\nburst-region: {}\nburst-step: {}\nout: {}\ngame-dir: {}\n\
          settings-file: {}\ndev-file: {}\nmod-version: {}\n",
         options.name.as_str(),
         settings.mode.as_str(),
         settings.scene.as_str(),
+        save,
         settings.warmup.as_secs(),
         settings.perf_lines,
         settings.captures,
@@ -197,6 +203,7 @@ mod tests {
         let settings = Settings {
             mode: Mode::Vr,
             scene: Scene::Level,
+            save: Some("Tav-22151264102__AutoSave_0".to_owned()),
             warmup: Duration::from_secs(30),
             perf_lines: 4,
             captures: 2,
@@ -208,15 +215,19 @@ mod tests {
         };
         let name = TrialName::new("menu").expect("a valid name");
         let expected = format!(
-            "name: menu\nmode: vr\nscene: level\nwarmup-secs: 30\nperf-lines: 4\ncaptures: 2\n\
+            "name: menu\nmode: vr\nscene: level\nsave: Tav-22151264102__AutoSave_0\n\
+             warmup-secs: 30\nperf-lines: 4\ncaptures: 2\n\
              burst-frames: 300\nburst-region: 1920,0,1920,2160\nburst-step: 2\nout: C:\\results\n\
              game-dir: D:\\Games\\Baldurs Gate 3\nsettings-file: C:\\trials\\ipd-60.toml\n\
              dev-file: C:\\trials\\left.toml\nmod-version: {}\n",
             env!("CARGO_PKG_VERSION")
         );
         assert_eq!(trial_text(&Options { name: name.clone(), settings }), expected);
-        let steam = trial_text(&Options { name, settings: Settings::default() });
-        assert!(steam.contains("\nscene: title\n"), "{steam}");
+        let steam = trial_text(&Options { name: name.clone(), settings: Settings::default() });
+        assert!(steam.contains("\nscene: title\nsave: none\n"), "{steam}");
+        let latest = Settings { scene: Scene::Level, ..Settings::default() };
+        let latest = trial_text(&Options { name, settings: latest });
+        assert!(latest.contains("\nscene: level\nsave: latest\n"), "{latest}");
         let defaults = "\nburst-frames: 0\nburst-region: entire frame\nburst-step: 1\n\
                         out: trial-results\ngame-dir: found through Steam\nsettings-file: none\n\
                         dev-file: none\n";

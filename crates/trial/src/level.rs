@@ -15,7 +15,7 @@ use ipc_layout::game_state_line::Place;
 use launch::direct::Save;
 use tracing::{info, warn};
 
-use crate::args::Settings;
+use crate::args::{Scene, Settings};
 use crate::home::{self, PRIME_FOLDER};
 use crate::mod_check::ModCheckFolder;
 use crate::steps::{self, Closed, Game, Step, StepError};
@@ -101,7 +101,7 @@ pub(crate) fn prime(
     }
     game.create_token()?;
     let home = home::prepare(folder, PRIME_FOLDER, settings)?;
-    game.start(&home, Save::NoLoad)?;
+    game.start(&home, &Save::NoLoad)?;
     let reached = steps::while_running(game, Step::Prime, |game| {
         game.wait_first_present()?;
         wait_for(game, Goal::MainMenu, MAIN_MENU_LIMIT)
@@ -131,6 +131,16 @@ fn settle(
             warn!(error = %cause, "the priming game failed its close after its wait");
             Err(error)
         }
+    }
+}
+
+/// The save option of the trial's own session: no save in the title scene, and in the level scene
+/// the save the command line names, or else the latest save.
+pub(crate) fn save(settings: &Settings) -> Save {
+    match (settings.scene, &settings.save) {
+        (Scene::Title, _) => Save::NoLoad,
+        (Scene::Level, None) => Save::LoadLatest,
+        (Scene::Level, Some(name)) => Save::LoadNamed(name.clone()),
     }
 }
 

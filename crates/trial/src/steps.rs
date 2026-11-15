@@ -104,7 +104,7 @@ pub(crate) trait Game {
     fn create_token(&mut self) -> Result<(), StepError>;
     /// Starts the game with `home`, an absolute path, as its root folder, and the save option
     /// `save`.
-    fn start(&mut self, home: &Path, save: Save) -> Result<(), StepError>;
+    fn start(&mut self, home: &Path, save: &Save) -> Result<(), StepError>;
     fn wait_first_present(&mut self) -> Result<(), StepError>;
     /// The place of the last game state line of the core's session log, or `None` while the log
     /// holds none.
@@ -295,11 +295,7 @@ fn primed(report: &mut Report, settings: &Settings, folder: &Path, game: &mut im
 /// with the save option the scene needs.
 fn start(settings: &Settings, folder: &Path, game: &mut impl Game) -> Result<(), StepError> {
     let home = home::prepare(folder, HOME_FOLDER, settings)?;
-    let save = match settings.scene {
-        Scene::Title => Save::NoLoad,
-        Scene::Level => Save::LoadLatest,
-    };
-    game.start(&home, save)
+    game.start(&home, &level::save(settings))
 }
 
 /// Runs the steps from the first Present to the capture, the enter-level step when the scene is the
