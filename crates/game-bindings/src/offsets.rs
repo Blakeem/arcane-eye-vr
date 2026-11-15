@@ -142,6 +142,16 @@ pub const VIEW_ATMOSPHERE_LOCK: usize = 0x2AEC;
 /// The scene pointer of a render view.
 pub const VIEW_SCENE: usize = 0x2B10;
 
+/// The player fields of a render view, [`VIEW_PLAYER_ROOM_SIZE`] bytes: the player's handle, the id
+/// of the player's room at +0x10 and the player's region flags at +0x14. The game writes them into a
+/// player's view in each frame's recording, and its outline draws show only objects of that room
+/// (bg3-vr's reading of the code, a debugger watch of the writes and a copy that made the eye view
+/// draw outlines).
+pub const VIEW_PLAYER_ROOM: usize = 0x2BE8;
+
+/// The size of a render view's player fields.
+pub const VIEW_PLAYER_ROOM_SIZE: usize = 0x18;
+
 /// The active byte of a scene. The engine's stage gate runs a view's stages only while it is set.
 pub const SCENE_ACTIVE: usize = 0x08;
 

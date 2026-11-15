@@ -5,7 +5,9 @@
 //! value and never a fault. A read checks no type, so a right address is the caller's part. A write
 //! goes to the view's [`WriteDest`], which the caller's unsafe code constructs.
 
-use game_mem::{GameAddr, WriteDest, WriteError, try_read, try_read_array, try_write};
+use game_mem::{
+    GameAddr, WriteDest, WriteError, try_read, try_read_array, try_write, try_write_slice,
+};
 
 use crate::camera::PerCamera;
 use crate::offsets::{
@@ -14,9 +16,9 @@ use crate::offsets::{
     PER_CAMERA_PROJECTION, PER_CAMERA_VIEW, SCENE_ACTIVE, VIEW_ATMOSPHERE, VIEW_ATMOSPHERE_LOCK,
     VIEW_ATMOSPHERE_REQUEST, VIEW_ATMOSPHERE_TARGET, VIEW_FOG_VARIANT, VIEW_JOB_CONTEXT,
     VIEW_LAST_SEEN_CONTROLLER, VIEW_LIGHTING, VIEW_LIGHTING_LOCK, VIEW_LIGHTING_REQUEST,
-    VIEW_LIGHTING_TARGET, VIEW_OCCLUSION, VIEW_PER_CAMERA, VIEW_READ_STATE_CONTROLLER, VIEW_SCENE,
-    VIEW_SPLIT_INDEX, VIEW_SPLIT_SIDE, VIEW_STAGE_ARRAY, VIEW_STAGE_OWNER,
-    VIEW_WRITE_STATE_CONTROLLER, VIEW_WRITE_STATE_ENABLED,
+    VIEW_LIGHTING_TARGET, VIEW_OCCLUSION, VIEW_PER_CAMERA, VIEW_PLAYER_ROOM, VIEW_PLAYER_ROOM_SIZE,
+    VIEW_READ_STATE_CONTROLLER, VIEW_SCENE, VIEW_SPLIT_INDEX, VIEW_SPLIT_SIDE, VIEW_STAGE_ARRAY,
+    VIEW_STAGE_OWNER, VIEW_WRITE_STATE_CONTROLLER, VIEW_WRITE_STATE_ENABLED,
 };
 
 /// A render view, by its address in the game process.
@@ -42,11 +44,12 @@ pub struct ControllerCopy([u8; CONTROLLER_SIZE]);
 /// The index of the view matrix's first `f32` in a controller's bytes.
 const VIEW_WORD: usize = CONTROLLER_VIEW / size_of::<f32>();
 
-// `WRITE_LEN` ends at the last-seen field, so every other written field must come before it.
-const _: () = assert!(VIEW_READ_STATE_CONTROLLER < VIEW_LAST_SEEN_CONTROLLER);
-const _: () = assert!(VIEW_WRITE_STATE_ENABLED < VIEW_LAST_SEEN_CONTROLLER);
-const _: () = assert!(VIEW_SPLIT_INDEX < VIEW_LAST_SEEN_CONTROLLER);
-const _: () = assert!(VIEW_SPLIT_SIDE + size_of::<i32>() <= VIEW_LAST_SEEN_CONTROLLER);
+// `WRITE_LEN` ends at the player fields, so every other written field must come before them.
+const _: () = assert!(VIEW_READ_STATE_CONTROLLER < VIEW_PLAYER_ROOM);
+const _: () = assert!(VIEW_WRITE_STATE_ENABLED < VIEW_PLAYER_ROOM);
+const _: () = assert!(VIEW_SPLIT_INDEX < VIEW_PLAYER_ROOM);
+const _: () = assert!(VIEW_SPLIT_SIDE + size_of::<i32>() <= VIEW_PLAYER_ROOM);
+const _: () = assert!(VIEW_LAST_SEEN_CONTROLLER + size_of::<usize>() <= VIEW_PLAYER_ROOM);
 
 /// The pointers that tell a render view's own stage objects from another view's. A null pointer
 /// reads as address 0.
@@ -74,6 +77,10 @@ pub struct Environment {
     pub request: i32,
 }
 
+/// A byte copy of a render view's player fields, which name the player's room.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayerRoom(pub [u8; VIEW_PLAYER_ROOM_SIZE]);
+
 /// What a render view renders and the bytes that gate the setters that change it. A null pointer
 /// reads as address 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +93,7 @@ pub struct ViewContent {
     pub atmosphere: Environment,
     pub lighting: Environment,
     pub fog_variant: u8,
+    pub player_room: PlayerRoom,
     pub split_index: u8,
     pub atmosphere_lock: u8,
     pub lighting_lock: u8,
@@ -93,7 +101,7 @@ pub struct ViewContent {
 
 impl RenderView {
     /// The bytes from a view's start that hold each field the view's writes fill.
-    pub const WRITE_LEN: usize = VIEW_LAST_SEEN_CONTROLLER + size_of::<usize>();
+    pub const WRITE_LEN: usize = VIEW_PLAYER_ROOM + VIEW_PLAYER_ROOM_SIZE;
 
     pub const fn new(address: GameAddr) -> Self {
         Self(address)
@@ -204,6 +212,7 @@ impl RenderView {
                 VIEW_LIGHTING_REQUEST,
             )?,
             fog_variant: try_read::<u8>(self.0.checked_add(VIEW_FOG_VARIANT)?)?,
+            player_room: PlayerRoom(try_read_array(self.0.checked_add(VIEW_PLAYER_ROOM)?)?),
             split_index: try_read::<u8>(self.0.checked_add(VIEW_SPLIT_INDEX)?)?,
             atmosphere_lock: try_read::<u8>(self.0.checked_add(VIEW_ATMOSPHERE_LOCK)?)?,
             lighting_lock: try_read::<u8>(self.0.checked_add(VIEW_LIGHTING_LOCK)?)?,
@@ -239,6 +248,16 @@ impl RenderView {
     ) -> Result<(), WriteError> {
         try_write(view.offset(VIEW_WRITE_STATE_ENABLED)?, enabled)?;
         try_write(view.offset(VIEW_SPLIT_SIDE)?, side)
+    }
+
+    /// Sets the player fields of the view whose first [`RenderView::WRITE_LEN`] bytes are `view` to
+    /// `room`, in one guarded copy.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`WriteError`] of fields that cannot be written or lie outside `view`.
+    pub fn write_player_room(view: WriteDest<'_>, room: PlayerRoom) -> Result<(), WriteError> {
+        try_write_slice(view.offset(VIEW_PLAYER_ROOM)?, &room.0)
     }
 
     fn pointer(self, offset: usize) -> Option<GameAddr> {

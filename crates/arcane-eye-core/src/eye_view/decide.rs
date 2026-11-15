@@ -45,10 +45,10 @@ pub(crate) enum Stale {
 pub(crate) enum Readiness {
     /// The main view lacks its controller, its active scene, its atmosphere or its lighting.
     MainUnset,
-    /// The eye view's controller, scene, atmosphere id, lighting id or fog variant differs from the
-    /// main view's.
+    /// The eye view's controller, scene, atmosphere id, lighting id, fog variant or player room
+    /// differs from the main view's.
     NeedsSetUp,
-    /// The eye view's five values equal the main view's, which are set.
+    /// The eye view's six values equal the main view's, which are set.
     Ready,
 }
 
@@ -60,9 +60,9 @@ pub(crate) enum Action {
     Create,
     /// Drops the held eye view and gives the main view the entire frame.
     Forget,
-    /// Runs the differing steps of 8 to 13 and the fog variant step. A run that leaves the eye view
-    /// ready places the views as [`Action::SideBySide`] does, and any other as
-    /// [`Action::FullFrame`] does.
+    /// Runs the differing steps of 8 to 13, the fog variant step and the player room step. A run
+    /// that leaves the eye view ready places the views as [`Action::SideBySide`] does, and any
+    /// other as [`Action::FullFrame`] does.
     SetUp,
     /// Places the main view in the left half and the eye view in the right half (steps 14, 15).
     SideBySide,
@@ -118,6 +118,7 @@ pub(crate) fn readiness(main: &ViewContent, eye: &ViewContent) -> Readiness {
         && eye.scene == main.scene
         && eye.atmosphere.active_id == main.atmosphere.active_id
         && eye.lighting.active_id == main.lighting.active_id
-        && eye.fog_variant == main.fog_variant;
+        && eye.fog_variant == main.fog_variant
+        && eye.player_room == main.player_room;
     if same { Readiness::Ready } else { Readiness::NeedsSetUp }
 }

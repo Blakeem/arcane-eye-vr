@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use game_bindings::offsets::{VIEW_FOG_VARIANT, VIEW_WRITE_STATE_CONTROLLER};
+use game_bindings::offsets::{VIEW_FOG_VARIANT, VIEW_PLAYER_ROOM, VIEW_WRITE_STATE_CONTROLLER};
 
 use super::super::EyeView;
 use super::super::decide::RETRY_PERIOD;
@@ -72,6 +72,26 @@ fn a_new_main_fog_variant_reaches_the_eye_view_and_the_views_stay_side_by_side()
         assert_eq!(world.eye.get::<u8>(VIEW_FOG_VARIANT), variant);
         assert_eq!(update(&view, &world, &mut recorder, now), side_by_side, "the next frame");
     }
+}
+
+#[test]
+fn a_new_main_player_room_reaches_the_eye_view_with_no_call_and_the_views_stay_side_by_side() {
+    let world = World::new();
+    let (view, mut recorder) = following(&world);
+    let now = Instant::now();
+    let side_by_side = placed(&world, Placement::SideBySide);
+    // The player fields are 0x18 bytes, three words.
+    let words = [VIEW_PLAYER_ROOM, VIEW_PLAYER_ROOM + 8, VIEW_PLAYER_ROOM + 16];
+    for room in [[0x21_u64, 0x22, 0x23], [0x61, 0x62, 0x63]] {
+        for (offset, word) in words.into_iter().zip(room) {
+            world.main.set(offset, word);
+        }
+        assert_eq!(update(&view, &world, &mut recorder, now), side_by_side, "room {room:?}");
+        assert_eq!(words.map(|offset| world.eye.get::<u64>(offset)), room);
+        assert_eq!(world.eye.get::<u8>(VIEW_PLAYER_ROOM - 1), 0, "the byte before stays");
+        assert_eq!(update(&view, &world, &mut recorder, now), side_by_side, "the next frame");
+    }
+    assert_eq!(view.shared.lock().expect("an unpoisoned lock").placement, Placement::SideBySide);
 }
 
 #[test]

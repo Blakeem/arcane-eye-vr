@@ -1,17 +1,20 @@
 //! The game update's reads of the held eye view, recipe steps 8 to 13, which give the eye view the
 //! main view's camera controller, the level's scene and the main view's atmosphere and lighting, and
-//! the fog variant step, which gives it the main view's fog variant.
+//! the fog variant step and the player room step, which give it the main view's fog variant and
+//! player fields.
 //!
 //! All run on the game thread at the game update, since the steps change game thread state. The
 //! feature re-reads the pipeline, the main view and the main frame every frame, since the game may
 //! rebuild them or clear the eye view's camera and scene at a level unload. The game's logic gives
 //! only a player's view a new camera controller and fog variant, at each cut of a cutscene, so the
-//! feature compares both every frame.
+//! feature compares both every frame. The game writes the player fields of a player's view in each
+//! frame's recording, which ends before the next game update, so the feature compares them every
+//! frame too.
 
 use game_bindings::offsets::{ID_POOL_RELEASE_LIST, LEVEL_ATMOSPHERE_ID, LEVEL_LIGHTING_ID};
 use game_bindings::pipeline::{Level, LevelManager, Pipeline};
-use game_bindings::render_view::{Environment, RenderView, ViewContent};
-use game_mem::{GameAddr, try_read};
+use game_bindings::render_view::{Environment, PlayerRoom, RenderView, ViewContent};
+use game_mem::{GameAddr, WriteError, try_read};
 
 use super::decide::{Observed, Readiness, Stale, readiness};
 use super::engine::{Addresses, Apply, Held, SetUpCalls};
@@ -159,18 +162,20 @@ pub(crate) struct SetUpPlan {
     release_list: Option<GameAddr>,
     lighting: Option<EnvironmentSteps>,
     fog_variant: Option<u8>,
+    player_room: Option<PlayerRoom>,
 }
 
 impl SetUpPlan {
-    /// Which of the camera, scene, atmosphere, lighting and fog variant steps the plan runs, for
-    /// the log.
-    pub(crate) const fn steps(&self) -> [bool; 5] {
+    /// Which of the camera, scene, atmosphere, lighting, fog variant and player room steps the plan
+    /// runs, for the log.
+    pub(crate) const fn steps(&self) -> [bool; 6] {
         [
             self.camera.is_some(),
             self.scene.is_some(),
             self.atmosphere.is_some(),
             self.lighting.is_some(),
             self.fog_variant.is_some(),
+            self.player_room.is_some(),
         ]
     }
 }
@@ -191,6 +196,9 @@ pub(crate) fn plan(addresses: &Addresses, contents: &Contents) -> Result<SetUpPl
     }
     if eye.fog_variant != main.fog_variant {
         plan.fog_variant = Some(main.fog_variant);
+    }
+    if eye.player_room != main.player_room {
+        plan.player_room = Some(main.player_room);
     }
     let needs_scene = eye.scene != main.scene;
     let needs_atmosphere = eye.atmosphere.active_id != main.atmosphere.active_id;
@@ -227,8 +235,16 @@ pub(crate) fn plan(addresses: &Addresses, contents: &Contents) -> Result<SetUpPl
     Ok(plan)
 }
 
-/// Runs the calls of `plan` on `eye`, in recipe order.
-pub(crate) fn run(calls: &mut impl SetUpCalls, eye: RenderView, plan: &SetUpPlan) {
+/// Runs the calls of `plan` on `eye`, in recipe order, then the plan's write of the player fields.
+///
+/// # Errors
+///
+/// Returns the [`WriteError`] of a player field write that faulted, after every call ran.
+pub(crate) fn run(
+    calls: &mut impl SetUpCalls,
+    eye: RenderView,
+    plan: &SetUpPlan,
+) -> Result<(), WriteError> {
     if let Some(controller) = plan.camera {
         calls.set_camera(eye, controller);
     }
@@ -260,6 +276,11 @@ pub(crate) fn run(calls: &mut impl SetUpCalls, eye: RenderView, plan: &SetUpPlan
     if let Some(variant) = plan.fog_variant {
         calls.set_fog_variant(eye, variant);
     }
+    if let Some(room) = plan.player_room {
+        let view = calls.writes(eye.address(), RenderView::WRITE_LEN);
+        RenderView::write_player_room(view, room)?;
+    }
+    Ok(())
 }
 
 fn read_level(addresses: &Addresses) -> Result<Level, SetUpGuard> {

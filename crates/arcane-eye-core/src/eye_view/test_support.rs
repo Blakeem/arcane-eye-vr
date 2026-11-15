@@ -39,7 +39,7 @@ pub(crate) const ATMOSPHERE_REQUEST: i32 = 33;
 pub(crate) const LIGHTING_REQUEST: i32 = 44;
 
 /// The bytes of a test view, which hold every field the feature reads and writes.
-const VIEW_LEN: usize = VIEW_SCENE + 0x10;
+const VIEW_LEN: usize = RenderView::WRITE_LEN;
 
 /// The bytes of a test vtable, enough for pipeline slot 88. Its words are all 0 but the ones a test
 /// sets.

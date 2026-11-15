@@ -4,11 +4,13 @@
 //! The feature follows bg3-vr's recipe. At the Present call site, on the render thread, it creates the
 //! eye view through the game's own functions (steps 1 to 7). At the end of the game update's logic
 //! calls, on the game thread, it re-reads the pipeline, the main view and the main frame, gives the
-//! eye view the main view's camera controller, scene, atmosphere, lighting and fog variant when they
-//! differ (steps 8 to 13 and the fog variant step), and places the two views side by side while the
-//! eye view is ready (steps 14 and 15). Otherwise the main view covers the frame. The game's logic
-//! changes the main view before the hook and the game builds the frame after it, so the eye view
-//! follows the main view in the same frame. The feature never destroys the eye view.
+//! eye view the main view's camera controller, scene, atmosphere, lighting, fog variant and player
+//! room when they differ (steps 8 to 13, the fog variant step and the player room step), and places
+//! the two views side by side while the eye view is ready (steps 14 and 15). Otherwise the main view
+//! covers the frame. The game's logic changes the main view before the hook and the game builds the
+//! frame after it, so the eye view follows the main view in the same frame. The player room is the
+//! one value the game writes later, in the frame's recording, so the eye view gets it one frame
+//! after the main view. The feature never destroys the eye view.
 //!
 //! The two threads share the held eye view through one mutex. The game thread holds it while its hook
 //! handler runs. The render thread only tries it and never holds it across a game call, so neither
@@ -321,8 +323,8 @@ impl EyeView {
         }
     }
 
-    /// Runs the differing steps of 8 to 13 and the fog variant step after their guards, and returns
-    /// the placement of this frame. A run that leaves the eye view ready places the views side by
+    /// Runs the differing steps of 8 to 13, the fog variant step and the player room step after their
+    /// guards, and returns the placement of this frame. A run that leaves the eye view ready places the views side by
     /// side. A failed guard or any other run gives the main view the entire frame and waits
     /// [`decide::RETRY_PERIOD`] before the next run.
     fn set_up(
@@ -343,12 +345,17 @@ impl EyeView {
                 return Placement::FullFrame;
             }
         };
-        set_up::run(calls, held.eye, &plan);
+        if let Err(error) = set_up::run(calls, held.eye, &plan) {
+            warn_every!(shared.set_up_log, LOG_PERIOD, error = %error, "eye view set up write failed");
+        }
         let ready = set_up::is_ready(held);
-        let [camera, scene, atmosphere, lighting, fog_variant] = plan.steps();
+        let [camera, scene, atmosphere, lighting, fog_variant, player_room] = plan.steps();
         // A ready eye view runs no set up until the main view changes, and any other run waits
         // RETRY_PERIOD, so this line needs no rate-limit macro.
-        info!(camera, scene, atmosphere, lighting, fog_variant, ready, "eye view set up ran");
+        info!(
+            camera,
+            scene, atmosphere, lighting, fog_variant, player_room, ready, "eye view set up ran"
+        );
         if ready {
             return Placement::SideBySide;
         }

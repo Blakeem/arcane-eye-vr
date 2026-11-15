@@ -4,15 +4,18 @@ use std::hint::black_box;
 
 use game_mem::GameAddr;
 
-use super::{CameraController, Environment, ReadState, RenderView, ViewContent, ViewParts};
+use super::{
+    CameraController, Environment, PlayerRoom, ReadState, RenderView, ViewContent, ViewParts,
+};
 use crate::offsets::{
     CONTROLLER_SIZE, CONTROLLER_VIEW, CONTROLLER_VTABLE_SLOTS, CONTROLLER_WORLD_TRANSLATE_SLOT,
     ENVIRONMENT_RECORD_ID, PER_CAMERA_FAR, PER_CAMERA_NEAR, PER_CAMERA_POSITION,
     PER_CAMERA_PROJECTION, PER_CAMERA_VIEW, SCENE_ACTIVE, VIEW_ATMOSPHERE, VIEW_ATMOSPHERE_LOCK,
     VIEW_ATMOSPHERE_REQUEST, VIEW_ATMOSPHERE_TARGET, VIEW_FOG_VARIANT, VIEW_JOB_CONTEXT,
     VIEW_LAST_SEEN_CONTROLLER, VIEW_LIGHTING_LOCK, VIEW_LIGHTING_REQUEST, VIEW_LIGHTING_TARGET,
-    VIEW_OCCLUSION, VIEW_PER_CAMERA, VIEW_READ_STATE_CONTROLLER, VIEW_SCENE, VIEW_SPLIT_INDEX,
-    VIEW_STAGE_ARRAY, VIEW_STAGE_OWNER, VIEW_WRITE_STATE_CONTROLLER,
+    VIEW_OCCLUSION, VIEW_PER_CAMERA, VIEW_PLAYER_ROOM, VIEW_PLAYER_ROOM_SIZE,
+    VIEW_READ_STATE_CONTROLLER, VIEW_SCENE, VIEW_SPLIT_INDEX, VIEW_STAGE_ARRAY, VIEW_STAGE_OWNER,
+    VIEW_WRITE_STATE_CONTROLLER,
 };
 
 /// Windows reserves the lowest 64 KiB of every process, so no read there succeeds.
@@ -117,7 +120,7 @@ fn a_controller_copy_holds_its_bytes_and_view_matrix_and_the_vtable_its_slots() 
 }
 
 /// The size of a test view that holds every field the second view's recipe reads.
-const VIEW_LEN: usize = VIEW_SCENE + 0x10;
+const VIEW_LEN: usize = RenderView::WRITE_LEN;
 
 #[test]
 fn a_view_yields_its_parts_and_an_unmapped_one_nothing() {
@@ -158,6 +161,11 @@ fn a_view_yields_its_content_with_the_scene_byte_and_the_environment_and_request
     put(&mut view, VIEW_LIGHTING_TARGET, &address_of(&lighting_target).get().to_ne_bytes());
     put(&mut view, VIEW_LIGHTING_REQUEST, &(-1_i32).to_ne_bytes());
     view[VIEW_FOG_VARIANT] = 4;
+    let mut room = [0_u8; VIEW_PLAYER_ROOM_SIZE];
+    for (byte, value) in room.iter_mut().zip(0x40_u8..) {
+        *byte = value;
+    }
+    put(&mut view, VIEW_PLAYER_ROOM, &room);
     view[VIEW_SPLIT_INDEX] = 1;
     view[VIEW_ATMOSPHERE_LOCK] = 2;
     view[VIEW_LIGHTING_LOCK] = 3;
@@ -179,6 +187,7 @@ fn a_view_yields_its_content_with_the_scene_byte_and_the_environment_and_request
             request: -1,
         },
         fog_variant: 4,
+        player_room: PlayerRoom(room),
         split_index: 1,
         atmosphere_lock: 2,
         lighting_lock: 3,
