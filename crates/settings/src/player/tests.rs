@@ -15,7 +15,7 @@ fn rejection(reason: &str, line: usize, column: usize) -> Rejection {
 fn an_empty_text_gives_the_defaults() {
     assert_eq!(parse(""), Ok(Parsed::default()));
     assert_eq!(parse("# overrides only\n\n"), Ok(Parsed::default()));
-    assert_eq!(Settings::default().stereo.ipd_mm.millimeters().to_bits(), 63.0_f32.to_bits());
+    assert_eq!(Settings::default().stereo.ipd_mm.millimeters().to_bits(), 65.0_f32.to_bits());
 }
 
 #[test]

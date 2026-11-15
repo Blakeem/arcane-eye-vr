@@ -37,7 +37,7 @@ The mod reads two files from its root folder `%LOCALAPPDATA%\arcane-eye-vr\` at 
 version = 1
 
 [stereo]
-ipd_mm = 63.0    # distance between the eyes in millimeters, 50 to 80
+ipd_mm = 65.0    # distance between the eyes in millimeters, 50 to 80
 ```
 
 ```toml

@@ -43,7 +43,7 @@ impl IpdMm {
 
 impl Default for IpdMm {
     fn default() -> Self {
-        Self(63.0)
+        Self(65.0)
     }
 }
 

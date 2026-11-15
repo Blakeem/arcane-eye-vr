@@ -93,7 +93,7 @@ mod tests {
         assert_eq!(config, Config { settings: Settings::default(), dev: DevFlags::default() });
         assert_eq!(
             lines,
-            ["\"settings loaded\" ipd_mm=63.0 main_view_eye=center second_view=false"]
+            ["\"settings loaded\" ipd_mm=65.0 main_view_eye=center second_view=false"]
         );
     }
 
