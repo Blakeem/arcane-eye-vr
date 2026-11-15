@@ -11,6 +11,7 @@ mod install;
 mod object_slot;
 mod present;
 mod raw;
+mod reload;
 mod shadow_cache;
 mod view_camera;
 mod viewer;

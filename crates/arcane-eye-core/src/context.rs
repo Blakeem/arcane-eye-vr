@@ -4,26 +4,30 @@
 //! reads. State the core keeps for its lifetime is a field here, never a new `static`.
 
 use std::mem::ManuallyDrop;
+use std::sync::Arc;
 
 use diag::health::Health;
 use diag::logging::LogHandle;
 use hooks::{HookContext, MidHook, RenderCell};
 
-use crate::config::Config;
 use crate::eye_camera::EyeState;
 use crate::eye_view::EyeViewState;
 use crate::frame::FrameState;
 use crate::game_state::GameStateWatch;
 use crate::object_slot::SlotState;
 use crate::raw::StatusView;
+use crate::reload::{Published, Reload};
 use crate::shadow_cache::ShadowState;
 use crate::view_camera::ViewCamera;
 
 pub(crate) struct CoreContext {
     /// Held so the log writer thread runs for the life of the context.
     pub(crate) _log: LogHandle,
-    /// The settings read at start, kept where hook handlers can copy them.
-    pub(crate) _config: Config,
+    /// The player settings in effect, which the Present call-site handler copies once per frame.
+    pub(crate) settings: Arc<Published>,
+    /// Held so the settings poll thread runs for the life of the context. `None` when the thread
+    /// could not start.
+    pub(crate) _reload: Option<Reload>,
     pub(crate) health: Health,
     /// The launch token, or `None` when the launch app's mapping is gone.
     pub(crate) status: Option<StatusView>,

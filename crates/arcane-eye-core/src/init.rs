@@ -3,12 +3,13 @@
 //! [`start`] takes its inputs as parameters and returns the log handle and the subscriber without
 //! installing either, so tests run it in isolation. Only [`init_process`] finds the root folder, sets
 //! the process-wide subscriber, reads the settings files, opens the launch token, installs the Present
-//! call-site, view camera, eye camera, eye view and shadow cache hooks and the game state read, and
-//! fills the core context slot.
+//! call-site, view camera, eye camera, eye view and shadow cache hooks and the game state read, starts
+//! the settings poll thread and fills the core context slot.
 
 use std::mem::ManuallyDrop;
 use std::panic::{self, UnwindSafe};
 use std::path::Path;
+use std::sync::Arc;
 
 use diag::health::Health;
 use diag::logging::{self, LogError, LogHandle, LogName};
@@ -17,6 +18,8 @@ use game_bindings::state::{self, StateError};
 use hooks::{MidHook, RenderCell};
 use ipc_layout::core_init::INIT_STARTED;
 use ipc_layout::launch_token::{self, Mode, UnknownMode};
+use settings::dev::DevFlags;
+use settings::watch::Watch;
 use tracing::dispatcher::{self, SetGlobalDefaultError};
 use tracing::{Dispatch, info, warn};
 
@@ -29,6 +32,7 @@ use crate::install::GameCode;
 use crate::object_slot;
 use crate::present;
 use crate::raw::StatusView;
+use crate::reload::{self, Published, Reload};
 use crate::shadow_cache;
 use crate::view_camera::{self, ViewCamera};
 
@@ -133,7 +137,10 @@ fn run(
     let core = start(mode, &root.log_dir())?;
     dispatcher::set_global_default(core.dispatch)?;
     root.warn_ignored();
-    let config = config::load(root.path());
+    let mut watch = Watch::new(root.path());
+    let config = config::load(&mut watch);
+    let settings = Arc::new(Published::new(config.settings));
+    let reload = start_reload(watch, config.dev, &settings);
     let health = Health::new();
     let status = open_status(token_name);
     let installs = install_all(&health, status.as_ref(), config);
@@ -149,7 +156,8 @@ fn run(
         installs.object_slot.map(|installed| (installed.hook, installed.state)).unzip();
     let context = CoreContext {
         _log: core.log,
-        _config: config,
+        settings,
+        _reload: reload,
         health,
         status,
         frame: RenderCell::default(),
@@ -168,6 +176,18 @@ fn run(
     };
     state::store_core_context(context)?;
     Ok(())
+}
+
+/// Starts the settings poll thread for the files of `watch`. A thread that cannot start is a
+/// warning, and a changed settings file then applies at the next start.
+fn start_reload(watch: Watch, started: DevFlags, published: &Arc<Published>) -> Option<Reload> {
+    match reload::start(watch, started, Arc::clone(published)) {
+        Ok(reload) => Some(reload),
+        Err(error) => {
+            warn!(error = %error, "settings poll thread not started");
+            None
+        }
+    }
 }
 
 /// What each install that scans the game exe's code returned.

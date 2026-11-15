@@ -21,6 +21,7 @@
 
 mod lane;
 pub(crate) mod proxy;
+mod target;
 
 use std::mem::ManuallyDrop;
 use std::time::Duration;
@@ -33,12 +34,15 @@ use game_bindings::signatures::{GET_WORLD_TRANSLATE, RENDER_VIEW_BEGIN};
 use game_bindings::state;
 use game_mem::{GameAddr, WriteDest};
 use hooks::{MidHook, Registers, RenderThread};
-use settings::dev::{MainViewEye, SecondView, StereoFlags};
+use settings::dev::MainViewEye;
+use settings::player::StereoSettings;
 use stereo_core::eye::{self, Eye, PerEye};
 use tracing::{Level, info, warn};
 
 use self::lane::Lane;
 use self::proxy::{PAGES_SIZE, RING_SIZE};
+pub(crate) use self::target::Target;
+use self::target::target;
 use crate::config::Config;
 use crate::context::CoreContext;
 use crate::eye_view::Layout;
@@ -101,26 +105,6 @@ pub(crate) enum EyeFault {
     RestoreWrite,
 }
 
-/// The views the eye camera renders from an eye.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Target {
-    /// The main view renders from the eye.
-    MainView(Eye),
-    /// In a frame where the views sit side by side, the main view renders from the left eye and the
-    /// eye view from the right eye.
-    StereoPair,
-}
-
-impl Target {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::MainView(Eye::Left) => "main_view_left",
-            Self::MainView(Eye::Right) => "main_view_right",
-            Self::StereoPair => "stereo_pair",
-        }
-    }
-}
-
 /// The role of a view in the current frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Role {
@@ -150,25 +134,6 @@ pub(crate) enum History {
     Cut,
 }
 
-/// The eye that `main_view_eye` names, or `None` for `center`.
-pub(crate) const fn eye_of(main_view_eye: MainViewEye) -> Option<Eye> {
-    match main_view_eye {
-        MainViewEye::Center => None,
-        MainViewEye::Left => Some(Eye::Left),
-        MainViewEye::Right => Some(Eye::Right),
-    }
-}
-
-/// The views `stereo` has the eye camera render from an eye, or `None` when it renders none.
-/// `second_view` overrides `main_view_eye`.
-pub(crate) const fn target(stereo: StereoFlags) -> Option<Target> {
-    match (stereo.second_view, eye_of(stereo.main_view_eye)) {
-        (SecondView::On, _) => Some(Target::StereoPair),
-        (SecondView::Off, Some(eye)) => Some(Target::MainView(eye)),
-        (SecondView::Off, None) => None,
-    }
-}
-
 /// Installs the eye camera hook in `code`, the game exe's code, when `config` names a target and the
 /// Present call-site hook is running, and reports the outcome in the health registry and the log.
 /// Without a target it installs nothing and logs that. A failure installs nothing and leaves the other
@@ -183,14 +148,13 @@ pub(crate) fn install(health: &Health, code: &GameCode, config: Config) -> Optio
     if target == Target::StereoPair && stereo.main_view_eye != MainViewEye::Center {
         warn!(main_view_eye, "main_view_eye is ignored while second_view is on");
     }
-    let ipd_m = config.settings.stereo.ipd_mm.millimeters() / MILLIMETERS_PER_METER;
-    match hook_view_begin(health, code, target, eye::offsets_m(ipd_m)) {
+    match hook_view_begin(health, code, target, offsets_m(config.settings.stereo)) {
         Ok((site, installed)) => {
             health.install_ok(Feature::EyeCamera);
             info!(
                 address = format_args!("{:#x}", site.get()),
                 target = target.as_str(),
-                ipd_m,
+                ipd_mm = config.settings.stereo.ipd_mm.millimeters(),
                 "eye camera hook installed"
             );
             Some(installed)
@@ -201,6 +165,11 @@ pub(crate) fn install(health: &Health, code: &GameCode, config: Config) -> Optio
             None
         }
     }
+}
+
+/// Each eye's signed offset from the head in meters, for the eye distance of `stereo`.
+fn offsets_m(stereo: StereoSettings) -> PerEye<f32> {
+    eye::offsets_m(stereo.ipd_mm.millimeters() / MILLIMETERS_PER_METER)
 }
 
 /// Resolves both signatures and commits the proxy pages before the hook goes in, so a failure leaves
@@ -239,10 +208,17 @@ fn on_view_begin(context: &CoreContext, thread: &RenderThread, registers: &mut R
     });
 }
 
-/// Ends the frame of the eye camera, so the next frame's views are chosen afresh in `layout`.
-pub(crate) fn end_frame(context: &CoreContext, thread: &RenderThread, layout: Layout) {
+/// Ends the frame of the eye camera, so the next frame's views are chosen afresh in `layout` and
+/// render at the eye distance of `stereo`, the player settings in effect.
+pub(crate) fn end_frame(
+    context: &CoreContext,
+    thread: &RenderThread,
+    layout: Layout,
+    stereo: StereoSettings,
+) {
     context.eye_camera.with(thread, |state| {
         if let Some(state) = state {
+            state.set_offsets(offsets_m(stereo));
             state.end_frame(layout);
         }
     });
@@ -308,6 +284,12 @@ impl EyeState {
             layout: Layout::MainOnly,
             logs: EyeLogs::default(),
         }
+    }
+
+    /// Gives each lane its eye's offset from the head in `offsets_m`, for its next proxies.
+    pub(crate) fn set_offsets(&mut self, offsets_m: PerEye<f32>) {
+        self.main.set_offset(offsets_m);
+        self.eye_view.set_offset(offsets_m);
     }
 
     /// Ends the frame, so each lane proxies its next view, in a next frame of `layout`.

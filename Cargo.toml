@@ -3,6 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.dependencies]
+arc-swap = "1.9.3"
 cc = "1.10.0"
 memchr = "2.8.3"
 png = "0.18.1"

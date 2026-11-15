@@ -49,6 +49,8 @@ second_view = false         # a second view from the right eye in the right half
 
 A file with an invalid value is rejected as an entire file and its defaults apply. The session log in `logs\` names the line and column of the problem. An unknown key in `settings.toml` is logged and skipped, and an unknown key in `dev.toml` rejects the file.
 
+A saved change to `settings.toml` applies within a second while the game runs. An invalid change keeps the settings in use. A change to `dev.toml` applies at the next start.
+
 The environment variable `ARCANE_EYE_VR_HOME` sets a different root folder when its value is an absolute path. The game reads it from the environment it inherits. The launch app starts the game through Steam, so the game gets Steam's environment and not the launch app's. A user variable reaches the game when Steam starts after the variable is set. `trial.exe` sets it on the game it starts.
 
 ## Build

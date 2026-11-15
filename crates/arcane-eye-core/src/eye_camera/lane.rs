@@ -3,7 +3,7 @@
 
 use game_bindings::render_view::{CameraController, RenderView};
 use game_mem::{GameAddr, WriteDest, WriteError};
-use stereo_core::eye::Eye;
+use stereo_core::eye::{Eye, PerEye};
 use stereo_core::eye_camera::{self, EyeCamera};
 
 use super::proxy::{self, ProxyParts, RING_LEN};
@@ -46,6 +46,11 @@ impl Lane {
     /// Whether the lane proxied a view in the current frame.
     pub(super) fn is_taken(&self) -> bool {
         self.turn == Turn::Taken
+    }
+
+    /// Sets the lane's offset from the head to its eye's offset in `offsets_m`.
+    pub(super) fn set_offset(&mut self, offsets_m: PerEye<f32>) {
+        self.offset_m = offsets_m[self.eye];
     }
 
     /// Ends the frame, so the lane proxies its next view.

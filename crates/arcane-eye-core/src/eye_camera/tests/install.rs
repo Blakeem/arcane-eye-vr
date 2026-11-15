@@ -5,7 +5,8 @@ use settings::dev::{DevFlags, MainViewEye, SecondView, StereoFlags};
 use settings::player::Settings;
 use stereo_core::eye::Eye;
 
-use super::super::{Target, eye_of, install, target};
+use super::super::target::{eye_of, target};
+use super::super::{Target, install};
 use crate::config::Config;
 use crate::install::GameCode;
 use crate::logged;

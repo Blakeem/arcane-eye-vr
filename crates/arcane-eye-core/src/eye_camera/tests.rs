@@ -11,7 +11,7 @@ use game_bindings::offsets::{
 use game_bindings::render_view::{CameraController, RenderView};
 use game_bindings::state::arm_alloc_guard;
 use game_mem::{GameAddr, WriteError, try_read, try_read_array, try_read_bytes, try_write};
-use stereo_core::eye::Eye;
+use stereo_core::eye::{Eye, PerEye};
 
 use super::lane::last_seen_fault;
 use super::proxy::{self, PROXY_SIZE, RING_LEN};
@@ -90,6 +90,20 @@ fn the_proxy_slot_9_called_through_its_vtable_returns_the_eye_position() {
     assert_eq!(slot_9, Some(proxy::world_translate_fn()), "the proxy's slot 9");
     let translate = call_world_translate(proxy::world_translate_fn(), proxy);
     assert_near(&floats::<3>(translate), &eye_position(HALF_IPD_M), "the right eye position");
+}
+
+#[test]
+fn new_offsets_move_the_eye_of_the_next_frames_proxy_and_keep_the_views_history() {
+    let head = HeadController::new(WORLD_TRANSLATE);
+    let view = TestView::new(head.address().get(), &block_at(0.0));
+    let mut camera = eye_state(Eye::Right);
+    proxied(begin(&mut camera, view.view()), History::Cut);
+    view.finish_frame(head.address().get());
+    camera.set_offsets(PerEye { left: -0.04, right: 0.04 });
+    camera.end_frame(Layout::MainOnly);
+    let proxy = proxied(begin(&mut camera, view.view()), History::Kept);
+    let translate = call_world_translate(proxy::world_translate_fn(), proxy);
+    assert_near(&floats::<3>(translate), &eye_position(0.04), "the right eye at the new offset");
 }
 
 #[test]

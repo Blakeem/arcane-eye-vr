@@ -4,7 +4,7 @@
 //! on the match. The handler reads the eye view's layout for the next frame, ends the frames of the
 //! eye camera, the shadow cache and the view camera, runs the frame work before the engine's `Present`
 //! call, reports the first frame through the launch token, reads the game state and runs the eye
-//! view's create.
+//! view's create. It copies the published player settings once, so a frame uses one set of values.
 
 use std::mem::ManuallyDrop;
 use std::panic::{self, AssertUnwindSafe};
@@ -90,7 +90,8 @@ fn report(status: Option<&StatusView>, value: Status) {
 /// render loop holds no pointer into the view list, so the eye view may join it here.
 fn on_present_call(context: &CoreContext, thread: &RenderThread, registers: &mut Registers) {
     let layout = eye_view::frame_layout(context, thread);
-    eye_camera::end_frame(context, thread, layout);
+    let settings = context.settings.get();
+    eye_camera::end_frame(context, thread, layout, settings.stereo);
     shadow_cache::end_frame(context, thread, layout);
     object_slot::end_frame(context, thread, layout);
     let cameras = view_camera::end_frame(context, thread, layout);
