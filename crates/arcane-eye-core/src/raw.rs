@@ -4,7 +4,8 @@
 //! slot hook installs, the write destinations of the render view, of the shadow stage, of the object
 //! data stage and of the pages the core
 //! shares with game threads, the launch token's status field, and the D3D11 and DXGI calls of the
-//! frame handler. Its `eye_view` module holds the eye view feature's hook install and game calls.
+//! frame handler. Its `eye_view` module holds the eye view feature's hook install and game calls, and
+//! its `game_texture` module the borrow of a texture that game memory names.
 
 #![expect(
     unsafe_code,
@@ -377,6 +378,7 @@ impl Drop for StatusView {
 }
 
 pub(crate) mod eye_view;
+pub(crate) mod game_texture;
 
 #[cfg(test)]
 pub(crate) mod test_support;

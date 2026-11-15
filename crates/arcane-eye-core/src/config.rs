@@ -28,6 +28,7 @@ pub(crate) fn load(watch: &mut Watch) -> Config {
         ipd_mm = settings.stereo.ipd_mm.millimeters(),
         main_view_eye = dev.stereo.main_view_eye.as_str(),
         second_view = dev.stereo.second_view.as_bool(),
+        viewer_source = dev.viewer.source.as_str(),
         "settings loaded"
     );
     Config { settings, dev }
@@ -101,7 +102,8 @@ mod tests {
         assert_eq!(config, Config { settings: Settings::default(), dev: DevFlags::default() });
         assert_eq!(
             lines,
-            ["\"settings loaded\" ipd_mm=65.0 main_view_eye=center second_view=false"]
+            ["\"settings loaded\" ipd_mm=65.0 main_view_eye=center second_view=false \
+              viewer_source=back_buffer"]
         );
     }
 
@@ -110,7 +112,8 @@ mod tests {
         let dir = test_dir("config-valid");
         let root = dir.path();
         fs::write(root.join("settings.toml"), "[stereo]\nipd_mm = 58.5\nipd = 1\n").expect("write");
-        let dev = "[stereo]\nmain_view_eye = \"left\"\nsecond_view = true\n";
+        let dev = "[stereo]\nmain_view_eye = \"left\"\nsecond_view = true\n\
+                   [viewer]\nsource = \"ui\"\n";
         fs::write(root.join("dev.toml"), dev).expect("write");
         let (config, lines) = load_logged(root, &root.join("logs"));
         let ipd_mm = IpdMm::try_from(58.5).expect("in range");
@@ -119,7 +122,8 @@ mod tests {
         assert_eq!(config.dev.stereo.second_view, SecondView::On);
         let expected = [
             "\"unknown settings key ignored\" file=settings.toml key=stereo.ipd",
-            "\"settings loaded\" ipd_mm=58.5 main_view_eye=left second_view=true",
+            "\"settings loaded\" ipd_mm=58.5 main_view_eye=left second_view=true \
+             viewer_source=ui",
         ];
         assert_eq!(lines, expected);
     }
@@ -143,7 +147,9 @@ mod tests {
             lines,
             [
                 warning,
-                "\"settings loaded\" ipd_mm=58.5 main_view_eye=center second_view=false".to_owned()
+                "\"settings loaded\" ipd_mm=58.5 main_view_eye=center second_view=false \
+                 viewer_source=back_buffer"
+                    .to_owned()
             ]
         );
     }

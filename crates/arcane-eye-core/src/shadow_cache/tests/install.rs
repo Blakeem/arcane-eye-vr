@@ -14,7 +14,7 @@ const NOT_INSTALLED: &str = "shadow cache hook not installed";
 
 fn config(second_view: SecondView) -> Config {
     let stereo = StereoFlags { main_view_eye: MainViewEye::Center, second_view };
-    Config { settings: Settings::default(), dev: DevFlags { stereo } }
+    Config { settings: Settings::default(), dev: DevFlags { stereo, ..DevFlags::default() } }
 }
 
 /// A registry where each of `features` installed.

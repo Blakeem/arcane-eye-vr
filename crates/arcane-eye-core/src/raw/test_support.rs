@@ -1,6 +1,6 @@
 //! Fixtures for the core's tests.
 //!
-//! It holds a launch token mapping, a WARP device and swapchain on a hidden window, a debug viewer's
+//! It holds a launch token mapping, a WARP device, swapchain and texture on a hidden window, a debug viewer's
 //! view of the viewer header, a call of a proxy controller's slot 9, pages with a read-only tail and
 //! the write destinations of test memory.
 
@@ -17,7 +17,8 @@ use viewer_client::header::read_header;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE, HWND, INVALID_HANDLE_VALUE};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_WARP;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_CREATE_DEVICE_FLAG, D3D11_SDK_VERSION, D3D11CreateDeviceAndSwapChain,
+    D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_FLAG, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_DEFAULT, D3D11CreateDeviceAndSwapChain, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_MODE_DESC, DXGI_SAMPLE_DESC,
@@ -187,6 +188,27 @@ impl TestSwapchain {
 
     pub(crate) fn address(&self) -> usize {
         self.swapchain.as_raw().expose_provenance()
+    }
+
+    /// A texture of the swapchain's device in the back buffer's format, as the game holds one.
+    pub(crate) fn texture(&self, width: u32, height: u32) -> ID3D11Texture2D {
+        let device = super::device(&self.swapchain).expect("the swapchain's device");
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: width,
+            Height: height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: FORMAT,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned(),
+            ..Default::default()
+        };
+        let mut texture = None;
+        // SAFETY: `desc` and `texture` are live for the call, and the texture gets no first data.
+        unsafe { device.CreateTexture2D(&raw const desc, None, Some(&raw mut texture)) }
+            .expect("create a test texture");
+        texture.expect("the created texture")
     }
 
     /// Resizes the back buffer. DXGI fails the call while any reference to the back buffer exists.

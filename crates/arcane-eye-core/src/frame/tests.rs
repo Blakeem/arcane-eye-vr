@@ -1,6 +1,7 @@
 //! Tests of the frame handler against WARP swapchains, with the session log captured.
 
 mod camera;
+mod source;
 
 use std::fs;
 use std::time::{Duration, Instant};

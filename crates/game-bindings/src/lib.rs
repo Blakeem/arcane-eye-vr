@@ -13,3 +13,4 @@ pub mod render_view;
 pub mod shadow_stage;
 pub mod signatures;
 pub mod state;
+pub mod texture_table;

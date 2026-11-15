@@ -27,6 +27,7 @@ use crate::config::{self, Config};
 use crate::context::CoreContext;
 use crate::eye_camera;
 use crate::eye_view;
+use crate::frame::FrameState;
 use crate::game_state::{self, GameStateWatch};
 use crate::install::GameCode;
 use crate::object_slot;
@@ -35,6 +36,7 @@ use crate::raw::StatusView;
 use crate::reload::{self, Published, Reload};
 use crate::shadow_cache;
 use crate::view_camera::{self, ViewCamera};
+use crate::viewer_source::{self, GameSource};
 
 /// The code `arcane_eye_init` returns. 0 is success, every other value names the failure.
 #[repr(u32)]
@@ -160,7 +162,7 @@ fn run(
         _reload: reload,
         health,
         status,
-        frame: RenderCell::default(),
+        frame: RenderCell::new(FrameState::with_game_source(installs.game_source)),
         view_camera: RenderCell::new(ViewCamera::new(world_translate)),
         eye_camera: RenderCell::new(eye_state),
         eye_view: eye_view_state,
@@ -193,6 +195,7 @@ fn start_reload(watch: Watch, started: DevFlags, published: &Arc<Published>) -> 
 /// What each install that scans the game exe's code returned.
 struct Installs {
     present_hook: Option<ManuallyDrop<MidHook>>,
+    game_source: Option<GameSource>,
     game_state: Option<GameStateWatch>,
     view_camera: Option<view_camera::Installed>,
     eye_camera: Option<eye_camera::Installed>,
@@ -209,6 +212,7 @@ fn install_all(health: &Health, status: Option<&StatusView>, config: Config) -> 
     let code = GameCode::copy();
     Installs {
         present_hook: present::install(health, status, &code),
+        game_source: viewer_source::install(&code, config),
         game_state: game_state::install(health, &code),
         view_camera: view_camera::install(health, &code),
         eye_camera: eye_camera::install(health, &code, config),

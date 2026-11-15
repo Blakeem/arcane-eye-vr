@@ -24,7 +24,7 @@ const fn stereo(main_view_eye: MainViewEye, second_view: SecondView) -> StereoFl
 fn config(main_view_eye: MainViewEye, second_view: SecondView) -> Config {
     Config {
         settings: Settings::default(),
-        dev: DevFlags { stereo: stereo(main_view_eye, second_view) },
+        dev: DevFlags { stereo: stereo(main_view_eye, second_view), ..DevFlags::default() },
     }
 }
 

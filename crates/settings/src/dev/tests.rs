@@ -1,6 +1,6 @@
 //! The dev file parser against texts written by hand.
 
-use super::{DevFlags, MainViewEye, SecondView, StereoFlags, parse};
+use super::{DevFlags, MainViewEye, SecondView, StereoFlags, ViewerFlags, ViewerSource, parse};
 use crate::rejection::{Position, Rejection};
 
 fn eye(value: &str) -> Result<DevFlags, Rejection> {
@@ -28,7 +28,7 @@ fn each_eye_parses_from_the_name_it_logs_under() {
     for main_view_eye in [MainViewEye::Center, MainViewEye::Left, MainViewEye::Right] {
         let parsed = eye(&format!("\"{}\"", main_view_eye.as_str()));
         let stereo = StereoFlags { main_view_eye, second_view: SecondView::Off };
-        assert_eq!(parsed, Ok(DevFlags { stereo }));
+        assert_eq!(parsed, Ok(DevFlags { stereo, ..DevFlags::default() }));
     }
     assert_eq!(MainViewEye::Left.as_str(), "left");
 }
@@ -36,10 +36,23 @@ fn each_eye_parses_from_the_name_it_logs_under() {
 #[test]
 fn second_view_parses_from_both_booleans() {
     let on = StereoFlags { main_view_eye: MainViewEye::Center, second_view: SecondView::On };
-    assert_eq!(second_view("true"), Ok(DevFlags { stereo: on }));
+    assert_eq!(second_view("true"), Ok(DevFlags { stereo: on, ..DevFlags::default() }));
     assert_eq!(second_view("false"), Ok(DevFlags::default()));
     assert!(SecondView::On.as_bool());
     assert!(!SecondView::Off.as_bool());
+}
+
+#[test]
+fn each_viewer_source_parses_from_the_name_it_logs_under() {
+    assert_eq!(DevFlags::default().viewer.source, ViewerSource::BackBuffer);
+    for source in [ViewerSource::BackBuffer, ViewerSource::Scene, ViewerSource::Ui] {
+        let parsed = parse(&format!("[viewer]\nsource = \"{}\"\n", source.as_str()));
+        let viewer = ViewerFlags { source };
+        assert_eq!(parsed, Ok(DevFlags { viewer, ..DevFlags::default() }));
+    }
+    assert_eq!(ViewerSource::BackBuffer.as_str(), "back_buffer");
+    let reason = "unknown variant `hud`, expected one of `back_buffer`, `scene`, `ui`";
+    assert_eq!(parse("[viewer]\nsource = \"hud\"\n"), Err(rejection(reason, 2, 10)));
 }
 
 #[test]
@@ -84,5 +97,6 @@ fn an_unknown_key_rejects_the_file() {
         ))
     );
     let top_level = parse("version = 1\n");
-    assert_eq!(top_level, Err(rejection("unknown field `version`, expected `stereo`", 1, 1)));
+    let reason = "unknown field `version`, expected `stereo` or `viewer`";
+    assert_eq!(top_level, Err(rejection(reason, 1, 1)));
 }

@@ -14,6 +14,7 @@ use crate::rejection::Rejection;
 #[serde(default, deny_unknown_fields)]
 pub struct DevFlags {
     pub stereo: StereoFlags,
+    pub viewer: ViewerFlags,
 }
 
 /// The table `[stereo]`.
@@ -25,6 +26,40 @@ pub struct StereoFlags {
     pub main_view_eye: MainViewEye,
     /// The dev flag `stereo.second_view`. Its entry in [`crate::flags::FLAGS`] states its question.
     pub second_view: SecondView,
+}
+
+/// The table `[viewer]`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[cfg_attr(test, derive(serde::Serialize))]
+#[serde(default, deny_unknown_fields)]
+pub struct ViewerFlags {
+    /// The dev flag `viewer.source`. Its entry in [`crate::flags::FLAGS`] states its question.
+    pub source: ViewerSource,
+}
+
+/// The texture the debug viewer gets.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[cfg_attr(test, derive(serde::Serialize))]
+#[serde(rename_all = "snake_case")]
+pub enum ViewerSource {
+    /// The frame the game presents.
+    #[default]
+    BackBuffer,
+    /// The game's finished scene, before the game draws its UI over it.
+    Scene,
+    /// The game's UI layer alone.
+    Ui,
+}
+
+impl ViewerSource {
+    /// The value as `dev.toml` writes it.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BackBuffer => "back_buffer",
+            Self::Scene => "scene",
+            Self::Ui => "ui",
+        }
+    }
 }
 
 /// Whether the mod has the engine draw a second render view beside the main view. `dev.toml` writes it

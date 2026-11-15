@@ -1,4 +1,5 @@
 //! The game exe's module in memory: its load address and the address ranges of its executable code.
+//! Also a loaded module by its name, and whether an address lies in it.
 //!
 //! The ranges come from the memory manager's view of the module's pages, not from its PE headers, so
 //! they hold exactly the pages a guarded read of code can copy.
@@ -54,6 +55,26 @@ pub fn main_module() -> Result<MainModule, ModuleError> {
     Ok(MainModule { base: GameAddr::new(base), code })
 }
 
+/// A module the process has loaded, by its load address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LoadedModule(GameAddr);
+
+impl LoadedModule {
+    /// The loaded module named `name`, such as `d3d11.dll`, or `None` when the process holds none.
+    pub fn named(name: &str) -> Option<Self> {
+        raw::module_base(name).map(|base| Self(GameAddr::new(base)))
+    }
+
+    pub const fn base(self) -> GameAddr {
+        self.0
+    }
+
+    /// Whether `address` lies in the pages Windows mapped for the module's image.
+    pub fn holds(self, address: GameAddr) -> bool {
+        raw::query(address.get()).is_some_and(|region| region.allocation_base == self.0.get())
+    }
+}
+
 fn code_range(region: &Region) -> Option<CodeRange> {
     match region.access {
         Access::Code => Some(CodeRange { start: GameAddr::new(region.base), len: region.size }),
@@ -76,8 +97,21 @@ fn push_merged(code: &mut Vec<CodeRange>, range: CodeRange) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CodeRange, push_merged};
+    use super::{CodeRange, LoadedModule, main_module, push_merged};
     use crate::GameAddr;
+
+    #[test]
+    fn a_loaded_module_holds_its_own_pages_and_no_other_address() {
+        let kernel = LoadedModule::named("kernel32.dll").expect("every process loads kernel32");
+        assert!(kernel.holds(kernel.base()));
+        assert!(kernel.holds(kernel.base().checked_add(0x1000).expect("a test address")));
+        let exe = main_module().expect("the test exe's module");
+        assert!(!kernel.holds(exe.base), "the exe is another module");
+        let local = 0_u8;
+        assert!(!kernel.holds(GameAddr::new((&raw const local).expose_provenance())));
+        assert!(!kernel.holds(GameAddr::new(0x10)), "an unmapped address");
+        assert_eq!(LoadedModule::named("arcane-eye-no-such-module.dll"), None);
+    }
 
     fn range(start: usize, len: usize) -> CodeRange {
         CodeRange { start: GameAddr::new(start), len }

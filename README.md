@@ -23,6 +23,7 @@ These parts work in tests:
 - The launch app starts the game through Steam. The mod stays inactive on a normal Steam launch.
 - The mod loads into the DirectX 11 version of the game and reads each frame.
 - A debug viewer shows that frame in its own window.
+- For trials, the debug viewer can show the game's scene with no interface, or the interface alone. The key `source` under Settings sets it.
 - For trials, the game's view can render from the left or right eye. The keys `main_view_eye` and `ipd_mm` under Settings set it.
 - For trials, the game can draw a second view beside its own view. Once the second view is ready, each frame holds a stereo pair side by side. The game's view fills the left half from the left eye position and the second view fills the right half from the right eye position. The keys `second_view` and `ipd_mm` under Settings set it, and `main_view_eye` has no effect while `second_view` is on.
 
@@ -45,6 +46,9 @@ ipd_mm = 65.0    # distance between the eyes in millimeters, 50 to 80
 [stereo]
 main_view_eye = "center"    # the eye position of the game's view: center, left or right
 second_view = false         # a second view from the right eye in the right half of the frame: true or false
+
+[viewer]
+source = "back_buffer"      # what the debug viewer shows: back_buffer (the presented frame), scene or ui
 ```
 
 A file with an invalid value is rejected as an entire file and its defaults apply. The session log in `logs\` names the line and column of the problem. An unknown key in `settings.toml` is logged and skipped, and an unknown key in `dev.toml` rejects the file.

@@ -12,7 +12,7 @@ use windows::Win32::System::Memory::{
     MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
     PAGE_EXECUTE_WRITECOPY, PAGE_GUARD, PAGE_NOACCESS, VirtualQuery,
 };
-use windows::core::PCWSTR;
+use windows::core::{HSTRING, PCWSTR};
 
 use crate::{GameAddr, Plain, WriteDest, WriteError};
 
@@ -92,6 +92,15 @@ pub(crate) fn main_module_base() -> windows::core::Result<usize> {
     // SAFETY: a null name asks for the process exe's module, which stays loaded for the process's life.
     let module = unsafe { GetModuleHandleW(PCWSTR::null()) }?;
     Ok(module.0.expose_provenance())
+}
+
+/// The load address of the loaded module named `name`, or `None` when the process holds none.
+pub(crate) fn module_base(name: &str) -> Option<usize> {
+    let name = HSTRING::from(name);
+    // SAFETY: `name` is a NUL-terminated wide string that outlives the call, which takes no reference
+    // on the module.
+    let module = unsafe { GetModuleHandleW(&name) }.ok()?;
+    Some(module.0.expose_provenance())
 }
 
 /// Whether a region's pages hold code a guarded read can copy.

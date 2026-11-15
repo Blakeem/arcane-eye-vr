@@ -80,6 +80,37 @@ pub const STAGE_RESOURCES_RECORD_COUNT: usize = 0x64;
 /// The owner view of a render view's stage group. A view's own stages name the view itself.
 pub const VIEW_STAGE_OWNER: usize = 0x20;
 
+/// The texture table pointer of a render view. Every view of a pipeline holds the same table (a dump
+/// of the main view, the special view and the eye view in the game).
+pub const VIEW_TEXTURE_TABLE: usize = 0x18;
+
+/// The bucket array of a texture table: one `i32` entry index per bucket, negative for an empty
+/// bucket. This and the table offsets below come from a disassembly of the game's lookup and a dump
+/// of the table.
+pub const TEXTURE_TABLE_BUCKETS: usize = 0x78;
+
+/// The bucket count of a texture table, an `i32`.
+pub const TEXTURE_TABLE_BUCKET_COUNT: usize = 0x80;
+
+/// The next array of a texture table: one `i32` entry index per entry, negative at the end of a
+/// bucket's chain.
+pub const TEXTURE_TABLE_NEXT: usize = 0x88;
+
+/// The entry count of a texture table, an `i32`.
+pub const TEXTURE_TABLE_ENTRY_COUNT: usize = 0x94;
+
+/// The key array of a texture table: one `u32` key per entry.
+pub const TEXTURE_TABLE_KEYS: usize = 0x98;
+
+/// The value array of a texture table: one node pointer per entry.
+pub const TEXTURE_TABLE_VALUES: usize = 0xA8;
+
+/// The texture record pointer of a texture table node, null while the node has no texture.
+pub const TEXTURE_NODE_RECORD: usize = 0x38;
+
+/// The Direct3D texture pointer of a texture record.
+pub const TEXTURE_RECORD_TEXTURE: usize = 0x00;
+
 /// The stage array pointer of a render view's stage group.
 pub const VIEW_STAGE_ARRAY: usize = 0x28;
 

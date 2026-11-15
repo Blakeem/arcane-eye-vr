@@ -1,7 +1,8 @@
 //! The frame handler's work at the Present call site.
 //!
 //! On the first frame it takes the device and the immediate context. On every frame it tracks the
-//! swapchain, its device and its back buffer, and hands the frame to the debug viewer link. It times
+//! swapchain, its device and its back buffer, and hands the frame to the debug viewer link, with the
+//! game source when the dev flag `viewer.source` names one. It times
 //! each call and logs the perf summary line once per window of frames, after the camera lines of the
 //! window's newest main view camera and newest eye view camera.
 //!
@@ -25,6 +26,7 @@ use windows::core::HRESULT;
 use crate::raw::{self, BackBuffer, Devices};
 use crate::view_camera::{FrameCamera, FrameCameras, Viewpoint};
 use crate::viewer::ViewerLink;
+use crate::viewer_source::GameSource;
 
 /// The shortest time between two lines of one rate-limited call site.
 const LOG_PERIOD: Duration = Duration::from_secs(10);
@@ -47,12 +49,21 @@ pub(crate) struct FrameState {
     last: Option<Snapshot>,
     logs: FrameLogs,
     viewer: ViewerLink,
+    /// The game texture the viewer gets, or `None` for the back buffer.
+    game_source: Option<GameSource>,
     /// The time of the previous Present call, from which the next frame interval runs.
     last_call: Option<Instant>,
     frame_times: FrameWindow,
     /// The newest main view camera and eye view camera of the current perf window, for its camera
     /// lines.
     cameras: FrameCameras,
+}
+
+impl FrameState {
+    /// The state of a frame handler whose viewer gets `game_source`, or the back buffer for `None`.
+    pub(crate) fn with_game_source(game_source: Option<GameSource>) -> Self {
+        Self { game_source, ..Self::default() }
+    }
 }
 
 /// The rate-limit state of each log call site of the frame handler.
@@ -213,7 +224,7 @@ fn on_frame(state: &mut FrameState, address: usize, swapchain: &IDXGISwapChain) 
         "first present"
     );
     if let Some(devices) = &state.devices {
-        state.viewer.on_frame(swapchain, devices);
+        state.viewer.on_frame(swapchain, devices, state.game_source.as_mut());
     }
     if first { FrameReport::FirstPresent } else { FrameReport::Later }
 }
