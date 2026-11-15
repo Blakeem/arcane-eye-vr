@@ -8,6 +8,7 @@ mod frame;
 mod game_state;
 mod init;
 mod install;
+mod object_slot;
 mod present;
 mod raw;
 mod shadow_cache;

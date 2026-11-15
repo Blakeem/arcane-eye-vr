@@ -23,6 +23,7 @@ use crate::eye_view;
 use crate::frame::{self, FrameReport};
 use crate::game_state;
 use crate::install::{GameCode, InstallError};
+use crate::object_slot;
 use crate::raw::{self, StatusView};
 use crate::shadow_cache;
 use crate::view_camera;
@@ -91,6 +92,7 @@ fn on_present_call(context: &CoreContext, thread: &RenderThread, registers: &mut
     let layout = eye_view::frame_layout(context, thread);
     eye_camera::end_frame(context, thread, layout);
     shadow_cache::end_frame(context, thread, layout);
+    object_slot::end_frame(context, thread, layout);
     let cameras = view_camera::end_frame(context, thread, layout);
     let frame =
         context.frame.with(thread, |state| frame::on_present_call(state, registers, cameras));

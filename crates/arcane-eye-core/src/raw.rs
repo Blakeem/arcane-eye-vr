@@ -1,7 +1,8 @@
 //! The core DLL's unsafe edge.
 //!
-//! It holds the exports, the Present call-site, view camera, eye camera and shadow cache hook
-//! installs, the write destinations of the render view, of the shadow stage and of the pages the core
+//! It holds the exports, the Present call-site, view camera, eye camera, shadow cache and object
+//! slot hook installs, the write destinations of the render view, of the shadow stage, of the object
+//! data stage and of the pages the core
 //! shares with game threads, the launch token's status field, and the D3D11 and DXGI calls of the
 //! frame handler. Its `eye_view` module holds the eye view feature's hook install and game calls.
 
@@ -14,6 +15,7 @@ use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::ptr;
 
+use game_bindings::object_stage::ObjectStage;
 use game_bindings::render_view::RenderView;
 use game_bindings::shadow_stage::ShadowStage;
 use game_mem::{GameAddr, WriteDest, try_read};
@@ -133,6 +135,37 @@ pub(crate) fn shadow_stage_exit(registers: &Registers) -> (ShadowStage, WriteDes
     // covers. The destination lives only for the hook, while the stage's execute returns.
     let writes = unsafe { WriteDest::new(address, ShadowStage::WRITE_LEN) };
     (ShadowStage::new(address), writes)
+}
+
+/// Installs `thunk` as the mid hook at `address`, where an object data stage's execute starts the
+/// stage's job.
+///
+/// `address` must be the one match of the `object_stage_job_start` signature in the loaded game exe.
+/// The hook never drops, so it stays installed for the process life, and no render thread runs a
+/// freed stub.
+pub(crate) fn install_object_slot_hook(
+    address: GameAddr,
+    thunk: MidThunk,
+) -> Result<ManuallyDrop<MidHook>, HookError> {
+    // SAFETY: the signature's one match holds `mov rcx,[rbx+2138h]`, `lea rdx,[rbx+20h]` and
+    // `test rbx,rbx` at the site, 14 bytes with no RIP-relative operand and no jump. SafetyHook's
+    // 5-byte jump moves the first and its 14-byte jump all three. One `je` of the execute targets
+    // the site's first byte, and no jump targets a later byte of the 14. The execute runs on the
+    // render thread (measured with a debugger), which the render thunk's token requires.
+    let hook = unsafe { hooks::install_mid_hook(address, thunk) }?;
+    Ok(ManuallyDrop::new(hook))
+}
+
+/// The object data stage that `rbx` holds where its execute starts the stage's job, and the
+/// destination of the core's writes to its first [`ObjectStage::WRITE_LEN`] bytes, which lives for
+/// the hook's borrow of `registers`. Only the object slot hook passes its registers here.
+pub(crate) fn object_stage_job_start(registers: &Registers) -> (ObjectStage, WriteDest<'_>) {
+    let address = GameAddr::new(registers.rbx());
+    // SAFETY: at the site `rbx` holds the engine's object data stage, game memory that no Rust
+    // reference covers. The destination lives only for the hook, which runs before the execute
+    // starts the job that reads the slot index.
+    let writes = unsafe { WriteDest::new(address, ObjectStage::WRITE_LEN) };
+    (ObjectStage::new(address), writes)
 }
 
 /// The render view that `rcx` holds at the begin-recording entry, and the destination of the core's

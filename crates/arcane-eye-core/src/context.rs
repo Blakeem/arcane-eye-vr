@@ -14,6 +14,7 @@ use crate::eye_camera::EyeState;
 use crate::eye_view::EyeViewState;
 use crate::frame::FrameState;
 use crate::game_state::GameStateWatch;
+use crate::object_slot::SlotState;
 use crate::raw::StatusView;
 use crate::shadow_cache::ShadowState;
 use crate::view_camera::ViewCamera;
@@ -35,6 +36,8 @@ pub(crate) struct CoreContext {
     pub(crate) eye_view: Option<EyeViewState>,
     /// `None` when the shadow cache is not installed.
     pub(crate) shadow_cache: RenderCell<Option<ShadowState>>,
+    /// `None` when the object slot is not installed.
+    pub(crate) object_slot: RenderCell<Option<SlotState>>,
     /// `None` when the game state read is not installed.
     pub(crate) game_state: RenderCell<Option<GameStateWatch>>,
     /// Never dropped, so the hook stays installed for the process life (see
@@ -52,6 +55,9 @@ pub(crate) struct CoreContext {
     /// Never dropped, like the Present call-site hook (see
     /// [`install_shadow_cache_hook`](crate::raw::install_shadow_cache_hook)).
     pub(crate) _shadow_cache_hook: Option<ManuallyDrop<MidHook>>,
+    /// Never dropped, like the Present call-site hook (see
+    /// [`install_object_slot_hook`](crate::raw::install_object_slot_hook)).
+    pub(crate) _object_slot_hook: Option<ManuallyDrop<MidHook>>,
 }
 
 impl HookContext for CoreContext {

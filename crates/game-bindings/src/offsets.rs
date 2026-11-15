@@ -179,6 +179,15 @@ pub const STATE_MACHINE_STATE_ID: usize = 0x08;
 /// the view's stage array ([`VIEW_STAGE_ARRAY`]).
 pub const SHADOW_STAGE_VIEW: usize = 0x08;
 
+/// The render view pointer of an object data stage, the stage with stage id 0x47.
+pub const OBJECT_STAGE_VIEW: usize = 0x08;
+
+/// The slot index of an object data stage, an `i32`. The stage's execute stores its view's
+/// split-screen index here each frame. The stage's job writes each visible object's offset in the
+/// stage's ring buffer into the object's slot of that index, and the draws of the stage's view read
+/// that slot (bg3-vr's reading of the code, and a disassembly of the execute).
+pub const OBJECT_STAGE_SLOT: usize = 0x219C;
+
 /// The parity byte of a shadow stage's distant shadow cache. A cache refresh switches it.
 pub const SHADOW_CACHE_PARITY: usize = 0x21D8;
 

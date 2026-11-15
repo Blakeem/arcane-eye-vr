@@ -31,6 +31,10 @@ impl Registers {
         self.0.rcx
     }
 
+    pub const fn rbx(&self) -> usize {
+        self.0.rbx
+    }
+
     pub const fn rdi(&self) -> usize {
         self.0.rdi
     }

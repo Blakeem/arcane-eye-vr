@@ -26,6 +26,7 @@ use crate::eye_camera;
 use crate::eye_view;
 use crate::game_state::{self, GameStateWatch};
 use crate::install::GameCode;
+use crate::object_slot;
 use crate::present;
 use crate::raw::StatusView;
 use crate::shadow_cache;
@@ -144,6 +145,8 @@ fn run(
         installs.eye_view.map(|installed| (installed.hook, installed.state)).unzip();
     let (shadow_cache_hook, shadow_state) =
         installs.shadow_cache.map(|installed| (installed.hook, installed.state)).unzip();
+    let (object_slot_hook, slot_state) =
+        installs.object_slot.map(|installed| (installed.hook, installed.state)).unzip();
     let context = CoreContext {
         _log: core.log,
         _config: config,
@@ -154,12 +157,14 @@ fn run(
         eye_camera: RenderCell::new(eye_state),
         eye_view: eye_view_state,
         shadow_cache: RenderCell::new(shadow_state),
+        object_slot: RenderCell::new(slot_state),
         game_state: RenderCell::new(installs.game_state),
         _present_hook: installs.present_hook,
         _view_camera_hook: view_installed.map(|installed| installed.hook),
         _eye_camera_hook: eye_camera_hook,
         _eye_view_hook: eye_view_hook,
         _shadow_cache_hook: shadow_cache_hook,
+        _object_slot_hook: object_slot_hook,
     };
     state::store_core_context(context)?;
     Ok(())
@@ -173,12 +178,13 @@ struct Installs {
     eye_camera: Option<eye_camera::Installed>,
     eye_view: Option<eye_view::Installed>,
     shadow_cache: Option<shadow_cache::Installed>,
+    object_slot: Option<object_slot::Installed>,
 }
 
 /// Runs every install against one copy of the game exe's code, which drops on return. The installs
 /// run in field order. The game state, view camera, eye camera and eye view installs follow the
-/// Present call-site install, which all four need, and the shadow cache install follows the eye view
-/// install, which it needs.
+/// Present call-site install, which all four need, and the shadow cache and object slot installs
+/// follow the eye view install, which they need.
 fn install_all(health: &Health, status: Option<&StatusView>, config: Config) -> Installs {
     let code = GameCode::copy();
     Installs {
@@ -188,6 +194,7 @@ fn install_all(health: &Health, status: Option<&StatusView>, config: Config) -> 
         eye_camera: eye_camera::install(health, &code, config),
         eye_view: eye_view::install(health, &code, config),
         shadow_cache: shadow_cache::install(health, &code, config),
+        object_slot: object_slot::install(health, &code, config),
     }
 }
 
@@ -263,6 +270,11 @@ mod tests {
             context.health.state(Feature::ShadowCache),
             FeatureState::Pending,
             "with second_view off the shadow cache installs nothing"
+        );
+        assert_eq!(
+            context.health.state(Feature::ObjectSlot),
+            FeatureState::Pending,
+            "with second_view off the object slot installs nothing"
         );
         assert!(dir.join(r"logs\arcane-eye-vr.log").is_file(), "the session log is in root\\logs");
         let second = run(1, || Ok(Root::new(dir.clone())), &mapping.name);
