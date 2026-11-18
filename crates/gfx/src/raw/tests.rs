@@ -23,6 +23,7 @@ use super::{HeaderView, adapter_luid, texture_desc};
 use crate::publish::{Outcome, Publisher, ViewNames};
 
 mod failures;
+mod layer;
 
 const BYTES_PER_PIXEL: usize = 4;
 

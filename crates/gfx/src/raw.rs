@@ -1,5 +1,5 @@
-//! The gfx crate's unsafe edge: the viewer header mapping and the D3D11 and DXGI calls of the
-//! publisher.
+//! The gfx crate's unsafe edge: the viewer header mapping, the D3D11 and DXGI calls of the
+//! publisher, and the layer draw's calls in `layer`.
 
 #![expect(
     unsafe_code,
@@ -30,6 +30,8 @@ use windows::Win32::System::Memory::{
 use windows::core::{HRESULT, HSTRING, Interface as _};
 
 use crate::publish::{PublishError, SetupError, Step};
+
+pub(crate) mod layer;
 
 /// The header's size as `CreateFileMappingW` takes it.
 const HEADER_MAPPING_SIZE: u32 = 128;

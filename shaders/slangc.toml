@@ -1,0 +1,5 @@
+# The Slang compiler release that builds the shaders in this folder.
+# tools/fetch-slang.ps1 downloads it, and crates/gfx/build.rs runs it.
+version = "2026.20"
+# SHA-256 of the release asset slang-<version>-windows-x86_64.zip.
+sha256 = "e6dd32bbddf1720ebb4e679d55e9635ce792865a5bd84f3d2cd9af28647c0174"
