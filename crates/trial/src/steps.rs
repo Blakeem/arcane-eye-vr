@@ -1,40 +1,33 @@
-//! The trial's steps in order, against the game and the frame reader behind two traits, so a test
-//! drives stand-ins. A failure after the start still closes the game and copies its session log.
-//! A trial of the level scene adds the prime step and the enter-level step of `level.rs`.
+//! The trial's steps in order, against the game, the frame reader and the headset behind three
+//! traits, so a test drives stand-ins. A failure after the start still closes the game and copies
+//! its session log. A trial of the level scene adds the prime step and the enter-level step of
+//! `level.rs`, and a trial of the headset screen adds the two steps of `steps\headset.rs`.
 
 use std::error::Error;
 use std::io::{self, Write};
 use std::num::NonZeroU32;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitStatus;
 use std::time::Duration;
 
 use diag::error_chain;
 use ipc_layout::game_state_line::Place;
-use launch::checks::{GameRunning, RuntimeError};
-use launch::cursor::{ClientPoint, CursorError};
-use launch::direct::{Save, StartError};
-use launch::game_dir::GameDirError;
-use launch::status::WaitError;
-use launch::stop::StopError;
-use launch::token::TokenCreateError;
+use launch::cursor::ClientPoint;
+use launch::direct::Save;
 use tracing::warn;
-use viewer_client::frame::{Frame, ReadError};
+use viewer_client::frame::Frame;
 use viewer_client::region::Region;
 
-use crate::args::{Options, Scene, Settings};
-use crate::background::{self, Refused};
-use crate::burst::{self, BurstError, BurstFrame};
-use crate::compare::CompareError;
+pub(crate) use self::error::StepError;
+use self::headset::Headset;
+use crate::args::{HeadsetScreen, Options, Scene, Settings};
+use crate::background;
+use crate::burst::{self, BurstFrame};
 use crate::folder::{self, FolderError, RESULT_FILE, TRIAL_FILE};
-use crate::home::{self, HOME_FOLDER, HomeError};
-use crate::level::{self, WaitFailed};
-use crate::log_tail::TailError;
-use crate::mod_check::{ModCheckError, ModCheckFolder};
-use crate::perf::{PerfError, PerfWindow};
-use crate::pixels::SizeError;
-use crate::place::PlaceError;
-use crate::png_file::PngError;
+use crate::home::{self, HOME_FOLDER};
+use crate::level;
+use crate::mod_check::ModCheckFolder;
+use crate::perf::PerfWindow;
 use crate::report::Report;
 
 /// The name of the copy of the core's session log in the result folder.
@@ -59,10 +52,12 @@ pub(crate) enum Step {
     FirstPresent,
     EnterLevel,
     WarmUp,
+    HeadsetScreen,
     Perf,
     Capture,
     Burst,
     Close,
+    ScreenExit,
     CopyLog,
 }
 
@@ -76,10 +71,12 @@ impl Step {
             Self::FirstPresent => "first-present",
             Self::EnterLevel => "enter-level",
             Self::WarmUp => "warm-up",
+            Self::HeadsetScreen => "headset-screen",
             Self::Perf => "perf",
             Self::Capture => "capture",
             Self::Burst => "burst",
             Self::Close => "close",
+            Self::ScreenExit => "screen-exit",
             Self::CopyLog => "copy-log",
         }
     }
@@ -132,7 +129,7 @@ pub(crate) trait Game {
     fn copy_log(&mut self, to: &Path) -> Result<(), StepError>;
 }
 
-/// The frame reader as the capture step and the burst step drive it.
+/// The frame reader as the headset-screen step, the capture step and the burst step drive it.
 pub(crate) trait Frames {
     /// Starts the heartbeat that makes the core publish frames.
     fn start_heartbeat(&mut self) -> Result<(), StepError>;
@@ -150,73 +147,11 @@ pub(crate) trait Frames {
     ) -> Result<BurstFrame, StepError>;
 }
 
-/// Why a step failed.
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum StepError {
-    #[error(transparent)]
-    GameRunning(#[from] GameRunning),
-    #[error(transparent)]
-    Refused(#[from] Refused),
-    #[error(transparent)]
-    GameDir(#[from] GameDirError),
-    #[error("the game's bin folder {} lacks {}", bin.display(), files.join(" and "))]
-    ModMissing { bin: PathBuf, files: Vec<&'static str> },
-    #[error("could not check the mod file {}", path.display())]
-    ModCheck { path: PathBuf, source: io::Error },
-    #[error(transparent)]
-    Token(#[from] TokenCreateError),
-    #[error(transparent)]
-    Start(#[from] StartError),
-    #[error(transparent)]
-    Wait(#[from] WaitError),
-    #[error(transparent)]
-    Runtime(#[from] RuntimeError),
-    #[error("the game exited during the {} step ({status})", step.as_str())]
-    GameExited {
-        step: Step,
-        status: ExitStatus,
-        /// The step's own failure, which the exit may explain, such as a timeout.
-        #[source]
-        failure: Option<Box<Self>>,
-    },
-    #[error("could not check whether the game runs")]
-    GameState(#[source] io::Error),
-    #[error(transparent)]
-    Home(#[from] HomeError),
-    #[error("the core wrote no session log in {} after the game started", log_dir.display())]
-    NoCoreLog { log_dir: PathBuf },
-    #[error(transparent)]
-    Tail(#[from] TailError),
-    #[error(transparent)]
-    Perf(#[from] PerfError),
-    #[error(transparent)]
-    Place(#[from] PlaceError),
-    #[error(transparent)]
-    LevelWait(#[from] WaitFailed),
-    #[error(transparent)]
-    ModCheckFolder(#[from] ModCheckError),
-    #[error(transparent)]
-    Folder(#[from] FolderError),
-    #[error("could not start the heartbeat thread")]
-    Heartbeat(#[source] io::Error),
-    #[error(transparent)]
-    Read(#[from] ReadError),
-    #[error(transparent)]
-    Size(#[from] SizeError),
-    #[error(transparent)]
-    Png(#[from] PngError),
-    #[error(transparent)]
-    Cursor(#[from] CursorError),
-    #[error(transparent)]
-    Compare(#[from] CompareError),
-    #[error(transparent)]
-    Burst(#[from] BurstError),
-    #[error(transparent)]
-    Stop(#[from] StopError),
-    #[error("could not copy the session log {} to {}", from.display(), to.display())]
-    Copy { from: PathBuf, to: PathBuf, source: io::Error },
-    #[error("the {} step did not pass first", .0.as_str())]
-    Needs(Step),
+/// The game, the frame reader and the headset that the steps drive.
+pub(crate) struct Rig<'a, G, F, H> {
+    pub(crate) game: &'a mut G,
+    pub(crate) frames: &'a mut F,
+    pub(crate) headset: &'a mut H,
 }
 
 /// Why `trial.txt` or `result.txt` was not written, or the result not printed.
@@ -229,15 +164,14 @@ pub(crate) enum TrialError {
 }
 
 /// Writes `trial.txt` into `folder`, runs the steps, then writes `result.txt` and prints it to `out`.
-pub(crate) fn trial(
+pub(crate) fn trial<G: Game, F: Frames, H: Headset>(
     options: &Options,
     folder: &Path,
-    game: &mut impl Game,
-    frames: &mut impl Frames,
+    rig: Rig<'_, G, F, H>,
     out: &mut impl Write,
 ) -> Result<Report, TrialError> {
     folder::write(folder, TRIAL_FILE, &folder::trial_text(options))?;
-    let report = run(options, folder, game, frames);
+    let report = run(options, folder, rig);
     let text = report.text();
     folder::write(folder, RESULT_FILE, &text)?;
     if let Err(source) = out.write_all(text.as_bytes()) {
@@ -246,24 +180,37 @@ pub(crate) fn trial(
     Ok(report)
 }
 
-/// Runs the steps in order and stops at the first that fails. Once the game started, the close and
-/// the log copy run whatever failed before them.
-fn run(options: &Options, folder: &Path, game: &mut impl Game, frames: &mut impl Frames) -> Report {
+/// Runs the steps in order and stops at the first that fails. Once the game started, the close, the
+/// screen exit of a started launch app and the log copy run whatever failed before them.
+fn run<G: Game, F: Frames, H: Headset>(
+    options: &Options,
+    folder: &Path,
+    rig: Rig<'_, G, F, H>,
+) -> Report {
+    let Rig { game, frames, headset } = rig;
     let settings = &options.settings;
     let mut report = Report::on_desktop(game.desktop());
-    let started = report.record(Step::Check, check(settings, game))
+    let started = report.record(Step::Check, check(settings, game, headset))
         && primed(&mut report, settings, folder, game)
         && report.record(Step::Token, game.create_token())
         && report.record(Step::Start, start(settings, folder, game));
     if !started {
         return report;
     }
-    run_in_game(&mut report, settings, folder, game, frames);
+    run_in_game(
+        &mut report,
+        settings,
+        folder,
+        Rig { game: &mut *game, frames, headset: &mut *headset },
+    );
     let closed = game.close();
     if closed.is_ok() {
         wait_steam_cleared(game);
     }
     report.record_close(Step::Close, closed);
+    if headset.started() {
+        report.record(Step::ScreenExit, headset::exit_step(headset));
+    }
     report.record(Step::CopyLog, game.copy_log(&folder.join(CORE_LOG_COPY)));
     report
 }
@@ -283,11 +230,18 @@ pub(crate) fn wait_steam_cleared(game: &mut impl Game) {
     }
 }
 
-/// Checks the options a background trial refuses, the settings files the command line gives, then
-/// the game.
-fn check(settings: &Settings, game: &mut impl Game) -> Result<(), StepError> {
+/// Checks the options a background trial refuses, the settings files the command line gives, the
+/// launch app of a headset screen trial, then the game.
+fn check(
+    settings: &Settings,
+    game: &mut impl Game,
+    headset: &mut impl Headset,
+) -> Result<(), StepError> {
     background::refuse(settings)?;
     home::check(settings)?;
+    if settings.headset_screen == HeadsetScreen::On {
+        headset.check()?;
+    }
     game.check()
 }
 
@@ -310,15 +264,15 @@ fn start(settings: &Settings, folder: &Path, game: &mut impl Game) -> Result<(),
 }
 
 /// Runs the steps from the first Present to the capture, the enter-level step when the scene is the
-/// level and the perf step and the burst when the settings ask for one, and stops at the first that
-/// fails. Each step needs the game still running at its end.
-fn run_in_game(
+/// level and the headset-screen step, the perf step and the burst when the settings ask for one,
+/// and stops at the first that fails. Each step needs the game still running at its end.
+fn run_in_game<G: Game, F: Frames, H: Headset>(
     report: &mut Report,
     settings: &Settings,
     folder: &Path,
-    game: &mut impl Game,
-    frames: &mut impl Frames,
+    rig: Rig<'_, G, F, H>,
 ) {
+    let Rig { game, frames, headset } = rig;
     let first_present = while_running(game, Step::FirstPresent, Game::wait_first_present);
     if !report.record(Step::FirstPresent, first_present) {
         return;
@@ -335,6 +289,15 @@ fn run_in_game(
     });
     if !report.record(Step::WarmUp, warm_up) {
         return;
+    }
+    if settings.headset_screen == HeadsetScreen::On {
+        let limit = settings.max_headset_difference;
+        let screen = while_running(game, Step::HeadsetScreen, |game| {
+            headset::screen_step(game, frames, headset, limit, folder)
+        });
+        if !report.record(Step::HeadsetScreen, screen) {
+            return;
+        }
     }
     if settings.perf_lines > 0 {
         let lines = settings.perf_lines;
@@ -385,6 +348,8 @@ pub(crate) fn cause(error: &dyn Error) -> String {
     error_chain::chain(error).replace(['\r', '\n'], " ")
 }
 
+mod error;
+pub(crate) mod headset;
 mod write;
 
 #[cfg(test)]

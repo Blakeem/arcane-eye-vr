@@ -7,14 +7,16 @@
 //! the game's windows as in a trial without the option. A measured background trial passed every
 //! step there. The game renders 30 frames per second on a desktop that is not the input desktop,
 //! and Windows moves the cursor of the input desktop only, so the check step refuses a perf window
-//! and a cursor position.
+//! and a cursor position. A screen copy reads the desktop of the calling thread, and SteamVR's
+//! headset window is on the desktop the user works on, so the check step also refuses the headset
+//! screen check.
 
 use std::io;
 use std::{env, process};
 
 use launch::desktop::{self, Desktop, DesktopError};
 
-use crate::args::{Background, Settings};
+use crate::args::{Background, HeadsetScreen, Settings};
 
 /// The start of the name of every desktop a background trial creates.
 const DESKTOP_PREFIX: &str = "arcane-eye-trial-";
@@ -42,6 +44,11 @@ pub(crate) enum Refused {
          --background"
     )]
     Cursor,
+    #[error(
+        "--headset-screen copies SteamVR's headset window, which is on the desktop the user works \
+         on, and --background runs the trial on a desktop of its own. Drop --background"
+    )]
+    HeadsetScreen,
 }
 
 /// Why the copy of this process on its own desktop did not run to its end.
@@ -74,10 +81,14 @@ pub(crate) fn desktop_name(pid: u32) -> String {
     format!("{DESKTOP_PREFIX}{pid}")
 }
 
-/// Fails the check step of a background trial with a perf window or a cursor position.
+/// Fails the check step of a background trial with the headset screen check, a perf window or a
+/// cursor position.
 pub(crate) fn refuse(settings: &Settings) -> Result<(), Refused> {
     if settings.background == Background::Off {
         return Ok(());
+    }
+    if settings.headset_screen == HeadsetScreen::On {
+        return Err(Refused::HeadsetScreen);
     }
     if settings.perf_lines > 0 {
         return Err(Refused::PerfWindow);
@@ -114,7 +125,7 @@ mod tests {
     use launch::cursor::ClientPoint;
 
     use super::{Refused, Role, desktop_name, exit_code, refuse, role};
-    use crate::args::{Background, Settings};
+    use crate::args::{Background, HeadsetScreen, Settings};
 
     #[test]
     fn a_process_started_on_a_trial_desktop_runs_the_steps_and_any_other_starts_a_copy() {
@@ -128,16 +139,20 @@ mod tests {
     }
 
     #[test]
-    fn a_background_trial_with_a_perf_window_or_a_cursor_is_refused() {
+    fn a_background_trial_with_a_headset_screen_a_perf_window_or_a_cursor_is_refused() {
         let background =
             Settings { background: Background::On, perf_lines: 0, ..Settings::default() };
         assert_eq!(refuse(&background), Ok(()));
         let perf = Settings { perf_lines: 1, ..background.clone() };
         assert_eq!(refuse(&perf), Err(Refused::PerfWindow));
+        let headset = Settings { headset_screen: HeadsetScreen::On, ..background.clone() };
+        assert_eq!(refuse(&headset), Err(Refused::HeadsetScreen));
         let cursor = Settings { cursor: Some(ClientPoint { x: 1, y: 1 }), ..background };
         assert_eq!(refuse(&cursor), Err(Refused::Cursor));
         let input = Settings { cursor: Some(ClientPoint { x: 1, y: 1 }), ..Settings::default() };
         assert_eq!(refuse(&input), Ok(()), "a trial on the input desktop");
+        let input_headset = Settings { headset_screen: HeadsetScreen::On, ..Settings::default() };
+        assert_eq!(refuse(&input_headset), Ok(()), "a headset screen check on the input desktop");
         for refused in [Refused::PerfWindow, Refused::Cursor] {
             assert!(refused.to_string().contains("30 frames per second"), "{refused}");
         }

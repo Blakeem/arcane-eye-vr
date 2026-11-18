@@ -57,17 +57,26 @@ pub(crate) fn foreground_window_of(pid: u32) -> Option<HWND> {
     (owner == pid).then_some(window)
 }
 
+/// The call of a client area read that failed. Each caller names the window in its own error.
+#[derive(Debug)]
+pub(crate) enum AreaFailure {
+    /// `GetClientRect` failed.
+    Rect(windows::core::Error),
+    /// `ClientToScreen` failed. Its documentation names no error code for a failure.
+    ToScreen,
+}
+
 /// The client area of `window` on the screen.
-pub(crate) fn client_area(window: HWND) -> Result<ClientArea, CursorError> {
+pub(crate) fn client_area(window: HWND) -> Result<ClientArea, AreaFailure> {
     let mut rect = RECT::default();
     // SAFETY: `rect` is a writable local, and a window gone since the search fails the call.
     if let Err(source) = unsafe { GetClientRect(window, &raw mut rect) } {
-        return Err(CursorError::ClientArea(source));
+        return Err(AreaFailure::Rect(source));
     }
     let mut corner = POINT { x: 0, y: 0 };
     // SAFETY: `corner` is a writable local, and a window gone since the search fails the call.
     if !unsafe { ClientToScreen(window, &raw mut corner) }.as_bool() {
-        return Err(CursorError::ToScreen);
+        return Err(AreaFailure::ToScreen);
     }
     Ok(ClientArea { left: corner.x, top: corner.y, width: rect.right, height: rect.bottom })
 }

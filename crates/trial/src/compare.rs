@@ -6,10 +6,13 @@
 //! rounded to hundredths, the precision of the files that hold them. Measured half differences were
 //! 2.7 for a stereo pair, 13 for a level whose interface spanned both halves and 30 to 42 for a
 //! loading picture across both halves. Measured steps stayed between 0.07 and 1.09 while the layout
-//! held.
+//! held. The grid difference of the half difference also compares each eye's picture of the headset
+//! window with each half of a frame (`headset.rs`).
 
 use std::fmt;
 use std::ops::Range;
+
+use viewer_client::region::Region;
 
 use crate::burst;
 use crate::pixels::{Depth, RgbImage};
@@ -21,7 +24,7 @@ const GRID_COLUMNS: u32 = 32;
 const GRID_ROWS: u32 = 18;
 
 /// The color channels of a pixel of an [`RgbImage`].
-const CHANNELS: usize = 3;
+pub(crate) const CHANNELS: usize = 3;
 
 /// [`CHANNELS`] as a divisor of a sum.
 const CHANNEL_COUNT: f64 = 3.0;
@@ -48,7 +51,7 @@ impl Limit {
         (value.is_finite() && value >= 0.0).then_some(Self(value))
     }
 
-    fn is_passed_by(self, difference: f64) -> bool {
+    pub(crate) fn is_passed_by(self, difference: f64) -> bool {
         difference > self.0
     }
 }
@@ -80,51 +83,40 @@ pub(crate) enum CompareError {
          --max-burst-step {limit}"
     )]
     StepAbove { frame: String, difference: f64, limit: Limit },
+    #[error("the area {area} does not lie inside the {width}x{height} image")]
+    Outside { area: Region, width: u32, height: u32 },
 }
 
-/// The half difference of `image`: the mean absolute difference between its left half and its
-/// right half after each half is reduced to a grid of 32 by 18 cells, each cell the mean of its
-/// pixels. An odd width leaves the last column out of the right half. `None` for a frame narrower
-/// than 2 pixels or with no row, which has no two halves.
+/// The half difference of `image`: the grid difference of its left half and its right half on a
+/// grid of 32 by 18 cells. An odd width leaves the last column out of the right half. `None` for a
+/// frame narrower than 2 pixels or with no row, which has no two halves.
 pub(crate) fn half_difference(image: &RgbImage) -> Result<Option<f64>, CompareError> {
     let samples = Samples::new(image)?;
     let half = image.width / 2;
-    if half == 0 || image.height == 0 {
-        return Ok(None);
-    }
-    let mut total = 0.0;
-    let mut counted = 0.0;
-    for row in 0..GRID_ROWS {
-        let rows = band(row, GRID_ROWS, image.height);
-        for column in 0..GRID_COLUMNS {
-            let columns = band(column, GRID_COLUMNS, half);
-            let Some(differences) = cell_difference(&samples, columns, &rows, half) else {
-                continue;
-            };
-            total += differences.iter().sum::<f64>();
-            counted += 1.0;
-        }
-    }
-    Ok(Some(hundredths(total / (counted * CHANNEL_COUNT))))
+    let left = Region::entire(half, image.height);
+    let right = Region { x: half, ..left };
+    let left_grid = samples.grid(left, GRID_COLUMNS, GRID_ROWS)?;
+    let right_grid = samples.grid(right, GRID_COLUMNS, GRID_ROWS)?;
+    Ok(grid_difference(&left_grid, &right_grid))
 }
 
-/// The absolute difference of each channel's mean between the cell of `columns` and `rows` in the
-/// left half and the same cell in the right half, `half` pixels to its right, or `None` for an
-/// empty cell.
-fn cell_difference(
-    samples: &Samples<'_>,
-    columns: Range<u32>,
-    rows: &Range<u32>,
-    half: u32,
-) -> Option<[f64; CHANNELS]> {
-    let right_columns = columns.start.saturating_add(half)..columns.end.saturating_add(half);
-    let left_mean = samples.cell_mean(columns, rows.clone())?;
-    let right_mean = samples.cell_mean(right_columns, rows.clone())?;
-    let mut differences = [0.0; CHANNELS];
-    for ((difference, left), right) in differences.iter_mut().zip(left_mean).zip(right_mean) {
-        *difference = (left - right).abs();
+/// The mean of each channel over the pixels of one grid cell, or `None` for a cell with no pixel.
+pub(crate) type Cell = Option<[f64; CHANNELS]>;
+
+/// The grid difference of two grids of one size: the mean absolute difference of the channel means
+/// of each cell that holds pixels in both. `None` when no cell does.
+pub(crate) fn grid_difference(first: &[Cell], second: &[Cell]) -> Option<f64> {
+    let mut total = 0.0;
+    let mut counted = 0.0;
+    for cells in first.iter().zip(second) {
+        let (Some(first_mean), Some(second_mean)) = cells else {
+            continue;
+        };
+        let channels = first_mean.iter().zip(second_mean);
+        total += channels.map(|(one, other)| (one - other).abs()).sum::<f64>();
+        counted += 1.0;
     }
-    Some(differences)
+    (counted > 0.0).then(|| hundredths(total / (counted * CHANNEL_COUNT)))
 }
 
 /// The step from `before` to `after`, two images of one size: the mean absolute difference of their
@@ -223,22 +215,18 @@ fn band(index: u32, cells: u32, length: u32) -> Range<u32> {
 }
 
 /// The samples of an [`RgbImage`] whose byte count matches its size, read on the 0 to 255 scale.
-struct Samples<'a> {
+pub(crate) struct Samples<'a> {
     image: &'a RgbImage,
     /// The samples in the image: 3 per pixel.
     count: usize,
 }
 
 impl<'a> Samples<'a> {
-    fn new(image: &'a RgbImage) -> Result<Self, CompareError> {
-        let bytes_per_sample = match image.depth {
-            Depth::Eight => 1,
-            Depth::Sixteen => 2,
-        };
+    pub(crate) fn new(image: &'a RgbImage) -> Result<Self, CompareError> {
         let count = usize::try_from(u64::from(image.width).saturating_mul(u64::from(image.height)))
             .ok()
             .and_then(|pixels| pixels.checked_mul(CHANNELS));
-        let len = count.and_then(|count| count.checked_mul(bytes_per_sample));
+        let len = count.and_then(|count| count.checked_mul(image.depth.sample_bytes()));
         match (count, len) {
             (Some(count), Some(len)) if len == image.data.len() => Ok(Self { image, count }),
             _ => Err(CompareError::Size {
@@ -264,8 +252,38 @@ impl<'a> Samples<'a> {
         }
     }
 
+    /// The cells of `area` split into `columns` by `rows` equal cells, row by row. An area smaller
+    /// than the grid leaves some cells empty.
+    pub(crate) fn grid(
+        &self,
+        area: Region,
+        columns: u32,
+        rows: u32,
+    ) -> Result<Vec<Cell>, CompareError> {
+        let (width, height) = (self.image.width, self.image.height);
+        // An area of no pixel lies inside, since a frame narrower than 2 pixels has empty halves.
+        let inside = area.end().is_some_and(|(right, bottom)| right <= width && bottom <= height);
+        if !inside {
+            return Err(CompareError::Outside { area, width, height });
+        }
+        let mut cells =
+            Vec::with_capacity(usize::try_from(columns.saturating_mul(rows)).unwrap_or(0));
+        for row in 0..rows {
+            let band_rows = band(row, rows, area.height);
+            let cell_rows =
+                band_rows.start.saturating_add(area.y)..band_rows.end.saturating_add(area.y);
+            for column in 0..columns {
+                let band_columns = band(column, columns, area.width);
+                let cell_columns = band_columns.start.saturating_add(area.x)
+                    ..band_columns.end.saturating_add(area.x);
+                cells.push(self.cell_mean(cell_columns, cell_rows.clone()));
+            }
+        }
+        Ok(cells)
+    }
+
     /// The channels of the pixel at `x`, `y`.
-    fn pixel(&self, x: u32, y: u32) -> [f64; CHANNELS] {
+    pub(crate) fn pixel(&self, x: u32, y: u32) -> [f64; CHANNELS] {
         let width = u64::from(self.image.width);
         let pixel = u64::from(y).saturating_mul(width).saturating_add(u64::from(x));
         let first = usize::try_from(pixel).unwrap_or(usize::MAX).saturating_mul(CHANNELS);

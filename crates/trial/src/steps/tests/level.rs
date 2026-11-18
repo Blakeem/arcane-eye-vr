@@ -9,12 +9,12 @@ use std::time::Duration;
 use ipc_layout::game_state_line::Place;
 use launch::direct::Save;
 
-use super::options;
 use super::stand_in::{Exits, StandInFrames, StandInGame};
+use super::{options, stand_in_trial};
 use crate::args::Scene;
 use crate::mod_check::ModCheckFolder::{Absent, Present};
 use crate::report::Report;
-use crate::steps::{Closed, Step, trial};
+use crate::steps::{Closed, Step};
 use crate::test_dir;
 
 const MENU: Option<Place> = Some(Place::Menu);
@@ -35,7 +35,8 @@ fn level_trial(folder: &Path, game: &mut StandInGame) -> (Report, String) {
     let mut options = options(folder);
     options.settings.scene = Scene::Level;
     let mut frames = StandInFrames::new(false);
-    let report = trial(&options, folder, game, &mut frames, &mut Vec::new()).expect("a trial");
+    let report =
+        stand_in_trial(&options, folder, game, &mut frames, &mut Vec::new()).expect("a trial");
     let result = fs::read_to_string(folder.join("result.txt")).expect("read result.txt");
     (report, result)
 }
@@ -111,7 +112,7 @@ fn a_level_trial_with_a_save_name_starts_its_level_session_with_that_save() {
     options.settings.scene = Scene::Level;
     options.settings.save = Some("Tav-22151264102__AutoSave_0".to_owned());
     let mut frames = StandInFrames::new(false);
-    trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
+    stand_in_trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
     let named = Save::LoadNamed("Tav-22151264102__AutoSave_0".to_owned());
     let starts = [(folder.join("prime"), Save::NoLoad), (folder.join("home"), named)];
     assert_eq!(game.starts, starts);
@@ -123,7 +124,8 @@ fn a_title_trial_runs_neither_the_prime_step_nor_the_enter_level_step() {
     let folder = dir.path();
     let mut game = loading_game(None);
     let mut frames = StandInFrames::new(false);
-    trial(&options(folder), folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
+    stand_in_trial(&options(folder), folder, &mut game, &mut frames, &mut Vec::new())
+        .expect("a trial");
     let result = fs::read_to_string(folder.join("result.txt")).expect("read result.txt");
     assert!(!result.contains("prime") && !result.contains("enter-level"), "{result}");
     assert_eq!(game.starts, [(folder.join("home"), Save::NoLoad)]);

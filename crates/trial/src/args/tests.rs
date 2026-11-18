@@ -1,5 +1,7 @@
 //! The command line against arguments written by hand.
 
+mod headset;
+
 use std::ffi::OsString;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -9,7 +11,9 @@ use ipc_layout::launch_token::Mode;
 use launch::cursor::ClientPoint;
 use viewer_client::region::Region;
 
-use super::{ArgsError, Background, Burst, Options, Scene, Settings, TrialName, USAGE, parse};
+use super::{
+    ArgsError, Background, Burst, HeadsetScreen, Options, Scene, Settings, TrialName, USAGE, parse,
+};
 use crate::compare::Limit;
 
 fn args(list: &[&str]) -> Vec<OsString> {
@@ -37,6 +41,8 @@ fn a_name_alone_takes_every_default() {
         max_half_difference: None,
         cursor: None,
         burst: Burst { frames: 0, region: None, step: step(1), max_step: None },
+        headset_screen: HeadsetScreen::Off,
+        max_headset_difference: None,
         out: PathBuf::from("trial-results"),
         game_dir: None,
         player_file: None,
@@ -48,45 +54,51 @@ fn a_name_alone_takes_every_default() {
     );
 }
 
+/// A command line that gives every option a value other than its default.
+const EVERY_OPTION: [&str; 38] = [
+    "--game-dir",
+    r"D:\Games\Baldurs Gate 3",
+    "--captures",
+    "9999",
+    "--name",
+    "Menu-2",
+    "--out",
+    r"C:\results",
+    "--perf-lines",
+    "5",
+    "--warmup-secs",
+    "0",
+    "--mode",
+    "vr",
+    "--scene",
+    "level",
+    "--save",
+    "Tav-22151264102__AutoSave_0",
+    "--dev-file",
+    r"C:\trials\left.toml",
+    "--settings-file",
+    r"C:\trials\ipd 60.toml",
+    "--burst-step",
+    "3",
+    "--burst-region",
+    "1920,0,1920,2160",
+    "--burst-frames",
+    "300",
+    "--max-burst-step",
+    "1.5",
+    "--cursor",
+    "960,540",
+    "--background",
+    "--max-half-difference",
+    "5",
+    "--headset-screen",
+    "--max-headset-difference",
+    "12.5",
+];
+
 #[test]
 fn each_option_sets_its_setting() {
-    let line = args(&[
-        "--game-dir",
-        r"D:\Games\Baldurs Gate 3",
-        "--captures",
-        "9999",
-        "--name",
-        "Menu-2",
-        "--out",
-        r"C:\results",
-        "--perf-lines",
-        "5",
-        "--warmup-secs",
-        "0",
-        "--mode",
-        "vr",
-        "--scene",
-        "level",
-        "--save",
-        "Tav-22151264102__AutoSave_0",
-        "--dev-file",
-        r"C:\trials\left.toml",
-        "--settings-file",
-        r"C:\trials\ipd 60.toml",
-        "--burst-step",
-        "3",
-        "--burst-region",
-        "1920,0,1920,2160",
-        "--burst-frames",
-        "300",
-        "--max-burst-step",
-        "1.5",
-        "--cursor",
-        "960,540",
-        "--background",
-        "--max-half-difference",
-        "5",
-    ]);
+    let line = args(&EVERY_OPTION);
     let region = Region { x: 1920, y: 0, width: 1920, height: 2160 };
     let expected = Settings {
         mode: Mode::Vr,
@@ -104,6 +116,8 @@ fn each_option_sets_its_setting() {
             step: step(3),
             max_step: Limit::new(1.5),
         },
+        headset_screen: HeadsetScreen::On,
+        max_headset_difference: Limit::new(12.5),
         out: PathBuf::from(r"C:\results"),
         game_dir: Some(PathBuf::from(r"D:\Games\Baldurs Gate 3")),
         player_file: Some(PathBuf::from(r"C:\trials\ipd 60.toml")),
@@ -375,6 +389,8 @@ fn the_usage_names_every_option() {
         "--max-half-difference",
         "--max-burst-step",
         "--cursor",
+        "--headset-screen",
+        "--max-headset-difference",
     ];
     for option in options {
         assert!(USAGE.contains(option), "{option}: {USAGE}");

@@ -2,7 +2,9 @@
 
 mod background;
 mod burst;
+mod headset;
 mod level;
+mod settings_files;
 mod stand_in;
 
 use std::fs;
@@ -14,8 +16,9 @@ use std::time::Duration;
 use ipc_layout::camera_line::{CameraEye, CameraLine};
 use launch::direct::Save;
 
+use self::headset::StandInHeadset;
 use self::stand_in::{Exits, LOG_TEXT, StandInFrames, StandInGame};
-use super::{Closed, Report, Step, cause, trial};
+use super::{Closed, Report, Rig, Step, TrialError, cause, trial};
 use crate::args::{Options, Settings, TrialName};
 use crate::test_dir;
 
@@ -31,6 +34,19 @@ fn options(out: &Path) -> Options {
     Options { name: TrialName::new("menu").expect("a valid name"), settings }
 }
 
+/// Runs a trial of `options` in `folder` against `game`, `frames` and a headset stand-in, and
+/// prints its result to `out`.
+fn stand_in_trial(
+    options: &Options,
+    folder: &Path,
+    game: &mut StandInGame,
+    frames: &mut StandInFrames,
+    out: &mut impl io::Write,
+) -> Result<Report, TrialError> {
+    let mut headset = StandInHeadset::new();
+    trial(options, folder, Rig { game, frames, headset: &mut headset }, out)
+}
+
 /// Runs a trial in `folder` and returns its report, the printed text and `result.txt`.
 fn run_trial(
     folder: &Path,
@@ -38,7 +54,8 @@ fn run_trial(
     frames: &mut StandInFrames,
 ) -> (Report, String, String) {
     let mut printed = Vec::new();
-    let report = trial(&options(folder), folder, game, frames, &mut printed).expect("a trial");
+    let report =
+        stand_in_trial(&options(folder), folder, game, frames, &mut printed).expect("a trial");
     let result = fs::read_to_string(folder.join("result.txt")).expect("read result.txt");
     (report, String::from_utf8(printed).expect("UTF-8 output"), result)
 }
@@ -52,7 +69,7 @@ fn a_trial_of_0_perf_lines_and_0_captures_runs_no_perf_step_and_writes_no_frame(
     options.settings.captures = 0;
     let mut game = StandInGame::failing_at(None);
     let mut frames = StandInFrames::new(false);
-    trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
+    stand_in_trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
     let result = fs::read_to_string(folder.join("result.txt")).expect("read result.txt");
     let expected = "check: passed\ntoken: passed\nstart: passed\nfirst-present: passed\n\
                     warm-up: passed\ncapture: passed\nclose: passed\ncopy-log: passed\n\
@@ -254,6 +271,7 @@ fn a_passed_trial_writes_every_file_of_the_result_folder() {
         "name: menu\nmode: desktop-stereo\nscene: title\nsave: none\nbackground: off\n\
          warmup-secs: 7\nperf-lines: 2\ncaptures: 2\nmax-half-difference: none\ncursor: none\n\
          burst-frames: 0\nburst-region: entire frame\nburst-step: 1\nmax-burst-step: none\n\
+         headset-screen: off\nmax-headset-difference: none\n\
          out: {}\ngame-dir: D:\\Game\nsettings-file: none\ndev-file: none\nmod-version: {}\n",
         folder.display(),
         env!("CARGO_PKG_VERSION")
@@ -323,51 +341,6 @@ fov_y_rad=1.25 aspect=1.5 near=0.1 far=1000.0
 }
 
 #[test]
-fn the_given_settings_files_land_in_home_before_the_game_starts_with_it() {
-    let dir = test_dir("given-files");
-    let folder = dir.path();
-    let (player_file, dev_file) = (folder.join("ipd.toml"), folder.join("eye.toml"));
-    fs::write(&player_file, "[stereo]\nipd_mm = 60\n").expect("write");
-    fs::write(&dev_file, "[stereo]\nmain_view_eye = \"right\"\n").expect("write");
-    let mut options = options(folder);
-    options.settings.player_file = Some(player_file.clone());
-    options.settings.dev_file = Some(dev_file.clone());
-    let mut game = StandInGame::failing_at(Some(Step::FirstPresent));
-    let mut frames = StandInFrames::new(false);
-    trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
-    let home = folder.join("home");
-    assert_eq!(game.starts, [(home.clone(), Save::NoLoad)]);
-    let read = |file: &Path| fs::read_to_string(file).expect("read a file");
-    assert_eq!(read(&home.join("settings.toml")), "[stereo]\nipd_mm = 60\n");
-    assert_eq!(read(&home.join("dev.toml")), "[stereo]\nmain_view_eye = \"right\"\n");
-    let trial_text = read(&folder.join("trial.txt"));
-    let files =
-        format!("\nsettings-file: {}\ndev-file: {}\n", player_file.display(), dev_file.display());
-    assert!(trial_text.contains(&files), "{trial_text}");
-}
-
-#[test]
-fn a_missing_settings_file_fails_the_check_step_with_its_path_and_starts_nothing() {
-    let dir = test_dir("missing-settings-file");
-    let folder = dir.path();
-    let missing = folder.join("missing.toml");
-    let mut options = options(folder);
-    options.settings.player_file = Some(missing.clone());
-    let mut game = StandInGame::failing_at(None);
-    let mut frames = StandInFrames::new(false);
-    let report = trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
-    let result = fs::read_to_string(folder.join("result.txt")).expect("read result.txt");
-    let expected = format!(
-        "check: failed: the settings file {} is not an existing file\noutcome: failed\n",
-        missing.display()
-    );
-    assert_eq!(result, expected);
-    assert_eq!(game.ran, [Step::Check; 0], "the game was checked or started");
-    assert!(!folder.join("home").exists());
-    assert_eq!(report.exit_code(), ExitCode::from(1));
-}
-
-#[test]
 fn a_result_that_cannot_be_printed_is_a_print_error_after_result_txt_is_written() {
     struct BrokenPipe;
 
@@ -384,8 +357,9 @@ fn a_result_that_cannot_be_printed_is_a_print_error_after_result_txt_is_written(
     let dir = test_dir("print");
     let mut game = StandInGame::failing_at(Some(Step::Check));
     let mut frames = StandInFrames::new(false);
-    let error = trial(&options(dir.path()), dir.path(), &mut game, &mut frames, &mut BrokenPipe)
-        .expect_err("a broken pipe");
+    let error =
+        stand_in_trial(&options(dir.path()), dir.path(), &mut game, &mut frames, &mut BrokenPipe)
+            .expect_err("a broken pipe");
     assert_eq!(error.to_string(), "could not print the result");
     let result = fs::read_to_string(dir.path().join("result.txt")).expect("read result.txt");
     assert_eq!(result, "check: failed: Steam reports that the game is running\noutcome: failed\n");

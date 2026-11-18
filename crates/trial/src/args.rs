@@ -10,6 +10,8 @@ use ipc_layout::launch_token::Mode;
 use launch::cursor::ClientPoint;
 use viewer_client::region::Region;
 
+use self::switch::Switch;
+pub(crate) use self::switch::{Background, HeadsetScreen};
 use self::value::{count, limit, mode, point, region, scene, seconds, step, text};
 use crate::compare::Limit;
 
@@ -17,7 +19,7 @@ pub(crate) const USAGE: &str = "usage: trial --name <name> [--mode vr|desktop-st
      [--scene title|level] [--save <name>] [--background] [--warmup-secs <n>] [--perf-lines <n>] \
      [--captures <n>] [--max-half-difference <n>] [--cursor <x>,<y>] \
      [--burst-frames <n>] [--burst-region <x>,<y>,<width>,<height>] [--burst-step <k>] \
-     [--max-burst-step <n>] \
+     [--max-burst-step <n>] [--headset-screen] [--max-headset-difference <n>] \
      [--out <folder>] [--game-dir <folder>] [--settings-file <path>] [--dev-file <path>]";
 
 /// The most frames one trial captures, since a frame file's number has 4 digits.
@@ -31,9 +33,6 @@ const MAX_BURST_STEP: u32 = 16;
 
 /// The text that opens every option, and that no option value may start with.
 const OPTION_START: &str = "--";
-
-/// The one option that takes no value.
-const BACKGROUND: &str = "--background";
 
 /// A trial name of ASCII letters, digits and hyphens, so it is safe in a folder name.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,25 +72,6 @@ impl Scene {
     }
 }
 
-/// The Windows desktop the trial's game runs on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Background {
-    /// The desktop the trial started on.
-    Off,
-    /// A desktop of the trial's own, so the game window takes neither the keyboard focus nor the
-    /// mouse.
-    On,
-}
-
-impl Background {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::On => "on",
-        }
-    }
-}
-
 /// Everything the command line sets apart from the name.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Settings {
@@ -110,6 +90,10 @@ pub(crate) struct Settings {
     /// The client position of the game window the cursor moves to before the captures.
     pub(crate) cursor: Option<ClientPoint>,
     pub(crate) burst: Burst,
+    pub(crate) headset_screen: HeadsetScreen,
+    /// The largest difference an eye's picture may have from its own half of the frame, or `None`
+    /// for no limit.
+    pub(crate) max_headset_difference: Option<Limit>,
     pub(crate) out: PathBuf,
     /// `None` finds the game's folder through Steam.
     pub(crate) game_dir: Option<PathBuf>,
@@ -132,6 +116,8 @@ impl Default for Settings {
             max_half_difference: None,
             cursor: None,
             burst: Burst::default(),
+            headset_screen: HeadsetScreen::Off,
+            max_headset_difference: None,
             out: PathBuf::from("trial-results"),
             game_dir: None,
             player_file: None,
@@ -201,6 +187,8 @@ pub(crate) enum ArgsError {
     WithoutCaptures(&'static str),
     #[error("trial got --save, which needs --scene level")]
     SaveWithoutLevel,
+    #[error("trial got --max-headset-difference, which needs --headset-screen")]
+    WithoutHeadsetScreen,
 }
 
 /// The options that take a value.
@@ -219,6 +207,7 @@ enum Flag {
     BurstRegion,
     BurstStep,
     MaxBurstStep,
+    MaxHeadsetDifference,
     Out,
     GameDir,
     SettingsFile,
@@ -226,7 +215,7 @@ enum Flag {
 }
 
 impl Flag {
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 18] = [
         Self::Name,
         Self::Mode,
         Self::Scene,
@@ -240,6 +229,7 @@ impl Flag {
         Self::BurstRegion,
         Self::BurstStep,
         Self::MaxBurstStep,
+        Self::MaxHeadsetDifference,
         Self::Out,
         Self::GameDir,
         Self::SettingsFile,
@@ -261,6 +251,7 @@ impl Flag {
             Self::BurstRegion => "--burst-region",
             Self::BurstStep => "--burst-step",
             Self::MaxBurstStep => "--max-burst-step",
+            Self::MaxHeadsetDifference => "--max-headset-difference",
             Self::Out => "--out",
             Self::GameDir => "--game-dir",
             Self::SettingsFile => "--settings-file",
@@ -279,13 +270,15 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options,
     let mut name = None;
     let mut settings = Settings::default();
     let mut seen: Vec<Flag> = Vec::new();
+    let mut switches: Vec<Switch> = Vec::new();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
-        if arg == BACKGROUND {
-            if settings.background == Background::On {
-                return Err(ArgsError::Repeated(BACKGROUND));
+        if let Some(switch) = Switch::named(&arg) {
+            if switches.contains(&switch) {
+                return Err(ArgsError::Repeated(switch.as_str()));
             }
-            settings.background = Background::On;
+            switches.push(switch);
+            switch.set(&mut settings);
             continue;
         }
         let flag = Flag::named(&arg)?;
@@ -301,6 +294,10 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options,
     needs_count(&seen, settings.captures, &CAPTURE_OPTIONS, ArgsError::WithoutCaptures)?;
     if settings.save.is_some() && settings.scene != Scene::Level {
         return Err(ArgsError::SaveWithoutLevel);
+    }
+    let headset_off = settings.headset_screen == HeadsetScreen::Off;
+    if headset_off && seen.contains(&Flag::MaxHeadsetDifference) {
+        return Err(ArgsError::WithoutHeadsetScreen);
     }
     Ok(Options { name, settings })
 }
@@ -326,6 +323,7 @@ fn set(
         Flag::BurstRegion => settings.burst.region = Some(region(&text(value))?),
         Flag::BurstStep => settings.burst.step = step(flag, value)?,
         Flag::MaxBurstStep => settings.burst.max_step = Some(limit(flag, value)?),
+        Flag::MaxHeadsetDifference => settings.max_headset_difference = Some(limit(flag, value)?),
         Flag::Out => settings.out = PathBuf::from(value),
         Flag::GameDir => settings.game_dir = Some(PathBuf::from(value)),
         Flag::SettingsFile => settings.player_file = Some(PathBuf::from(value)),
@@ -365,6 +363,7 @@ fn value_of(flag: Flag, next: Option<OsString>) -> Result<OsString, ArgsError> {
     }
 }
 
+mod switch;
 mod value;
 
 #[cfg(test)]

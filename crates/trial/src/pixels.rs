@@ -17,6 +17,16 @@ pub(crate) enum Depth {
     Sixteen,
 }
 
+impl Depth {
+    /// The bytes of one sample.
+    pub(crate) const fn sample_bytes(self) -> usize {
+        match self {
+            Self::Eight => 1,
+            Self::Sixteen => 2,
+        }
+    }
+}
+
 /// An RGB image as a PNG file holds it: rows top first, no padding, each 16-bit sample big-endian.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RgbImage {

@@ -7,18 +7,17 @@ use std::path::Path;
 use launch::cursor::ClientPoint;
 use viewer_client::frame::{Frame, PixelFormat};
 
-use super::options;
 use super::stand_in::{StandInFrames, StandInGame};
+use super::{options, stand_in_trial};
 use crate::args::{Background, Options};
 use crate::compare::Limit;
-use crate::steps::trial;
 use crate::test_dir;
 
 /// Runs a trial of `options` against `game` in `folder` and returns `result.txt` and the frame
 /// reader.
 fn run(options: &Options, folder: &Path, game: &mut StandInGame) -> (String, StandInFrames) {
     let mut frames = StandInFrames::new(false);
-    trial(options, folder, game, &mut frames, &mut Vec::new()).expect("a trial");
+    stand_in_trial(options, folder, game, &mut frames, &mut Vec::new()).expect("a trial");
     let result = fs::read_to_string(folder.join("result.txt")).expect("read result.txt");
     (result, frames)
 }
@@ -113,7 +112,7 @@ fn a_failed_read_keeps_the_half_differences_of_the_frames_written_before_it() {
     let mut frames = StandInFrames::new(false);
     frames.reads_before_failure = Some(1);
     let mut game = StandInGame::failing_at(None);
-    trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
+    stand_in_trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
     let result = fs::read_to_string(folder.join("result.txt")).expect("read result.txt");
     let cause = "failed: no new frame arrived within 10s";
     assert_eq!(result, with_capture(cause, "failed"));
@@ -131,7 +130,7 @@ fn a_failed_read_stays_the_capture_cause_when_halves_txt_cannot_be_written() {
     let mut frames = StandInFrames::new(false);
     frames.reads_before_failure = Some(1);
     let mut game = StandInGame::failing_at(None);
-    trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
+    stand_in_trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
     let result = fs::read_to_string(folder.join("result.txt")).expect("read result.txt");
     assert_eq!(result, with_capture("failed: no new frame arrived within 10s", "failed"));
     let unwritable = test_dir("halves-unwritable");
@@ -176,7 +175,7 @@ fn a_frame_with_no_two_halves_passes_the_capture_and_has_none_in_halves_txt() {
     let bytes = vec![10, 20, 30, 255, 40, 50, 60, 255];
     frames.frame = Frame { width: 1, height: 2, format: PixelFormat::Rgba8, bytes };
     let mut game = StandInGame::failing_at(None);
-    trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
+    stand_in_trial(&options, folder, &mut game, &mut frames, &mut Vec::new()).expect("a trial");
     let result = fs::read_to_string(folder.join("result.txt")).expect("read result.txt");
     assert_eq!(result, with_capture("passed", "passed"));
     assert!(folder.join("frame-0001.png").is_file());

@@ -1,8 +1,10 @@
-//! The half difference and the step against small images with known differences.
+//! The half difference, the grid and the step against small images with known differences.
+
+use viewer_client::region::Region;
 
 use super::{
-    CompareError, Limit, check_halves, check_steps, half_difference, halves_text, step_difference,
-    steps_text,
+    CompareError, Limit, Samples, check_halves, check_steps, grid_difference, half_difference,
+    halves_text, step_difference, steps_text,
 };
 use crate::pixels::{Depth, RgbImage};
 
@@ -179,4 +181,25 @@ fn a_limit_is_a_finite_number_from_0_up() {
     for bad in [-0.5, f64::NAN, f64::INFINITY] {
         assert_eq!(Limit::new(bad), None, "{bad}");
     }
+}
+
+#[test]
+fn a_grid_area_outside_the_image_is_an_error_that_names_it() {
+    let frame = image(4, 2, picture);
+    let samples = Samples::new(&frame).expect("a 4x2 image");
+    let past_right = Region { x: 3, y: 0, width: 2, height: 2 };
+    let error = samples.grid(past_right, 2, 2).expect_err("one column past the right edge");
+    assert_eq!(error, CompareError::Outside { area: past_right, width: 4, height: 2 });
+    assert_eq!(error.to_string(), "the area 3,0,2,2 does not lie inside the 4x2 image");
+    let overflow = Region { x: u32::MAX, y: 0, width: 2, height: 1 };
+    assert!(samples.grid(overflow, 2, 2).is_err(), "an area whose end overflows");
+    let inside = Region { x: 2, y: 0, width: 2, height: 2 };
+    assert_eq!(samples.grid(inside, 2, 2).map(|cells| cells.len()), Ok(4));
+}
+
+#[test]
+fn grids_with_no_cell_that_holds_pixels_in_both_have_no_difference() {
+    let cell = Some([10.0, 20.0, 30.0]);
+    assert_eq!(grid_difference(&[cell, None], &[None, cell]), None);
+    assert_eq!(grid_difference(&[cell, None], &[Some([13.0, 23.0, 33.0]), cell]), Some(3.0));
 }

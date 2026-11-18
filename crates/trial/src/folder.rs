@@ -71,8 +71,9 @@ pub(crate) fn trial_text(options: &Options) -> String {
     format!(
         "name: {}\nmode: {}\nscene: {}\nsave: {}\nbackground: {}\nwarmup-secs: {}\n\
          perf-lines: {}\ncaptures: {}\nmax-half-difference: {}\ncursor: {}\nburst-frames: {}\n\
-         burst-region: {}\nburst-step: {}\nmax-burst-step: {}\nout: {}\ngame-dir: {}\n\
-         settings-file: {}\ndev-file: {}\nmod-version: {}\n",
+         burst-region: {}\nburst-step: {}\nmax-burst-step: {}\nheadset-screen: {}\n\
+         max-headset-difference: {}\nout: {}\ngame-dir: {}\nsettings-file: {}\ndev-file: {}\n\
+         mod-version: {}\n",
         options.name.as_str(),
         settings.mode.as_str(),
         settings.scene.as_str(),
@@ -87,6 +88,8 @@ pub(crate) fn trial_text(options: &Options) -> String {
         burst_region,
         burst.step,
         or_none(burst.max_step),
+        settings.headset_screen.as_str(),
+        or_none(settings.max_headset_difference),
         settings.out.display(),
         game_dir,
         player_file,
@@ -160,7 +163,7 @@ mod tests {
     use viewer_client::region::Region;
 
     use super::{FolderError, create, trial_text, utc_stamp};
-    use crate::args::{Background, Burst, Options, Scene, Settings, TrialName};
+    use crate::args::{Background, Burst, HeadsetScreen, Options, Scene, Settings, TrialName};
     use crate::compare::Limit;
     use crate::test_dir;
 
@@ -225,6 +228,8 @@ mod tests {
             max_half_difference: Limit::new(5.0),
             cursor: Some(ClientPoint { x: 960, y: 540 }),
             burst: Burst { frames: 300, region: Some(region), step, max_step },
+            headset_screen: HeadsetScreen::On,
+            max_headset_difference: Limit::new(12.5),
             out: PathBuf::from(r"C:\results"),
             game_dir: Some(PathBuf::from(r"D:\Games\Baldurs Gate 3")),
             player_file: Some(PathBuf::from(r"C:\trials\ipd-60.toml")),
@@ -236,6 +241,7 @@ mod tests {
              background: on\nwarmup-secs: 30\nperf-lines: 4\ncaptures: 2\n\
              max-half-difference: 5\ncursor: 960,540\nburst-frames: 300\n\
              burst-region: 1920,0,1920,2160\nburst-step: 2\nmax-burst-step: 1.25\n\
+             headset-screen: on\nmax-headset-difference: 12.5\n\
              out: C:\\results\ngame-dir: D:\\Games\\Baldurs Gate 3\n\
              settings-file: C:\\trials\\ipd-60.toml\ndev-file: C:\\trials\\left.toml\n\
              mod-version: {}\n",
@@ -250,6 +256,7 @@ mod tests {
         let defaults = "\nbackground: off\nwarmup-secs: 20\nperf-lines: 3\ncaptures: 1\n\
                         max-half-difference: none\ncursor: none\nburst-frames: 0\n\
                         burst-region: entire frame\nburst-step: 1\nmax-burst-step: none\n\
+                        headset-screen: off\nmax-headset-difference: none\n\
                         out: trial-results\ngame-dir: found through Steam\nsettings-file: none\n\
                         dev-file: none\n";
         assert!(steam.contains(defaults), "{steam}");

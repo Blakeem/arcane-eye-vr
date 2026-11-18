@@ -9,11 +9,11 @@ use std::time::Duration;
 use png::Decoder;
 use viewer_client::region::Region;
 
-use super::options;
 use super::stand_in::{StandInFrames, StandInGame};
+use super::{options, stand_in_trial};
 use crate::args::Burst;
 use crate::compare::Limit;
-use crate::steps::{Step, trial};
+use crate::steps::Step;
 use crate::test_dir;
 
 /// The result lines from the capture to the end of a trial whose burst ended with `burst`.
@@ -26,7 +26,7 @@ fn burst_trial(folder: &Path, burst: Burst, frames: &mut StandInFrames) -> (Stan
     let mut options = options(folder);
     options.settings.burst = burst;
     let mut game = StandInGame::failing_at(None);
-    trial(&options, folder, &mut game, frames, &mut Vec::new()).expect("a trial");
+    stand_in_trial(&options, folder, &mut game, frames, &mut Vec::new()).expect("a trial");
     let result = fs::read_to_string(folder.join("result.txt")).expect("read result.txt");
     (game, result)
 }

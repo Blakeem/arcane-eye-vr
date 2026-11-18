@@ -140,7 +140,7 @@ pub(crate) fn prepare(
 
 /// The game's root folder `name` in `folder` as an absolute path, as
 /// [`HOME_VARIABLE`](ipc_layout::root_folder::HOME_VARIABLE) requires.
-fn home_path(folder: &Path, name: &str) -> Result<PathBuf, HomeError> {
+pub(crate) fn home_path(folder: &Path, name: &str) -> Result<PathBuf, HomeError> {
     let home = folder.join(name);
     match path::absolute(&home) {
         Ok(absolute) => Ok(absolute),

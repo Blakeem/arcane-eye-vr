@@ -7,7 +7,7 @@ use std::fmt;
 
 use tracing::info;
 
-use crate::raw::cursor::{self as raw_cursor, PhysicalPixels};
+use crate::raw::cursor::{self as raw_cursor, AreaFailure, PhysicalPixels};
 
 /// A position in a window's client area, in whole pixels from its top left corner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +50,15 @@ pub enum CursorError {
     ToScreen,
     #[error("could not move the cursor to the screen position {x},{y}")]
     Move { x: i32, y: i32, source: windows::core::Error },
+}
+
+impl From<AreaFailure> for CursorError {
+    fn from(failure: AreaFailure) -> Self {
+        match failure {
+            AreaFailure::Rect(source) => Self::ClientArea(source),
+            AreaFailure::ToScreen => Self::ToScreen,
+        }
+    }
 }
 
 /// Moves the cursor to `point` in the client area of the foreground window, which must belong to

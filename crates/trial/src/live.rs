@@ -1,6 +1,7 @@
 //! The game and the frame reader of a real trial. The launch crate starts and closes the game,
 //! posts its key and moves the cursor in its window, the core's session log in the game's root
 //! folder holds the perf window and the game's place, and the viewer-client crate reads the frames.
+//! `live/headset.rs` holds the launch app and the headset window.
 
 use std::fs;
 use std::num::NonZeroU32;
@@ -260,19 +261,28 @@ pub(crate) struct LiveFrames {
     names: Names,
     reader: FrameReader,
     last_read: Option<Instant>,
+    /// Whether the heartbeat thread runs. The headset-screen step and the capture step both start
+    /// it, and one thread is enough.
+    beating: bool,
 }
 
 impl LiveFrames {
     pub(crate) fn new() -> Self {
         let names = Names::default();
-        Self { reader: FrameReader::new(names.clone()), names, last_read: None }
+        Self { reader: FrameReader::new(names.clone()), names, last_read: None, beating: false }
     }
 }
 
 impl Frames for LiveFrames {
     fn start_heartbeat(&mut self) -> Result<(), StepError> {
+        if self.beating {
+            return Ok(());
+        }
         match heartbeat::spawn(self.names.mapping.clone()) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.beating = true;
+                Ok(())
+            }
             Err(source) => Err(StepError::Heartbeat(source)),
         }
     }
@@ -328,6 +338,8 @@ fn wait(time: Duration) {
         thread::park_timeout(remaining);
     }
 }
+
+pub(crate) mod headset;
 
 #[cfg(test)]
 mod tests;

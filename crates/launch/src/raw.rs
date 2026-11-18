@@ -1,6 +1,7 @@
 //! The launch crate's unsafe edge: registry reads, the launch token mapping, the Steam URL, the
 //! window close, the key post and the process wait and end. `raw\desktop.rs` holds the desktop
-//! calls, `raw\cursor.rs` the cursor calls and `raw\recycle.rs` the Recycle Bin call.
+//! calls, `raw\cursor.rs` the cursor calls, `raw\recycle.rs` the Recycle Bin call and
+//! `raw\window_copy.rs` the window search and the screen copy.
 
 #![expect(
     unsafe_code,
@@ -301,19 +302,21 @@ impl Process {
     }
 }
 
-/// The top-level windows of one process, which `collect_window` gathers.
+/// The top-level windows of one process, or of every process, which `collect_window` gathers.
 struct WindowSearch {
-    pid: u32,
+    /// The process whose windows the search keeps, or `None` to keep every window.
+    owner: Option<u32>,
     windows: Vec<HWND>,
 }
 
-/// The top-level windows of process `pid`, hidden windows included.
-fn top_level_windows(pid: u32) -> Vec<HWND> {
-    let mut search = WindowSearch { pid, windows: Vec::new() };
+/// The top-level windows of process `owner`, or of every process for `None`, hidden windows
+/// included.
+fn top_level_windows(owner: Option<u32>) -> Vec<HWND> {
+    let mut search = WindowSearch { owner, windows: Vec::new() };
     let search_address = LPARAM((&raw mut search).expose_provenance().cast_signed());
     // SAFETY: `collect_window` reads `search_address` as `search`, which outlives the call.
     if let Err(error) = unsafe { EnumWindows(Some(collect_window), search_address) } {
-        warn!(pid, error = %error, "the window list stopped early, so some windows get no message");
+        warn!(?owner, error = %error, "the window list stopped early, so it misses some windows");
     }
     search.windows
 }
@@ -322,7 +325,7 @@ fn top_level_windows(pid: u32) -> Vec<HWND> {
 /// the number of windows that got the message.
 pub(crate) fn ask_windows_to_close(pid: u32) -> usize {
     let mut asked = 0usize;
-    for window in top_level_windows(pid) {
+    for window in top_level_windows(Some(pid)) {
         // SAFETY: a posted message carries no pointer, and a window gone since the search fails it.
         match unsafe { PostMessageW(Some(window), WM_CLOSE, WPARAM(0), LPARAM(0)) } {
             Ok(()) => asked = asked.saturating_add(1),
@@ -336,7 +339,7 @@ pub(crate) fn ask_windows_to_close(pid: u32) -> usize {
 /// Returns the number of windows that got both messages.
 pub(crate) fn post_key(pid: u32, key: &KeyPress) -> usize {
     let mut posted = 0usize;
-    for window in top_level_windows(pid) {
+    for window in top_level_windows(Some(pid)) {
         // SAFETY: IsWindowVisible has no pointer arguments, and a window gone since the search is
         // not visible.
         if !unsafe { IsWindowVisible(window) }.as_bool() {
@@ -372,7 +375,7 @@ extern "system" fn collect_window(window: HWND, search: LPARAM) -> BOOL {
     // SAFETY: `search` is the `WindowSearch` that `top_level_windows` owns for the EnumWindows
     // call, and nothing else touches it during the call.
     let search = unsafe { &mut *search };
-    if owner == search.pid {
+    if search.owner.is_none_or(|pid| pid == owner) {
         search.windows.push(window);
     }
     TRUE
@@ -381,6 +384,7 @@ extern "system" fn collect_window(window: HWND, search: LPARAM) -> BOOL {
 pub(crate) mod cursor;
 pub(crate) mod desktop;
 pub(crate) mod recycle;
+pub(crate) mod window_copy;
 
 #[cfg(test)]
 mod cursor_tests;
@@ -390,3 +394,5 @@ mod desktop_tests;
 mod key_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod window_copy_tests;

@@ -1,6 +1,6 @@
 [package]
 name = "launch"
-description = "Starts and stops the game with a launch token: the Steam start, the direct start, the status wait, the window close, a desktop of its own and the cursor position."
+description = "Starts and stops the game with a launch token: the Steam start, the direct start, the status wait, the window close, a desktop of its own, the cursor position and the copy of a window from the screen."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -34,7 +34,7 @@ test-support = { path = "../test-support" }
 
 [dev-dependencies.windows]
 workspace = true
-features = ["Win32_System_LibraryLoader"]
+features = ["Win32_Graphics_Dwm", "Win32_System_LibraryLoader"]
 
 [lints]
 workspace = true

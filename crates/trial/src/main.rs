@@ -8,10 +8,12 @@
 //! latest save's level runs. A priming session first reaches the main menu and closes when the game
 //! would refuse that load (`level.rs`). With `--background`, it runs a copy of itself and the game
 //! on a Windows desktop of its own (`background.rs`). `compare.rs` computes the half difference of
-//! each captured frame and the step of each burst frame.
-//! `steps.rs` runs the steps against two traits, and `live.rs` drives the game and the viewer link
-//! through the `launch` and `viewer-client` crates. It exits with 0 when every step passed, 1 when a
-//! step failed or the result could not be recorded, and 2 for a bad command line.
+//! each captured frame and the step of each burst frame. With `--headset-screen`, it starts the
+//! launch app's screen and compares SteamVR's headset window with the game's frame (`headset.rs`).
+//! `steps.rs` runs the steps against three traits, and `live.rs` drives the game, the viewer link
+//! and the launch app through the `launch` and `viewer-client` crates. It exits with 0 when every
+//! step passed, 1 when a step failed or the result could not be recorded, and 2 for a bad command
+//! line.
 
 #![forbid(unsafe_code)]
 
@@ -20,6 +22,7 @@ mod background;
 mod burst;
 mod compare;
 mod folder;
+mod headset;
 mod home;
 mod level;
 mod live;
@@ -45,8 +48,9 @@ use tracing::{dispatcher, error};
 use crate::args::{ArgsError, Background, Options, USAGE};
 use crate::background::Role;
 use crate::folder::FolderError;
+use crate::live::headset::LiveHeadset;
 use crate::live::{LiveFrames, LiveGame};
-use crate::steps::{TRIAL_FAILED, TrialError};
+use crate::steps::{Rig, TRIAL_FAILED, TrialError};
 
 /// The exit code of a bad command line.
 const USAGE_FAILED: u8 = 2;
@@ -110,9 +114,10 @@ fn run(options: &Options, desktop: Option<String>) -> Result<ExitCode, Failure> 
     let logging = logging::start(&folder, LogName::Trial)?;
     let mut game = LiveGame::new(&options.settings, desktop);
     let mut frames = LiveFrames::new();
+    let mut headset = LiveHeadset::new();
     let report = dispatcher::with_default(&logging.dispatch, || {
-        let report =
-            steps::trial(options, &folder, &mut game, &mut frames, &mut io::stdout().lock());
+        let rig = Rig { game: &mut game, frames: &mut frames, headset: &mut headset };
+        let report = steps::trial(options, &folder, rig, &mut io::stdout().lock());
         if let Err(error) = &report {
             error!(error = %steps::cause(error), "the trial result was not recorded");
         }
