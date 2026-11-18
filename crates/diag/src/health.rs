@@ -156,7 +156,8 @@ impl Health {
         FeatureState::from_stored(self.cell(feature).load(Ordering::Acquire))
     }
 
-    /// Whether the feature's code runs.
+    /// Whether the feature is active, so all its code runs. A failed feature runs only code that
+    /// gives the game back what the feature changed.
     pub fn is_running(&self, feature: Feature) -> bool {
         self.state(feature) == FeatureState::Active
     }
@@ -171,13 +172,15 @@ impl Health {
         self.apply(feature, Event::InstallFailed);
     }
 
-    /// A panic in the feature's code was caught, so its code never runs again.
+    /// A panic in the feature's code was caught, so its code never runs again, apart from code that
+    /// gives the game back what the feature changed.
     pub fn panic_caught(&self, feature: Feature) {
         self.apply(feature, Event::PanicCaught);
     }
 
     /// A check in the feature's code failed in a way that a retry cannot mend, so its code never runs
-    /// again. The caller logs which check failed.
+    /// again, apart from code that gives the game back what the feature changed. The caller logs
+    /// which check failed.
     pub fn check_failed(&self, feature: Feature) {
         self.apply(feature, Event::CheckFailed);
     }

@@ -265,6 +265,7 @@ impl World {
             created: self.eye.address(),
             level_request: -1,
             stores: false,
+            viewport_panics: false,
         }
     }
 

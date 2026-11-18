@@ -1,7 +1,8 @@
-//! The eye view feature's decision, retry and install. The create and the game update run against a
-//! world in test memory in the submodules.
+//! The eye view feature's decision, retry and install. The create, the game update and the flat
+//! step run against a world in test memory in the submodules.
 
 mod create;
+mod flat;
 mod follow;
 mod squeeze;
 mod update;

@@ -7,7 +7,7 @@ use game_bindings::state::{core_context, store_core_context};
 use game_mem::GameAddr;
 
 use super::{Registers, RenderCell, install_mid_hook};
-use crate::{GameThread, HookContext, RenderThread};
+use crate::{GameThread, HookContext, RenderThread, Runs};
 
 type Target = extern "C" fn(u64, u64) -> u64;
 
@@ -68,7 +68,19 @@ const PANIC_ARGUMENT: usize = 99;
 
 crate::render_mid_hook!(recording_thunk, Feature::PresentHook, context(), record_call);
 crate::render_mid_hook!(panicking_thunk, Feature::PresentHook, context(), record_call_then_panic);
-crate::game_mid_hook!(game_thunk, Feature::EyeView, context(), record_game_call);
+crate::game_mid_hook!(game_thunk, Feature::EyeView, Runs::WhileActive, context(), record_game_call);
+crate::game_mid_hook!(
+    after_failure_thunk,
+    Feature::EyeView,
+    Runs::AfterFailureToo,
+    context(),
+    record_game_call
+);
+
+#[inline(never)]
+extern "C" fn bitwise_or(a: u64, b: u64) -> u64 {
+    a | b
+}
 
 fn address(target: Target) -> GameAddr {
     GameAddr::new((target as *const ()).expose_provenance())
@@ -138,6 +150,24 @@ fn game_hook_runs_its_handler_and_a_caught_panic_latches_its_feature_off(context
     assert_eq!(call(difference, 9, 4), 5);
     assert_eq!(game_calls(context), 2, "a failed feature's game hook runs no handler");
     drop(game);
+
+    game_hook_after_failure_runs_its_handler_on_a_failed_feature(context);
+}
+
+/// A game thread hook that also runs after its feature failed, on the feature the test above
+/// latched off.
+fn game_hook_after_failure_runs_its_handler_on_a_failed_feature(context: &TestContext) {
+    // SAFETY: `bitwise_or` is a function of this binary, and the hook sits on its first instruction.
+    let hook =
+        unsafe { install_mid_hook(address(bitwise_or), after_failure_thunk) }.expect("install");
+    assert_eq!(call(bitwise_or, 8, 1), 9, "the hook leaves the result unchanged");
+    assert_eq!(game_calls(context), 3, "the handler runs on a failed feature");
+    assert_eq!(call(bitwise_or, 99, 4), 103, "the target runs after a caught panic");
+    assert_eq!(game_calls(context), 4);
+    assert_eq!(context.health.state(Feature::EyeView), FeatureState::Failed, "Failed stays");
+    assert_eq!(call(bitwise_or, 8, 1), 9);
+    assert_eq!(game_calls(context), 5, "the handler runs after its own caught panic");
+    drop(hook);
 }
 
 #[test]

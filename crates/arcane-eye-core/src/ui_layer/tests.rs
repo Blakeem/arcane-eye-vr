@@ -4,6 +4,7 @@
 mod cursor;
 mod decide;
 mod depth;
+mod flat;
 mod pair;
 
 use diag::health::{Feature, FeatureState, Health};

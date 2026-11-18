@@ -27,10 +27,12 @@
 //! UI stage fills the UI texture whether or not the byte is set, the texture table holds the UI
 //! texture in the start-up video and the loading picture, and the texture is premultiplied (all
 //! measured in the game). A failed draw of the pair, the move or the UI texture switches the feature
-//! off. A feature that is off presents flat frames flat, leaves the right half where the game
-//! rendered it, and gives the byte the game's value back, so the game draws its UI again. It also
+//! off, which makes the stereo pair flat. A feature that is off presents flat frames flat, leaves the
+//! right half where the game rendered it, and gives the byte the game's value back, so the game
+//! draws its UI again. It also
 //! gives the cursor display counter the game's value back, so Windows shows the cursor over the game
-//! window again.
+//! window again. The feature stops the same way while the stereo pair is flat after a failure of
+//! another feature of the pair (see [`pair`](crate::pair)).
 
 pub(crate) mod cursor;
 mod decide;
@@ -61,6 +63,7 @@ use crate::config::Config;
 use crate::eye_view::Layout;
 use crate::game_source::{GameSource, SourceFault};
 use crate::install::{GameCode, LocateError};
+use crate::pair::PairState;
 use crate::present;
 use crate::raw::composite_stage::stage_writes;
 use crate::raw::cursor::Window;
@@ -180,7 +183,8 @@ impl UiLayer {
     /// Runs the feature for the frame whose back buffer is `target`, with the right half of a side
     /// by side frame moved by `depth_offset`. `next` is the layout of the frame after it, which the
     /// eye view feature read at this Present call site. The work runs inside its own
-    /// `catch_unwind`, so a panic latches `ui-layer` off and leaves the frame handler running.
+    /// `catch_unwind`, so a panic latches `ui-layer` off and leaves the frame handler running. A flat
+    /// pair draws and writes nothing but the game's values back.
     pub(crate) fn on_frame(
         &mut self,
         health: &Health,
@@ -189,12 +193,16 @@ impl UiLayer {
         target: &Target<'_>,
     ) {
         let layout = mem::replace(&mut self.next, next);
+        if PairState::of(health).is_flat() {
+            self.release();
+            return;
+        }
         present::guarded(health, Feature::UiLayer, || {
             if let Err(fault) = self.run(layout, depth_offset, target) {
                 // The failed check switches the feature off, so this line appears once.
                 warn!(
                     fault = %fault,
-                    "ui layer draw failed, so flat frames stay flat and the game draws its UI again"
+                    "ui layer draw failed, so the game shows its flat picture and its UI again"
                 );
                 health.check_failed(Feature::UiLayer);
             }

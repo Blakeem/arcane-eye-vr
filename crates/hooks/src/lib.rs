@@ -4,12 +4,13 @@
 //! A mid hook's callback comes only from [`render_mid_hook!`] or [`game_mid_hook!`]. The callback is
 //! `extern "C"`, since SafetyHook's mid hook stub has no unwind data, and it runs the handler inside
 //! `catch_unwind`. A caught panic latches the hook's feature off in the health registry, and the hook
-//! then does nothing.
+//! then does nothing, unless its game thread handler gives the game back what the feature changed
+//! ([`Runs::AfterFailureToo`]).
 
 use std::marker::PhantomData;
 use std::panic::{self, AssertUnwindSafe};
 
-use diag::health::{Feature, Health};
+use diag::health::{Feature, FeatureState, Health};
 
 mod raw;
 
@@ -51,6 +52,27 @@ pub trait HookContext {
     fn health(&self) -> &Health;
 }
 
+/// The states of its feature in which a hook runs its handler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Runs {
+    /// While the feature is active.
+    WhileActive,
+    /// While the feature is active, and after a caught panic or a failed check switched it off, for
+    /// a handler that gives the game back what the feature changed.
+    AfterFailureToo,
+}
+
+impl Runs {
+    /// Whether a hook runs its handler while its feature is in `state`.
+    const fn admits(self, state: FeatureState) -> bool {
+        match (self, state) {
+            (_, FeatureState::Active) | (Self::AfterFailureToo, FeatureState::Failed) => true,
+            (_, FeatureState::Pending | FeatureState::Unavailable)
+            | (Self::WhileActive, FeatureState::Failed) => false,
+        }
+    }
+}
+
 /// Why a hook was not installed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum HookError {
@@ -78,7 +100,8 @@ pub fn run_render_mid_hook<'context, C: HookContext + 'context>(
     read_context: impl FnOnce() -> Option<&'context C>,
     handler: fn(&C, &RenderThread, &mut Registers),
 ) {
-    run_mid_hook(registers, feature, read_context, handler, &RenderThread::new());
+    let hook = Hook { feature, runs: Runs::WhileActive };
+    run_mid_hook(registers, hook, read_context, handler, &RenderThread::new());
 }
 
 /// The body of a callback that [`game_mid_hook!`] builds. Only that macro calls it.
@@ -90,27 +113,36 @@ pub fn run_render_mid_hook<'context, C: HookContext + 'context>(
 pub fn run_game_mid_hook<'context, C: HookContext + 'context>(
     registers: &mut Registers,
     feature: Feature,
+    runs: Runs,
     read_context: impl FnOnce() -> Option<&'context C>,
     handler: fn(&C, &GameThread, &mut Registers),
 ) {
-    run_mid_hook(registers, feature, read_context, handler, &GameThread::new());
+    run_mid_hook(registers, Hook { feature, runs }, read_context, handler, &GameThread::new());
 }
 
-/// Reads the context, skips the handler while `feature` is not running, and runs the handler with
-/// `thread` inside `catch_unwind`. A panic in `read_context` or in the handler never leaves this
-/// function.
+/// A hook's feature and the states of the feature in which the hook runs its handler.
+#[derive(Clone, Copy)]
+struct Hook {
+    feature: Feature,
+    runs: Runs,
+}
+
+/// Reads the context, skips the handler while `hook.runs` does not admit the feature's state, and
+/// runs the handler with `thread` inside `catch_unwind`. A panic in `read_context` or in the handler
+/// never leaves this function.
 fn run_mid_hook<'context, C: HookContext + 'context, T>(
     registers: &mut Registers,
-    feature: Feature,
+    hook: Hook,
     read_context: impl FnOnce() -> Option<&'context C>,
     handler: fn(&C, &T, &mut Registers),
     thread: &T,
 ) {
+    let Hook { feature, runs } = hook;
     let mut reached = None;
     let outcome = panic::catch_unwind(AssertUnwindSafe(|| {
         let Some(context) = read_context() else { return };
         reached = Some(context);
-        if context.health().is_running(feature) {
+        if runs.admits(context.health().state(feature)) {
             handler(context, thread, registers);
         }
     }));
@@ -140,12 +172,35 @@ macro_rules! render_mid_hook {
 /// Defines `extern "C" fn $thunk(&mut Registers)`, a mid hook callback for a hook site that runs on
 /// the engine's game thread. Pass the thunk to [`install_mid_hook`].
 ///
-/// It follows the rules of [`render_mid_hook!`], with `$handler(&C, &GameThread, &mut Registers)`.
+/// It follows the rules of [`render_mid_hook!`], with `$handler(&C, &GameThread, &mut Registers)`,
+/// except that `$runs`, a [`Runs`], names the states of `$feature` in which the handler runs.
 #[macro_export]
 macro_rules! game_mid_hook {
-    ($thunk:ident, $feature:expr, $context:expr, $handler:path $(,)?) => {
+    ($thunk:ident, $feature:expr, $runs:expr, $context:expr, $handler:path $(,)?) => {
         extern "C" fn $thunk(registers: &mut $crate::Registers) {
-            $crate::run_game_mid_hook(registers, $feature, || $context, $handler);
+            $crate::run_game_mid_hook(registers, $feature, $runs, || $context, $handler);
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use diag::health::FeatureState;
+
+    use super::Runs;
+
+    #[test]
+    fn a_hook_runs_while_its_feature_is_active_and_after_a_failure_only_when_asked() {
+        let cases = [
+            (FeatureState::Pending, [false, false]),
+            (FeatureState::Active, [true, true]),
+            (FeatureState::Unavailable, [false, false]),
+            (FeatureState::Failed, [false, true]),
+        ];
+        for (state, expected) in cases {
+            let admitted =
+                [Runs::WhileActive, Runs::AfterFailureToo].map(|runs| runs.admits(state));
+            assert_eq!(admitted, expected, "{state:?}");
+        }
+    }
 }

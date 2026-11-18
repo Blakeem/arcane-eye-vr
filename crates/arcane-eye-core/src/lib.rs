@@ -10,6 +10,7 @@ mod game_state;
 mod init;
 mod install;
 mod object_slot;
+mod pair;
 mod present;
 mod raw;
 mod reload;

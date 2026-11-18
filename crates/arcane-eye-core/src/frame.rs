@@ -3,7 +3,7 @@
 //! On the first frame it takes the device and the immediate context. On every frame it tracks the
 //! swapchain, its device and its back buffer, and hands the frame to the debug viewer link, with the
 //! game source when the dev flag `viewer.source` names one. Before that hand-over the UI layer draws
-//! into the back buffer. It times
+//! into the back buffer. It logs once which feature's failure made the stereo pair flat. It times
 //! each call and logs the perf summary line once per window of frames, after the camera lines of the
 //! window's newest main view camera and newest eye view camera.
 //!
@@ -28,6 +28,7 @@ use windows::core::HRESULT;
 
 use crate::eye_view::Layout;
 use crate::game_source::GameSource;
+use crate::pair::PairState;
 use crate::raw::{self, BackBuffer, Devices};
 use crate::ui_layer::{Target, UiLayer};
 use crate::view_camera::{FrameCamera, FrameCameras, Viewpoint};
@@ -74,8 +75,9 @@ impl FrameState {
     }
 }
 
-/// What the UI layer takes from the Present call-site handler: the health registry, the layout of
-/// the next frame and the player's depth offset in the frame's copy of the settings.
+/// What the UI layer takes from the Present call-site handler: the health registry, which also
+/// tells the frame handler whether the pair is flat, the layout of the next frame and the player's
+/// depth offset in the frame's copy of the settings.
 #[derive(Clone, Copy)]
 pub(crate) struct UiFrame<'frame> {
     pub(crate) health: &'frame Health,
@@ -87,6 +89,7 @@ pub(crate) struct UiFrame<'frame> {
 #[derive(Default)]
 struct FrameLogs {
     first_present: Once,
+    flat: Once,
     no_swapchain: RateLimit,
     desc_failed: RateLimit,
     devices_failed: RateLimit,
@@ -101,9 +104,9 @@ struct Snapshot {
     back_buffer: BackBuffer,
 }
 
-/// Runs the frame work for the swapchain that `registers` hold at the Present call site. `cameras`
-/// are the cameras of the frame's views that the view camera feature read, and `ui` is the UI
-/// layer's part of the handler's state.
+/// Runs the frame work for the swapchain that `registers` hold at the Present call site, and logs a
+/// flat pair's start. `cameras` are the cameras of the frame's views that the view camera feature
+/// read, and `ui` is the UI layer's part of the handler's state.
 pub(crate) fn on_present_call(
     state: &mut FrameState,
     registers: &Registers,
@@ -112,6 +115,7 @@ pub(crate) fn on_present_call(
 ) -> FrameReport {
     let now = Instant::now();
     keep_cameras(state, cameras);
+    log_flat(&mut state.logs, ui.health);
     let frame = raw::with_present_swapchain(registers, |address, swapchain| {
         on_frame(state, address, swapchain, ui)
     });
@@ -126,6 +130,18 @@ pub(crate) fn on_present_call(
     });
     record_interval(state, now);
     report
+}
+
+/// Logs, at the first Present call that finds the pair flat, the cause that [`PairState::Flat`]
+/// names.
+fn log_flat(logs: &mut FrameLogs, health: &Health) {
+    let PairState::Flat { cause } = PairState::of(health) else { return };
+    once!(
+        logs.flat,
+        Level::WARN,
+        feature = cause.as_str(),
+        "a stereo feature failed, so the game presents its flat picture for the session"
+    );
 }
 
 /// Keeps each camera of `cameras` as the newest camera of its view in the perf window.

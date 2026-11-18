@@ -1,20 +1,24 @@
 //! The eye view feature's hook at the game update's entry, which gives the game's logic the main
-//! view's entire frame back before the logic reads it (see [`squeeze`](super::squeeze)).
+//! view's entire frame back before the logic reads it (see [`squeeze`](super::squeeze)). It also
+//! runs after the feature failed, so a width the feature halved is restored.
 
 use std::mem::ManuallyDrop;
 
 use diag::health::Feature;
 use game_bindings::state;
 use game_mem::GameAddr;
-use hooks::{GameThread, MidHook, Registers};
+use hooks::{GameThread, MidHook, Registers, Runs};
 
 use crate::context::CoreContext;
 use crate::install::InstallError;
 use crate::raw::eye_view::{self as raw_eye_view, GameCalls};
 
+pub(super) const ENTRY_RUNS: Runs = Runs::AfterFailureToo;
+
 hooks::game_mid_hook!(
     game_update_entry_thunk,
     Feature::EyeView,
+    ENTRY_RUNS,
     state::core_context::<CoreContext>(),
     on_game_update_entry
 );

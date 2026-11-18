@@ -104,6 +104,29 @@ pub(crate) const fn decide(observed: Observed, retry_due: bool) -> Action {
     }
 }
 
+/// What the flat step does at a game update.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FlatAction {
+    Nothing,
+    /// Drops the held eye view and gives the main view the entire frame.
+    Forget,
+    /// Gives the main view the entire frame and the eye view no width.
+    FullFrame,
+}
+
+/// The flat step's action for `observed`, read at the game update. The step never creates or sets
+/// up an eye view, and it gives a live one no width, ready or not.
+pub(crate) const fn decide_flat(observed: Observed) -> FlatAction {
+    match observed {
+        Observed::PresentWithoutEye
+        | Observed::PresentWithEye
+        | Observed::UpdateWithoutEye
+        | Observed::UpdateOfOtherPipeline => FlatAction::Nothing,
+        Observed::Stale(_) => FlatAction::Forget,
+        Observed::Live(_) => FlatAction::FullFrame,
+    }
+}
+
 /// The readiness of an eye view whose content is `eye`, beside a main view whose content is `main`.
 pub(crate) fn readiness(main: &ViewContent, eye: &ViewContent) -> Readiness {
     let main_set = main.controller.get() != 0

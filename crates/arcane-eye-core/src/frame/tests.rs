@@ -6,14 +6,17 @@ mod source;
 use std::fs;
 use std::time::{Duration, Instant};
 
-use diag::health::Health;
+use diag::health::{Feature, Health};
 use diag::logging::LogName;
 use game_bindings::state::arm_alloc_guard;
 use gfx::publish::ViewNames;
 use ipc_layout::perf_line::{self, PerfSummary};
 use settings::player::DepthOffsetPercent;
 
-use super::{FrameReport, FrameState, UiFrame, keep_cameras, on_frame, record_interval, skipped};
+use super::{
+    FrameLogs, FrameReport, FrameState, UiFrame, keep_cameras, log_flat, on_frame, record_interval,
+    skipped,
+};
 use crate::eye_view::Layout;
 use crate::raw::{
     self,
@@ -103,6 +106,26 @@ fn first_frame_takes_the_devices_and_logs_the_back_buffer_once() {
     let line = lines.first().expect("the first present line");
     let end = format!(" msg=\"first present\" width=320 height=200 format={}", FORMAT.0);
     assert!(line.ends_with(&end), "{line}");
+}
+
+#[test]
+fn a_flat_pair_logs_one_line_that_names_its_first_failed_feature_in_list_order() {
+    let health = Health::new();
+    for feature in [Feature::EyeCamera, Feature::UiLayer] {
+        health.install_ok(feature);
+    }
+    let mut logs = FrameLogs::default();
+    let lines = log_lines("flat-pair", || {
+        log_flat(&mut logs, &health);
+        health.check_failed(Feature::UiLayer);
+        health.check_failed(Feature::EyeCamera);
+        for _ in 0..3 {
+            log_flat(&mut logs, &health);
+        }
+    });
+    let flat: Vec<&String> = lines.iter().filter(|line| line.contains("flat picture")).collect();
+    let [line] = flat.as_slice() else { panic!("one flat line: {lines:#?}") };
+    assert!(line.ends_with(" feature=eye-camera"), "{line}");
 }
 
 #[test]

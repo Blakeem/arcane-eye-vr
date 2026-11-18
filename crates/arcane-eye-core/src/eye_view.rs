@@ -22,17 +22,23 @@
 //! the layout, which names the main view and the eye view while the views sit side by side, for the
 //! eye camera, the view camera and the shadow cache. With `second_view` off the feature installs no
 //! hook.
+//!
+//! Once the stereo pair is flat (see [`pair`](crate::pair)), the render thread reads
+//! [`Layout::MainOnly`] and creates nothing, and the logic end runs the flat step (`flat`). Both
+//! game thread hooks run after this feature's own failure too, so the entry still restores a halved
+//! width and the flat step still places the views.
 
 mod create;
 mod decide;
 pub(crate) mod engine;
 mod entry;
+mod flat;
 mod place;
 mod set_up;
 mod squeeze;
 
 use std::mem::ManuallyDrop;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use diag::health::{Feature, Health};
@@ -41,24 +47,30 @@ use diag::warn_every;
 use game_bindings::render_view::RenderView;
 use game_bindings::state;
 use game_mem::GameAddr;
-use hooks::{GameThread, MidHook, Registers, RenderCell, RenderThread};
+use hooks::{GameThread, MidHook, Registers, RenderCell, RenderThread, Runs};
 use settings::dev::SecondView;
 use tracing::{info, warn};
 
 use self::decide::{Action, Observed, Retry, decide};
 use self::engine::{Addresses, CreateCalls, GameMemory, Held, SetUpCalls};
+use self::flat::FlatStep;
 use self::place::{Placement, place};
 use self::set_up::{Update, observe};
 use self::squeeze::Squeezed;
 use crate::config::Config;
 use crate::context::CoreContext;
 use crate::install::{GameCode, InstallError};
+use crate::pair::PairState;
 use crate::present;
 use crate::raw::eye_view::{self as raw_eye_view, EngineFns, GameCalls, RenderCalls};
+
+/// The logic end hook runs after the feature failed too, so the flat step still places the views.
+const LOGIC_END_RUNS: Runs = Runs::AfterFailureToo;
 
 hooks::game_mid_hook!(
     game_update_thunk,
     Feature::EyeView,
+    LOGIC_END_RUNS,
     state::core_context::<CoreContext>(),
     on_game_update
 );
@@ -129,6 +141,7 @@ struct Shared {
     /// The main view whose width the last side by side placement halved, until the next game
     /// update's entry restores it.
     squeezed: Option<Squeezed>,
+    flat_step: FlatStep,
     read_log: RateLimit,
     set_up_log: RateLimit,
     place_log: RateLimit,
@@ -190,13 +203,13 @@ fn hook_at(site: GameAddr) -> Result<ManuallyDrop<MidHook>, InstallError> {
     Ok(raw_eye_view::install_game_update_hook(site, game_update_thunk)?)
 }
 
-/// The hook's handler, on the game thread at the end of each game update's logic calls. `rsi` holds
-/// the pipeline.
+/// The hook's handler, on the game thread at the end of each game update's logic calls, also after
+/// the feature failed. `rsi` holds the pipeline.
 fn on_game_update(context: &CoreContext, thread: &GameThread, registers: &mut Registers) {
     let Some(state) = &context.eye_view else { return };
     let pipeline = GameAddr::new(registers.rsi());
     let mut calls = GameCalls::new(&state.fns, thread);
-    state.view.on_game_update(&mut calls, pipeline, Instant::now());
+    flat::on_logic_end(&state.view, &mut calls, pipeline, &context.health, Instant::now());
 }
 
 /// The feature's part of the Present call-site hook, on the render thread. It runs inside its own
@@ -213,7 +226,7 @@ pub(crate) fn on_present_call(context: &CoreContext, thread: &RenderThread) {
 }
 
 /// The layout of the next frame, read at the Present call site on the render thread. It is
-/// [`Layout::MainOnly`] while `eye-view` is not installed or off.
+/// [`Layout::MainOnly`] while `eye-view` is not installed or off, and while the pair is flat.
 pub(crate) fn frame_layout(context: &CoreContext, thread: &RenderThread) -> Layout {
     let Some(state) = &context.eye_view else { return Layout::MainOnly };
     let layout = state.render.with(thread, |render| state.view.layout(render, &context.health));
@@ -226,7 +239,7 @@ impl EyeView {
     }
 
     /// The render thread's frame: hands a created eye view to the game thread, or creates one when
-    /// the feature holds none and the retry is due.
+    /// the feature holds none and the retry is due. A flat pair does neither.
     pub(crate) fn on_present_call(
         &self,
         calls: &mut impl CreateCalls,
@@ -234,6 +247,9 @@ impl EyeView {
         health: &Health,
         now: Instant,
     ) {
+        if PairState::of(health).is_flat() {
+            return;
+        }
         let Ok(mut shared) = self.shared.try_lock() else { return };
         if let Some(pending) = render.pending.take() {
             shared.held = Some(pending);
@@ -271,10 +287,10 @@ impl EyeView {
     }
 
     /// The layout the game thread placed last, kept in `render`, or [`Layout::MainOnly`] while
-    /// `health` holds the feature off. While the game thread holds the shared state, the layout read
-    /// last stands.
+    /// `health` holds the feature off or the pair flat. While the game thread holds the shared state,
+    /// the layout read last stands.
     pub(crate) fn layout(&self, render: &mut RenderState, health: &Health) -> Layout {
-        if !health.is_running(Feature::EyeView) {
+        if !health.is_running(Feature::EyeView) || PairState::of(health).is_flat() {
             return Layout::MainOnly;
         }
         if let Ok(shared) = self.shared.try_lock() {
@@ -296,14 +312,20 @@ impl EyeView {
         }
     }
 
+    /// The shared state. A panic that held the lock switched the feature off, and the game thread's
+    /// hooks still give the game back what the feature changed, so they take the state the panic
+    /// left.
+    fn lock(&self) -> MutexGuard<'_, Shared> {
+        self.shared.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// The game thread's start of the game update of the pipeline `pipeline`, before its logic
     /// calls: gives the squeezed main view its full width back.
     pub(crate) fn on_game_update_entry(&self, memory: &impl GameMemory, pipeline: GameAddr) {
-        let Ok(mut shared) = self.shared.lock() else { return };
-        squeeze::at_entry(memory, &mut shared, pipeline);
+        squeeze::at_entry(memory, &mut self.lock(), pipeline);
     }
 
-    /// The game thread's frame for the game update of the pipeline `pipeline`, at the end of its
+    /// The running pair's frame for the game update of the pipeline `pipeline`, at the end of its
     /// logic calls: forgets a stale eye view, sets up an eye view that is not ready, places the views
     /// and halves the main view's width while they sit side by side.
     pub(crate) fn on_game_update(
@@ -312,7 +334,7 @@ impl EyeView {
         pipeline: GameAddr,
         now: Instant,
     ) {
-        let Ok(mut guard) = self.shared.lock() else { return };
+        let mut guard = self.lock();
         let shared = &mut *guard;
         let update = match observe(calls, &self.addresses, shared.held, pipeline) {
             Ok(update) => update,
@@ -333,21 +355,23 @@ impl EyeView {
         };
         let Some(main) = update.main else { return };
         let eye = shared.held.map(|held| held.eye);
-        let placed = place(calls, placement, main, eye);
-        if placed.is_ok() {
-            squeeze::after_placement(calls, shared, placement, main);
-        }
-        match placed {
-            Ok(()) if placement != shared.placement => {
-                shared.placement = placement;
-                // Only a change of placement reaches this line, so it needs no rate-limit macro.
-                info!(placement = placement.as_str(), "eye view placement changed");
-            }
-            Ok(()) => {}
+        match place(calls, placement, main, eye) {
+            Ok(()) => placed(calls, shared, placement, main),
             Err(fault) => {
                 warn_every!(shared.place_log, LOG_PERIOD, fault = %fault, "eye view placement failed");
             }
         }
+    }
+}
+
+/// Follows a placement of `main` that succeeded: halves or keeps the main view's width, keeps
+/// `placement` and logs a change of it.
+fn placed(memory: &impl GameMemory, shared: &mut Shared, placement: Placement, main: RenderView) {
+    squeeze::after_placement(memory, shared, placement, main);
+    if placement != shared.placement {
+        shared.placement = placement;
+        // Only a change of placement reaches this line, so it needs no rate-limit macro.
+        info!(placement = placement.as_str(), "eye view placement changed");
     }
 }
 

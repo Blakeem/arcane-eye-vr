@@ -80,7 +80,7 @@ pub(crate) enum Call {
 /// Stand-in game calls. Each records its call and makes no other change, except that the level
 /// atmosphere attach writes `level_request` into its request id, as the game may, and that
 /// `SetCamera` and the fog variant setter store their value in the view while `stores` is set, as
-/// the game does.
+/// the game does, and that the viewport setter panics while `viewport_panics` is set.
 pub(crate) struct Recorder {
     pub(crate) calls: Vec<Call>,
     /// What the main frame getter returns.
@@ -90,6 +90,9 @@ pub(crate) struct Recorder {
     pub(crate) level_request: i32,
     /// Whether `SetCamera` and the fog variant setter store their value in the view.
     pub(crate) stores: bool,
+    /// Whether the viewport setter panics after it records its call, as a panic in the feature's
+    /// code between two calls would.
+    pub(crate) viewport_panics: bool,
 }
 
 impl Recorder {
@@ -209,6 +212,7 @@ impl SetUpCalls for Recorder {
 
     fn set_viewport(&mut self, view: RenderView, scale: [f32; 2], offset: [f32; 2]) {
         self.record(Call::SetViewport { view: view.address(), scale, offset });
+        assert!(!self.viewport_panics, "the test's viewport setter panicked");
         let [scale_x, _] = scale;
         let entire = FrameWidth { scale: scale_x, ..FRAME_WIDTH };
         let stored = if entire.is_full() {
