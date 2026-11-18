@@ -1,6 +1,6 @@
-//! The game and the frame reader of a real trial. The launch crate starts and closes the game and
-//! posts its key, the core's session log in the game's root folder holds the perf window and the
-//! game's place, and the viewer-client crate reads the frames.
+//! The game and the frame reader of a real trial. The launch crate starts and closes the game,
+//! posts its key and moves the cursor in its window, the core's session log in the game's root
+//! folder holds the perf window and the game's place, and the viewer-client crate reads the frames.
 
 use std::fs;
 use std::num::NonZeroU32;
@@ -14,6 +14,7 @@ use diag::root::Root;
 use ipc_layout::core_init::CORE_DLL;
 use ipc_layout::game_state_line::Place;
 use ipc_layout::launch_token::Mode;
+use launch::cursor::{self, ClientPoint};
 use launch::direct::{self, Save};
 use launch::game_dir::{self, GameDir};
 use launch::registry::RegistryError;
@@ -66,6 +67,8 @@ pub(crate) struct LiveGame {
     /// Lives until the next token step or the trial's end, so the game of the next start finds it.
     token: Option<TokenMapping>,
     game: Option<Started>,
+    /// The trial desktop this process started on, which the game inherits, or `None`.
+    desktop: Option<String>,
 }
 
 /// The game process, the time just before it started, its core's session log folder and the game
@@ -80,13 +83,14 @@ struct Started {
 }
 
 impl LiveGame {
-    pub(crate) fn new(settings: &Settings) -> Self {
+    pub(crate) fn new(settings: &Settings, desktop: Option<String>) -> Self {
         Self {
             mode: settings.mode,
             given_dir: settings.game_dir.clone(),
             game_dir: None,
             token: None,
             game: None,
+            desktop,
         }
     }
 
@@ -171,6 +175,15 @@ impl Game for LiveGame {
         // A key that reached no window is a warn line, and the next key period posts again.
         key::post_space(pid);
         Ok(())
+    }
+
+    fn place_cursor(&mut self, point: ClientPoint) -> Result<(), StepError> {
+        let pid = self.game()?.child.id();
+        Ok(cursor::place(pid, point)?)
+    }
+
+    fn desktop(&self) -> Option<&str> {
+        self.desktop.as_deref()
     }
 
     fn warm_up(&mut self, time: Duration) {

@@ -15,7 +15,7 @@ fn step(step: u32) -> NonZeroU32 {
 
 #[test]
 fn no_region_is_the_entire_frame_and_a_given_region_is_kept_as_given() {
-    let entire = Burst { frames: 1, region: None, step: step(1) };
+    let entire = Burst { frames: 1, region: None, step: step(1), max_step: None };
     assert_eq!(checked_region(&entire, (3840, 2160)), Ok(Region::entire(3840, 2160)));
     let right_half = Region { x: 1920, y: 0, width: 1920, height: 2160 };
     let given = Burst { region: Some(right_half), ..entire };
@@ -25,14 +25,14 @@ fn no_region_is_the_entire_frame_and_a_given_region_is_kept_as_given() {
 #[test]
 fn kept_pixels_of_exactly_4_gib_pass_and_one_more_row_fails() {
     // 32768 * 32768 pixels of 4 bytes is 4 GiB.
-    let burst = Burst { frames: 1, region: None, step: step(1) };
+    let burst = Burst { frames: 1, region: None, step: step(1), max_step: None };
     assert_eq!(checked_region(&burst, (32_768, 32_768)), Ok(Region::entire(32_768, 32_768)));
     let one_row_over = checked_region(&burst, (32_768, 32_769));
     let memory =
         BurstError::Memory { frames: 1, width: 32_768, height: 32_769, bytes: 4_295_098_368 };
     assert_eq!(one_row_over, Err(memory));
     // A step of 2 keeps 16384 * 16385 pixels per frame, so 4 frames need 4295229440 bytes.
-    let stepped = Burst { frames: 4, region: None, step: step(2) };
+    let stepped = Burst { frames: 4, region: None, step: step(2), max_step: None };
     let four_over = checked_region(&stepped, (32_768, 32_769));
     let stepped_memory =
         BurstError::Memory { frames: 4, width: 16_384, height: 16_385, bytes: 4_295_229_440 };

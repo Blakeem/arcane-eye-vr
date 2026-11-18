@@ -1,5 +1,6 @@
 //! The burst step: published frames of one region in order, read as fast as the reader can and kept
-//! in memory, then written as `burst-<i>.png` files and `burst.txt`.
+//! in memory, then written as `burst-<i>.png` files, `burst.txt` and `burst-steps.txt`, the step of
+//! each kept frame from the one before it.
 //!
 //! The capture step before the burst started the heartbeat, so the burst reads at once. A read that
 //! returns a present number the burst kept last is the same frame again, so the burst keeps each
@@ -13,13 +14,17 @@ use viewer_client::frame::Frame;
 use viewer_client::region::Region;
 
 use crate::args::Burst;
+use crate::compare::{self, Limit};
 use crate::folder;
-use crate::pixels;
+use crate::pixels::{self, RgbImage};
 use crate::png_file;
 use crate::steps::{Frames, StepError};
 
 /// The name of the burst's record in the result folder.
 const BURST_FILE: &str = "burst.txt";
+
+/// The name of the burst's steps from each kept frame to the next in the result folder.
+const STEPS_FILE: &str = "burst-steps.txt";
 
 /// The longest wait for the next new frame of a burst.
 const NEW_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
@@ -55,7 +60,7 @@ pub(crate) enum BurstError {
 }
 
 /// Reads `burst.frames` new frames of `burst`'s region of the frames `frames` reads, then writes
-/// them and `burst.txt` into `folder`. Logs the time the reads took.
+/// them, `burst.txt` and `burst-steps.txt` into `folder`. Logs the time the reads took.
 pub(crate) fn step(
     frames: &mut impl Frames,
     burst: &Burst,
@@ -67,7 +72,7 @@ pub(crate) fn step(
     let kept = read_frames(frames, burst, region)?;
     let reads_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     info!(frames = kept.len(), reads_ms, "burst read");
-    write(folder, &kept)
+    write(folder, &kept, burst.max_step)
 }
 
 /// The region `burst` keeps of a frame of `size`, once it lies inside the frame and the kept pixels
@@ -108,17 +113,26 @@ fn read_frames(
     Ok(kept)
 }
 
-/// Writes each kept frame as `burst-0001.png` onward in read order, then `burst.txt`.
-fn write(folder: &Path, kept: &[BurstFrame]) -> Result<(), StepError> {
+/// Writes each kept frame as `burst-0001.png` onward in read order, then `burst.txt` and
+/// `burst-steps.txt`, and fails when a step is above `max_step`.
+fn write(folder: &Path, kept: &[BurstFrame], max_step: Option<Limit>) -> Result<(), StepError> {
+    let mut steps = Vec::new();
+    let mut before: Option<RgbImage> = None;
     for (number, frame) in (1_u32..).zip(kept) {
         let image = pixels::to_rgb(&frame.pixels)?;
         png_file::write(&folder.join(file_name(number)), &image)?;
+        if let Some(before) = &before {
+            steps.push((number, compare::step_difference(before, &image)?));
+        }
+        before = Some(image);
     }
     folder::write(folder, BURST_FILE, &text(kept))?;
-    Ok(())
+    folder::write(folder, STEPS_FILE, &compare::steps_text(&steps))?;
+    Ok(compare::check_steps(&steps, max_step)?)
 }
 
-fn file_name(number: u32) -> String {
+/// The file name of the kept frame `number`, counted from 1 in read order.
+pub(crate) fn file_name(number: u32) -> String {
     format!("burst-{number:04}.png")
 }
 

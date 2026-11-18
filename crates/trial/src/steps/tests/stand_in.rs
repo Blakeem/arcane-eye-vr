@@ -12,6 +12,7 @@ use ipc_layout::camera_line::CameraLine;
 use ipc_layout::game_state_line::Place;
 use ipc_layout::perf_line::PerfSummary;
 use launch::checks::GameRunning;
+use launch::cursor::{ClientPoint, CursorError};
 use launch::direct::Save;
 use launch::recycle::RecycleError;
 use launch::status::WaitError;
@@ -82,6 +83,11 @@ pub(super) struct StandInGame {
     steam_reads: usize,
     /// The time of each pause, in order.
     pub(super) pauses: Vec<Duration>,
+    /// The client size of the game window in the foreground, or `None` when another window is.
+    pub(super) foreground: Option<(i32, i32)>,
+    /// The point of each cursor move that passed, in order.
+    pub(super) cursors: Vec<ClientPoint>,
+    pub(super) desktop: Option<String>,
 }
 
 impl StandInGame {
@@ -105,6 +111,9 @@ impl StandInGame {
             steam_running_reads: Some(0),
             steam_reads: 0,
             pauses: Vec::new(),
+            foreground: Some((1920, 1080)),
+            cursors: Vec::new(),
+            desktop: None,
         }
     }
 
@@ -165,6 +174,23 @@ impl Game for StandInGame {
         let start = self.starts.len().saturating_sub(1);
         self.keys.push((start, self.place_reads));
         Ok(())
+    }
+
+    fn place_cursor(&mut self, point: ClientPoint) -> Result<(), StepError> {
+        let Some((width, height)) = self.foreground else {
+            return Err(CursorError::NotForeground { pid: 7 }.into());
+        };
+        let inside = i32::try_from(point.x).is_ok_and(|x| x < width)
+            && i32::try_from(point.y).is_ok_and(|y| y < height);
+        if !inside {
+            return Err(CursorError::Outside { point, width, height }.into());
+        }
+        self.cursors.push(point);
+        Ok(())
+    }
+
+    fn desktop(&self) -> Option<&str> {
+        self.desktop.as_deref()
     }
 
     fn warm_up(&mut self, time: Duration) {
@@ -231,10 +257,15 @@ impl Game for StandInGame {
 /// The time between two present numbers of the stand-in's region reads.
 pub(super) const PRESENT_INTERVAL: Duration = Duration::from_millis(9);
 
-/// A frame reader that returns 2x1 RGBA frames, or fails its reads, and returns region reads with
-/// the present numbers of its script.
+/// A frame reader that returns its frame, or fails its reads, and returns region reads with the
+/// present numbers of its script.
 pub(super) struct StandInFrames {
     pub(super) fail_reads: bool,
+    /// The frame each read returns, 2x1 RGBA unless a test sets another.
+    pub(super) frame: Frame,
+    /// The count of frame reads that pass before every later one fails, or `None` for no limit.
+    pub(super) reads_before_failure: Option<usize>,
+    frame_reads: usize,
     pub(super) beating: bool,
     /// The frame size the stand-in reports.
     pub(super) size: (u32, u32),
@@ -249,8 +280,12 @@ pub(super) struct StandInFrames {
 
 impl StandInFrames {
     pub(super) fn new(fail_reads: bool) -> Self {
+        let bytes = vec![10, 20, 30, 255, 40, 50, 60, 255];
         Self {
             fail_reads,
+            frame: Frame { width: 2, height: 1, format: PixelFormat::Rgba8, bytes },
+            reads_before_failure: None,
+            frame_reads: 0,
             beating: false,
             size: (8, 4),
             presents: Vec::new(),
@@ -271,11 +306,12 @@ impl Frames for StandInFrames {
         if !self.beating {
             return Err(StepError::Heartbeat(io::Error::other("a read before the heartbeat")));
         }
-        if self.fail_reads {
+        let used_up = self.reads_before_failure.is_some_and(|reads| self.frame_reads >= reads);
+        if self.fail_reads || used_up {
             return Err(ReadError::Timeout(Duration::from_secs(10)).into());
         }
-        let bytes = vec![10, 20, 30, 255, 40, 50, 60, 255];
-        Ok(Frame { width: 2, height: 1, format: PixelFormat::Rgba8, bytes })
+        self.frame_reads = self.frame_reads.saturating_add(1);
+        Ok(self.frame.clone())
     }
 
     fn frame_size(&mut self) -> Result<(u32, u32), StepError> {

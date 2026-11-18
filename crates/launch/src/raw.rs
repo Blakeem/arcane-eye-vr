@@ -1,5 +1,6 @@
 //! The launch crate's unsafe edge: registry reads, the launch token mapping, the Steam URL, the
-//! window close, the key post and the process wait and end.
+//! window close, the key post and the process wait and end. `raw\desktop.rs` holds the desktop
+//! calls, `raw\cursor.rs` the cursor calls and `raw\recycle.rs` the Recycle Bin call.
 
 #![expect(
     unsafe_code,
@@ -49,7 +50,7 @@ const _: () = assert!(TOKEN_MAPPING_SIZE as usize == launch_token::SIZE);
 /// `ShellExecuteW` returns a value above 32 on success and an error code up to 32 otherwise.
 const SHELL_EXECUTE_MAX_ERROR: usize = 32;
 
-/// The exit code of a process that `Process::terminate` ended.
+/// The exit code of a process that `Process::terminate` or a failed desktop start ended.
 pub(crate) const ENDED_EXIT_CODE: u32 = 1;
 
 /// The longest wait `WaitForSingleObject` takes that is not `INFINITE`.
@@ -377,8 +378,14 @@ extern "system" fn collect_window(window: HWND, search: LPARAM) -> BOOL {
     TRUE
 }
 
+pub(crate) mod cursor;
+pub(crate) mod desktop;
 pub(crate) mod recycle;
 
+#[cfg(test)]
+mod cursor_tests;
+#[cfg(test)]
+mod desktop_tests;
 #[cfg(test)]
 mod key_tests;
 #[cfg(test)]

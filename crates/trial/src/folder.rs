@@ -1,5 +1,6 @@
 //! The result folder: its name, its creation, its text files and the text of `trial.txt`.
 
+use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -68,19 +69,24 @@ pub(crate) fn trial_text(options: &Options) -> String {
     let burst_region =
         burst.region.map_or_else(|| "entire frame".to_owned(), |region| region.to_string());
     format!(
-        "name: {}\nmode: {}\nscene: {}\nsave: {}\nwarmup-secs: {}\nperf-lines: {}\n\
-         captures: {}\nburst-frames: {}\nburst-region: {}\nburst-step: {}\nout: {}\ngame-dir: {}\n\
+        "name: {}\nmode: {}\nscene: {}\nsave: {}\nbackground: {}\nwarmup-secs: {}\n\
+         perf-lines: {}\ncaptures: {}\nmax-half-difference: {}\ncursor: {}\nburst-frames: {}\n\
+         burst-region: {}\nburst-step: {}\nmax-burst-step: {}\nout: {}\ngame-dir: {}\n\
          settings-file: {}\ndev-file: {}\nmod-version: {}\n",
         options.name.as_str(),
         settings.mode.as_str(),
         settings.scene.as_str(),
         save,
+        settings.background.as_str(),
         settings.warmup.as_secs(),
         settings.perf_lines,
         settings.captures,
+        or_none(settings.max_half_difference),
+        or_none(settings.cursor),
         burst.frames,
         burst_region,
         burst.step,
+        or_none(burst.max_step),
         settings.out.display(),
         game_dir,
         player_file,
@@ -92,6 +98,11 @@ pub(crate) fn trial_text(options: &Options) -> String {
 /// `path` as text, or `absent` when there is no path.
 fn path_or(path: Option<&Path>, absent: &str) -> String {
     path.map_or_else(|| absent.to_owned(), |path| path.display().to_string())
+}
+
+/// `value` as the command line writes it, or `none` when the command line gave none.
+fn or_none(value: Option<impl fmt::Display>) -> String {
+    value.map_or_else(|| "none".to_owned(), |value| value.to_string())
 }
 
 /// The UTC time `since_epoch` after the Unix epoch as `YYYY-MM-DDTHHMMSSZ`, which sorts by time and
@@ -145,10 +156,12 @@ mod tests {
     use std::time::Duration;
 
     use ipc_layout::launch_token::Mode;
+    use launch::cursor::ClientPoint;
     use viewer_client::region::Region;
 
     use super::{FolderError, create, trial_text, utc_stamp};
-    use crate::args::{Burst, Options, Scene, Settings, TrialName};
+    use crate::args::{Background, Burst, Options, Scene, Settings, TrialName};
+    use crate::compare::Limit;
     use crate::test_dir;
 
     fn stamp(seconds: u64) -> String {
@@ -200,14 +213,18 @@ mod tests {
     fn the_trial_text_names_every_option_and_the_mod_version() {
         let region = Region { x: 1920, y: 0, width: 1920, height: 2160 };
         let step = NonZeroU32::new(2).expect("a nonzero step");
+        let max_step = Limit::new(1.25);
         let settings = Settings {
             mode: Mode::Vr,
             scene: Scene::Level,
             save: Some("Tav-22151264102__AutoSave_0".to_owned()),
+            background: Background::On,
             warmup: Duration::from_secs(30),
             perf_lines: 4,
             captures: 2,
-            burst: Burst { frames: 300, region: Some(region), step },
+            max_half_difference: Limit::new(5.0),
+            cursor: Some(ClientPoint { x: 960, y: 540 }),
+            burst: Burst { frames: 300, region: Some(region), step, max_step },
             out: PathBuf::from(r"C:\results"),
             game_dir: Some(PathBuf::from(r"D:\Games\Baldurs Gate 3")),
             player_file: Some(PathBuf::from(r"C:\trials\ipd-60.toml")),
@@ -216,10 +233,12 @@ mod tests {
         let name = TrialName::new("menu").expect("a valid name");
         let expected = format!(
             "name: menu\nmode: vr\nscene: level\nsave: Tav-22151264102__AutoSave_0\n\
-             warmup-secs: 30\nperf-lines: 4\ncaptures: 2\n\
-             burst-frames: 300\nburst-region: 1920,0,1920,2160\nburst-step: 2\nout: C:\\results\n\
-             game-dir: D:\\Games\\Baldurs Gate 3\nsettings-file: C:\\trials\\ipd-60.toml\n\
-             dev-file: C:\\trials\\left.toml\nmod-version: {}\n",
+             background: on\nwarmup-secs: 30\nperf-lines: 4\ncaptures: 2\n\
+             max-half-difference: 5\ncursor: 960,540\nburst-frames: 300\n\
+             burst-region: 1920,0,1920,2160\nburst-step: 2\nmax-burst-step: 1.25\n\
+             out: C:\\results\ngame-dir: D:\\Games\\Baldurs Gate 3\n\
+             settings-file: C:\\trials\\ipd-60.toml\ndev-file: C:\\trials\\left.toml\n\
+             mod-version: {}\n",
             env!("CARGO_PKG_VERSION")
         );
         assert_eq!(trial_text(&Options { name: name.clone(), settings }), expected);
@@ -228,7 +247,9 @@ mod tests {
         let latest = Settings { scene: Scene::Level, ..Settings::default() };
         let latest = trial_text(&Options { name, settings: latest });
         assert!(latest.contains("\nscene: level\nsave: latest\n"), "{latest}");
-        let defaults = "\nburst-frames: 0\nburst-region: entire frame\nburst-step: 1\n\
+        let defaults = "\nbackground: off\nwarmup-secs: 20\nperf-lines: 3\ncaptures: 1\n\
+                        max-half-difference: none\ncursor: none\nburst-frames: 0\n\
+                        burst-region: entire frame\nburst-step: 1\nmax-burst-step: none\n\
                         out: trial-results\ngame-dir: found through Steam\nsettings-file: none\n\
                         dev-file: none\n";
         assert!(steam.contains(defaults), "{steam}");

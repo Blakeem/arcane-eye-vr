@@ -1,8 +1,9 @@
-//! Starts and stops the game with a launch token. The launch app uses it.
+//! Starts and stops the game with a launch token. The launch app and the trial runner use it.
 //!
 //! The Steam start opens the game's Steam URL and needs a Play click in the Larian launcher. The direct
-//! start runs `bin\bg3_dx11.exe` itself. The pure decisions are in `decide.rs` and `vdf.rs`. `raw.rs`
-//! and the files under `raw\` hold every unsafe Windows call.
+//! start runs `bin\bg3_dx11.exe` itself. The trial runner also runs on a desktop of its own
+//! (`desktop.rs`) and moves the cursor in the game window (`cursor.rs`). The pure decisions are in
+//! `decide.rs` and `vdf.rs`. `raw.rs` and the files under `raw\` hold every unsafe Windows call.
 
 /// Baldur's Gate 3's Steam app id, as a literal so `concat!` can build the names that hold it.
 macro_rules! steam_app_id {
@@ -12,7 +13,9 @@ macro_rules! steam_app_id {
 }
 
 pub mod checks;
+pub mod cursor;
 mod decide;
+pub mod desktop;
 pub mod direct;
 pub mod game_dir;
 pub mod key;

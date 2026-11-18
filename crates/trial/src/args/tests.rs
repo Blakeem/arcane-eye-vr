@@ -6,9 +6,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ipc_layout::launch_token::Mode;
+use launch::cursor::ClientPoint;
 use viewer_client::region::Region;
 
-use super::{ArgsError, Burst, Options, Scene, Settings, TrialName, USAGE, parse};
+use super::{ArgsError, Background, Burst, Options, Scene, Settings, TrialName, USAGE, parse};
+use crate::compare::Limit;
 
 fn args(list: &[&str]) -> Vec<OsString> {
     list.iter().map(OsString::from).collect()
@@ -28,10 +30,13 @@ fn a_name_alone_takes_every_default() {
         mode: Mode::DesktopStereo,
         scene: Scene::Title,
         save: None,
+        background: Background::Off,
         warmup: Duration::from_secs(20),
         perf_lines: 3,
         captures: 1,
-        burst: Burst { frames: 0, region: None, step: step(1) },
+        max_half_difference: None,
+        cursor: None,
+        burst: Burst { frames: 0, region: None, step: step(1), max_step: None },
         out: PathBuf::from("trial-results"),
         game_dir: None,
         player_file: None,
@@ -74,22 +79,41 @@ fn each_option_sets_its_setting() {
         "1920,0,1920,2160",
         "--burst-frames",
         "300",
+        "--max-burst-step",
+        "1.5",
+        "--cursor",
+        "960,540",
+        "--background",
+        "--max-half-difference",
+        "5",
     ]);
     let region = Region { x: 1920, y: 0, width: 1920, height: 2160 };
     let expected = Settings {
         mode: Mode::Vr,
         scene: Scene::Level,
         save: Some("Tav-22151264102__AutoSave_0".to_owned()),
+        background: Background::On,
         warmup: Duration::ZERO,
         perf_lines: 5,
         captures: 9999,
-        burst: Burst { frames: 300, region: Some(region), step: step(3) },
+        max_half_difference: Limit::new(5.0),
+        cursor: Some(ClientPoint { x: 960, y: 540 }),
+        burst: Burst {
+            frames: 300,
+            region: Some(region),
+            step: step(3),
+            max_step: Limit::new(1.5),
+        },
         out: PathBuf::from(r"C:\results"),
         game_dir: Some(PathBuf::from(r"D:\Games\Baldurs Gate 3")),
         player_file: Some(PathBuf::from(r"C:\trials\ipd 60.toml")),
         dev_file: Some(PathBuf::from(r"C:\trials\left.toml")),
     };
     assert_eq!(parse(line), Ok(Options { name: name("Menu-2"), settings: expected }));
+}
+
+#[test]
+fn the_desktop_stereo_mode_has_its_own_name() {
     let desktop = parse(args(&["--name", "a", "--mode", "desktop-stereo"])).expect("a trial");
     assert_eq!(desktop.settings.mode, Mode::DesktopStereo);
 }
@@ -188,7 +212,7 @@ fn the_burst_frames_and_step_take_each_bound_and_reject_the_number_past_it() {
     };
     let frames = |value: &str| parse(args(&["--name", "a", "--burst-frames", value]));
     let burst = |line: Result<Options, ArgsError>| line.map(|options| options.settings.burst);
-    let default = Burst { frames: 0, region: None, step: step(1) };
+    let default = Burst { frames: 0, region: None, step: step(1), max_step: None };
     let one_frame = Burst { frames: 1, ..default };
     assert_eq!(burst(frames("0")), Ok(default));
     assert_eq!(burst(frames("2000")), Ok(Burst { frames: 2000, ..default }));
@@ -251,9 +275,70 @@ fn a_burst_region_or_step_without_burst_frames_above_0_is_an_error_that_names_it
     assert_eq!(line(&[&region[..], &no_frames[..]].concat()), without("--burst-region"));
     let burst = line(&[&stepped[..], &one_frame[..]].concat());
     let burst = burst.map(|options| options.settings.burst);
-    assert_eq!(burst, Ok(Burst { frames: 1, region: None, step: step(2) }));
+    assert_eq!(burst, Ok(Burst { frames: 1, region: None, step: step(2), max_step: None }));
+    assert_eq!(line(&["--max-burst-step", "1"]), without("--max-burst-step"));
     let message = ArgsError::BurstWithoutFrames("--burst-step").to_string();
     assert_eq!(message, "trial got --burst-step, which needs --burst-frames above 0");
+}
+
+#[test]
+fn background_takes_no_value_and_may_appear_once() {
+    let background = |line: &[&str]| parse(args(line)).map(|options| options.settings.background);
+    assert_eq!(background(&["--name", "a"]), Ok(Background::Off));
+    assert_eq!(background(&["--background", "--name", "a"]), Ok(Background::On));
+    assert_eq!(background(&["--name", "a", "--background"]), Ok(Background::On));
+    let twice = ["--name", "a", "--background", "--background"];
+    assert_eq!(background(&twice), Err(ArgsError::Repeated("--background")));
+    let valued = ["--name", "a", "--background", "on"];
+    assert_eq!(background(&valued), Err(ArgsError::Unknown("on".to_owned())));
+}
+
+#[test]
+fn a_limit_is_a_decimal_number_from_0_up() {
+    let limits = |option: &str, value: &str| {
+        let line = ["--name", "a", "--burst-frames", "2", option, value];
+        parse(args(&line))
+            .map(|options| (options.settings.max_half_difference, options.settings.burst.max_step))
+    };
+    assert_eq!(limits("--max-half-difference", "2.7"), Ok((Limit::new(2.7), None)));
+    assert_eq!(limits("--max-half-difference", "0"), Ok((Limit::new(0.0), None)));
+    assert_eq!(limits("--max-burst-step", "1.09"), Ok((None, Limit::new(1.09))));
+    for bad in ["-1", "NaN", "inf", "two", "", "1,5"] {
+        let error = ArgsError::BadLimit { option: "--max-burst-step", value: bad.to_owned() };
+        assert_eq!(limits("--max-burst-step", bad), Err(error), "{bad}");
+    }
+    let message =
+        ArgsError::BadLimit { option: "--max-half-difference", value: "-1".to_owned() }.to_string();
+    assert_eq!(
+        message,
+        "--max-half-difference takes a decimal number from 0 up, such as 2.5, not \"-1\""
+    );
+}
+
+#[test]
+fn a_cursor_position_is_two_whole_numbers() {
+    let cursor = |value: &str| {
+        parse(args(&["--name", "a", "--cursor", value])).map(|options| options.settings.cursor)
+    };
+    assert_eq!(cursor("0,0"), Ok(Some(ClientPoint { x: 0, y: 0 })));
+    assert_eq!(cursor("3839,2159"), Ok(Some(ClientPoint { x: 3839, y: 2159 })));
+    for bad in ["", "1", "1,2,3", "-1,2", "1.5,2", "a,b", "1, 2", "4294967296,0"] {
+        assert_eq!(cursor(bad), Err(ArgsError::BadCursor(bad.to_owned())), "{bad}");
+    }
+    let message = ArgsError::BadCursor("1".to_owned()).to_string();
+    assert_eq!(message, "--cursor takes <x>,<y> in whole pixels, not \"1\"");
+}
+
+#[test]
+fn a_half_difference_limit_or_a_cursor_without_captures_is_an_error_that_names_it() {
+    let line = |options: &[&str]| {
+        parse(args(&[&["--name", "a", "--captures", "0"][..], options].concat()))
+    };
+    let without = |option: &'static str| Err(ArgsError::WithoutCaptures(option));
+    assert_eq!(line(&["--max-half-difference", "3"]), without("--max-half-difference"));
+    assert_eq!(line(&["--cursor", "1,1"]), without("--cursor"));
+    let message = ArgsError::WithoutCaptures("--cursor").to_string();
+    assert_eq!(message, "trial got --cursor, which needs --captures above 0");
 }
 
 #[test]
@@ -286,6 +371,10 @@ fn the_usage_names_every_option() {
         "--game-dir",
         "--settings-file",
         "--dev-file",
+        "--background",
+        "--max-half-difference",
+        "--max-burst-step",
+        "--cursor",
     ];
     for option in options {
         assert!(USAGE.contains(option), "{option}: {USAGE}");

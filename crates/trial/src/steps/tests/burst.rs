@@ -12,6 +12,7 @@ use viewer_client::region::Region;
 use super::options;
 use super::stand_in::{StandInFrames, StandInGame};
 use crate::args::Burst;
+use crate::compare::Limit;
 use crate::steps::{Step, trial};
 use crate::test_dir;
 
@@ -48,9 +49,12 @@ fn a_burst_keeps_n_frames_in_read_order_each_present_once_and_counts_a_gap_as_mi
     let region = Region { x: 4, y: 0, width: 4, height: 4 };
     let mut frames = StandInFrames::new(false);
     frames.presents = vec![10, 11, 11, 13, 14, 15];
-    let burst = Burst { frames: 4, region: Some(region), step: step(2) };
+    let burst = Burst { frames: 4, region: Some(region), step: step(2), max_step: None };
     let (game, result) = burst_trial(folder, burst, &mut frames);
     assert!(result.ends_with(&format!("{}outcome: passed\n", tail("passed"))), "{result}");
+    // Every byte of a stand-in frame is the low byte of its present number.
+    let steps = fs::read_to_string(folder.join("burst-steps.txt")).expect("read burst-steps.txt");
+    assert_eq!(steps, "2 1.00\n3 2.00\n4 1.00\n");
     assert_eq!(game.ran.last_chunk(), Some(&[Step::Close, Step::CopyLog]));
     // The stand-in reads present n at n * 9 ms.
     let record = "\
@@ -87,7 +91,7 @@ fn a_failed_capture_runs_no_burst_step_and_the_game_still_closes() {
     let dir = test_dir("burst-after-failed-capture");
     let mut frames = StandInFrames::new(true);
     frames.presents = vec![1, 2];
-    let burst = Burst { frames: 2, region: None, step: step(1) };
+    let burst = Burst { frames: 2, region: None, step: step(1), max_step: None };
     let (game, result) = burst_trial(dir.path(), burst, &mut frames);
     let capture = "capture: failed: no new frame arrived within 10s\n";
     let ending = format!("{capture}close: passed\ncopy-log: passed\noutcome: failed\n");
@@ -103,7 +107,7 @@ fn a_region_outside_the_frame_fails_the_burst_before_its_first_read_and_the_game
     let mut frames = StandInFrames::new(false);
     frames.presents = vec![1, 2];
     let region = Region { x: 6, y: 0, width: 4, height: 4 };
-    let burst = Burst { frames: 2, region: Some(region), step: step(1) };
+    let burst = Burst { frames: 2, region: Some(region), step: step(1), max_step: None };
     let (game, result) = burst_trial(dir.path(), burst, &mut frames);
     let cause = "failed: the burst region 6,0,4,4 does not lie inside the 8x4 frame";
     assert!(result.ends_with(&format!("{}outcome: failed\n", tail(cause))), "{result}");
@@ -117,7 +121,7 @@ fn kept_pixels_past_4_gib_fail_the_burst_before_its_first_read() {
     let mut frames = StandInFrames::new(false);
     frames.size = (40_000, 15_000);
     frames.presents = vec![1, 2];
-    let burst = Burst { frames: 2, region: None, step: step(1) };
+    let burst = Burst { frames: 2, region: None, step: step(1), max_step: None };
     let (_game, result) = burst_trial(dir.path(), burst, &mut frames);
     // 40000 * 15000 pixels * 4 bytes * 2 frames.
     let cause = "failed: 2 frames of 40000x15000 kept pixels need 4800000000 bytes, more than the \
@@ -132,7 +136,7 @@ fn no_new_frame_for_5_seconds_fails_the_burst_writes_no_burst_file_and_the_game_
     let folder = dir.path();
     let mut frames = StandInFrames::new(false);
     frames.presents = vec![1, 2];
-    let burst = Burst { frames: 3, region: None, step: step(1) };
+    let burst = Burst { frames: 3, region: None, step: step(1), max_step: None };
     let (game, result) = burst_trial(folder, burst, &mut frames);
     let cause = "failed: no new frame arrived within 5s";
     assert!(result.ends_with(&format!("{}outcome: failed\n", tail(cause))), "{result}");
@@ -141,4 +145,30 @@ fn no_new_frame_for_5_seconds_fails_the_burst_writes_no_burst_file_and_the_game_
     assert!(!folder.join("burst.txt").exists());
     assert!(!folder.join("burst-0001.png").exists());
     assert_eq!(game.ran.last_chunk(), Some(&[Step::Close, Step::CopyLog]));
+}
+
+#[test]
+fn a_step_above_the_max_burst_step_fails_the_burst_after_its_files_are_written() {
+    let dir = test_dir("burst-max-step");
+    let folder = dir.path();
+    let presents = vec![10, 11, 13, 14];
+    let mut frames = StandInFrames::new(false);
+    frames.presents.clone_from(&presents);
+    let max_step = Limit::new(1.5);
+    let burst = Burst { frames: 4, region: None, step: step(1), max_step };
+    let (game, result) = burst_trial(folder, burst, &mut frames);
+    let cause = "failed: the burst frame burst-0003.png differs from the kept frame before it by \
+                 2.00, above --max-burst-step 1.5";
+    assert!(result.ends_with(&format!("{}outcome: failed\n", tail(cause))), "{result}");
+    let steps = fs::read_to_string(folder.join("burst-steps.txt")).expect("read burst-steps.txt");
+    assert_eq!(steps, "2 1.00\n3 2.00\n4 1.00\n");
+    assert!(folder.join("burst-0004.png").is_file() && folder.join("burst.txt").is_file());
+    assert_eq!(game.ran.last_chunk(), Some(&[Step::Close, Step::CopyLog]));
+    let equal_dir = test_dir("burst-max-step-equal");
+    let mut equal_frames = StandInFrames::new(false);
+    equal_frames.presents = presents;
+    let equal = Burst { max_step: Limit::new(2.0), ..burst };
+    let (_equal_game, equal_result) = burst_trial(equal_dir.path(), equal, &mut equal_frames);
+    let passed = equal_result.ends_with("outcome: passed\n");
+    assert!(passed, "a step equal to the limit passes: {equal_result}");
 }

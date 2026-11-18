@@ -1,4 +1,5 @@
-//! The trial's report: how each step that ran ended, the text of `result.txt` and the exit code.
+//! The trial's report: the trial desktop, how each step that ran ended, the text of `result.txt`
+//! and the exit code.
 
 use std::process::ExitCode;
 use std::time::Duration;
@@ -15,13 +16,20 @@ enum Outcome {
     Failed { cause: String },
 }
 
-/// The steps that ran and how each ended.
-#[derive(Debug, Default)]
+/// The trial desktop the game ran on, the steps that ran and how each ended.
+#[derive(Debug)]
 pub(crate) struct Report {
+    /// `None` for the desktop the trial started on.
+    desktop: Option<String>,
     steps: Vec<(Step, Outcome)>,
 }
 
 impl Report {
+    /// An empty report of a trial whose game runs on `desktop`.
+    pub(crate) fn on_desktop(desktop: Option<&str>) -> Self {
+        Self { desktop: desktop.map(str::to_owned), steps: Vec::new() }
+    }
+
     /// Records the result of `step` and returns whether it passed.
     pub(crate) fn record(&mut self, step: Step, result: Result<(), StepError>) -> bool {
         let outcome = match result {
@@ -61,23 +69,27 @@ impl Report {
         if self.passed() { ExitCode::SUCCESS } else { ExitCode::from(TRIAL_FAILED) }
     }
 
-    /// The text of `result.txt`: one line per step that ran, then the outcome.
+    /// The text of `result.txt`: the trial desktop when the game ran on one, one line per step that
+    /// ran, then the outcome.
     pub(crate) fn text(&self) -> String {
-        let mut lines: Vec<String> = self
-            .steps
-            .iter()
-            .map(|(step, outcome)| match outcome {
-                Outcome::Passed => format!("{}: passed\n", step.as_str()),
-                Outcome::Forced { waited } => format!(
-                    "{}: passed, forced: the game still ran {waited:?} after the close request, so \
-                     it was ended\n",
-                    step.as_str()
-                ),
-                Outcome::Failed { cause } => format!("{}: failed: {cause}\n", step.as_str()),
-            })
-            .collect();
+        let desktop = self.desktop.iter().map(|name| format!("desktop: {name}\n"));
+        let steps = self.steps.iter().map(|(step, outcome)| step_line(*step, outcome));
+        let mut lines: Vec<String> = desktop.chain(steps).collect();
         let outcome = if self.passed() { "passed" } else { "failed" };
         lines.push(format!("outcome: {outcome}\n"));
         lines.concat()
+    }
+}
+
+/// The line of `result.txt` for `step`, which ended with `outcome`.
+fn step_line(step: Step, outcome: &Outcome) -> String {
+    match outcome {
+        Outcome::Passed => format!("{}: passed\n", step.as_str()),
+        Outcome::Forced { waited } => format!(
+            "{}: passed, forced: the game still ran {waited:?} after the close request, so it was \
+             ended\n",
+            step.as_str()
+        ),
+        Outcome::Failed { cause } => format!("{}: failed: {cause}\n", step.as_str()),
     }
 }

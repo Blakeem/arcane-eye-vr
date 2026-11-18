@@ -1,5 +1,6 @@
 //! The steps against stand-ins for the game and the frame reader.
 
+mod background;
 mod burst;
 mod level;
 mod stand_in;
@@ -11,27 +12,21 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use ipc_layout::camera_line::{CameraEye, CameraLine};
-use ipc_layout::launch_token::Mode;
 use launch::direct::Save;
 
 use self::stand_in::{Exits, LOG_TEXT, StandInFrames, StandInGame};
 use super::{Closed, Report, Step, cause, trial};
-use crate::args::{Burst, Options, Scene, Settings, TrialName};
+use crate::args::{Options, Settings, TrialName};
 use crate::test_dir;
 
 fn options(out: &Path) -> Options {
     let settings = Settings {
-        mode: Mode::DesktopStereo,
-        scene: Scene::Title,
-        save: None,
         warmup: Duration::from_secs(7),
         perf_lines: 2,
         captures: 2,
-        burst: Burst::default(),
         out: out.to_path_buf(),
         game_dir: Some(PathBuf::from(r"D:\Game")),
-        player_file: None,
-        dev_file: None,
+        ..Settings::default()
     };
     Options { name: TrialName::new("menu").expect("a valid name"), settings }
 }
@@ -65,6 +60,7 @@ fn a_trial_of_0_perf_lines_and_0_captures_runs_no_perf_step_and_writes_no_frame(
     assert_eq!(result, expected);
     assert!(!game.ran.contains(&Step::Perf), "{:?}", game.ran);
     assert!(!folder.join("perf.txt").exists() && !folder.join("frame-0001.png").exists());
+    assert!(!folder.join("halves.txt").exists(), "a trial with no capture has no half difference");
     assert!(frames.beating, "the capture step starts the heartbeat a burst needs");
 }
 
@@ -255,9 +251,10 @@ fn a_passed_trial_writes_every_file_of_the_result_folder() {
     let (report, printed, result) = run_trial(folder, &mut game, &mut frames);
     let read = |file: &str| fs::read_to_string(folder.join(file)).expect("read a result file");
     let trial_text = format!(
-        "name: menu\nmode: desktop-stereo\nscene: title\nsave: none\nwarmup-secs: 7\n\
-         perf-lines: 2\ncaptures: 2\nburst-frames: 0\nburst-region: entire frame\nburst-step: 1\nout: {}\n\
-         game-dir: D:\\Game\nsettings-file: none\ndev-file: none\nmod-version: {}\n",
+        "name: menu\nmode: desktop-stereo\nscene: title\nsave: none\nbackground: off\n\
+         warmup-secs: 7\nperf-lines: 2\ncaptures: 2\nmax-half-difference: none\ncursor: none\n\
+         burst-frames: 0\nburst-region: entire frame\nburst-step: 1\nmax-burst-step: none\n\
+         out: {}\ngame-dir: D:\\Game\nsettings-file: none\ndev-file: none\nmod-version: {}\n",
         folder.display(),
         env!("CARGO_PKG_VERSION")
     );
@@ -277,6 +274,8 @@ dropped lines=3
     assert_eq!(read("perf.txt"), perf_text);
     assert_eq!(read("camera.txt"), "none\n", "a window with no camera line");
     assert_eq!(read("arcane-eye-vr.log"), LOG_TEXT);
+    // A stand-in frame's left pixel is 10, 20, 30 and its right pixel 40, 50, 60.
+    assert_eq!(read("halves.txt"), "frame-0001.png 30.00\nframe-0002.png 30.00\n");
     assert!(folder.join("frame-0001.png").is_file());
     assert!(folder.join("frame-0002.png").is_file());
     assert!(!folder.join("frame-0003.png").exists());

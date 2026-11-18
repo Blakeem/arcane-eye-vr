@@ -6,7 +6,9 @@
 //! game and writes `<out>/<UTC time>-<name>/`. The game's root folder is `home` in that folder.
 //! With `--scene level`, the trial's session posts a key on the title screen and waits until the
 //! latest save's level runs. A priming session first reaches the main menu and closes when the game
-//! would refuse that load (`level.rs`).
+//! would refuse that load (`level.rs`). With `--background`, it runs a copy of itself and the game
+//! on a Windows desktop of its own (`background.rs`). `compare.rs` computes the half difference of
+//! each captured frame and the step of each burst frame.
 //! `steps.rs` runs the steps against two traits, and `live.rs` drives the game and the viewer link
 //! through the `launch` and `viewer-client` crates. It exits with 0 when every step passed, 1 when a
 //! step failed or the result could not be recorded, and 2 for a bad command line.
@@ -14,7 +16,9 @@
 #![forbid(unsafe_code)]
 
 mod args;
+mod background;
 mod burst;
+mod compare;
 mod folder;
 mod home;
 mod level;
@@ -29,14 +33,17 @@ mod report;
 mod steps;
 
 use std::env;
+use std::error::Error;
 use std::io::{self, Write as _};
 use std::process::ExitCode;
 use std::time::SystemTime;
 
 use diag::logging::{self, LogError, LogName};
+use launch::desktop;
 use tracing::{dispatcher, error};
 
-use crate::args::{ArgsError, Options, USAGE};
+use crate::args::{ArgsError, Background, Options, USAGE};
+use crate::background::Role;
 use crate::folder::FolderError;
 use crate::live::{LiveFrames, LiveGame};
 use crate::steps::{TRIAL_FAILED, TrialError};
@@ -60,14 +67,16 @@ fn main() -> ExitCode {
         Ok(options) => options,
         Err(error) => return report_usage(&error),
     };
-    match run(&options) {
+    let desktop = match options.settings.background {
+        Background::Off => None,
+        Background::On => match background::role(desktop::startup_desktop().as_deref()) {
+            Role::RunSteps(name) => Some(name),
+            Role::StartCopy => return run_copy(),
+        },
+    };
+    match run(&options, desktop) {
         Ok(code) => code,
-        Err(failure) => {
-            // A failed write to stderr leaves the exit code as the failure's only record.
-            match writeln!(io::stderr(), "trial: {}", steps::cause(&failure)) {
-                Ok(()) | Err(_) => ExitCode::from(TRIAL_FAILED),
-            }
-        }
+        Err(failure) => report_failure(&failure),
     }
 }
 
@@ -78,12 +87,28 @@ fn report_usage(error: &ArgsError) -> ExitCode {
     }
 }
 
-/// Creates the result folder, logs the trial into it and runs the steps.
-fn run(options: &Options) -> Result<ExitCode, Failure> {
+fn report_failure(failure: &dyn Error) -> ExitCode {
+    // A failed write to stderr leaves the exit code as the failure's only record.
+    match writeln!(io::stderr(), "trial: {}", steps::cause(failure)) {
+        Ok(()) | Err(_) => ExitCode::from(TRIAL_FAILED),
+    }
+}
+
+/// Runs a copy of this trial on a desktop of its own and exits with the copy's exit code.
+fn run_copy() -> ExitCode {
+    match background::run_copy() {
+        Ok(code) => ExitCode::from(code),
+        Err(failure) => report_failure(&failure),
+    }
+}
+
+/// Creates the result folder, logs the trial into it and runs the steps with the game on
+/// `desktop`, the trial desktop this process started on, or `None`.
+fn run(options: &Options, desktop: Option<String>) -> Result<ExitCode, Failure> {
     let since_epoch = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
     let folder = folder::create(&options.settings.out, &options.name, since_epoch)?;
     let logging = logging::start(&folder, LogName::Trial)?;
-    let mut game = LiveGame::new(&options.settings);
+    let mut game = LiveGame::new(&options.settings, desktop);
     let mut frames = LiveFrames::new();
     let report = dispatcher::with_default(&logging.dispatch, || {
         let report =

@@ -9,6 +9,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 use ipc_layout::game_state_line::Place;
+use launch::cursor::ClientPoint;
 use launch::direct::Save;
 use launch::registry::{Hive, RegistryError, RegistryValue};
 use launch::stop::StopError;
@@ -94,7 +95,7 @@ fn a_close_that_cannot_open_the_game_fails_with_the_open_error() {
 
 #[test]
 fn a_step_whose_earlier_step_did_not_pass_names_that_step() {
-    let mut game = LiveGame::new(&Settings::default());
+    let mut game = LiveGame::new(&Settings::default(), None);
     let start = game.start(Path::new(r"C:\home"), &Save::NoLoad);
     assert!(matches!(start, Err(StepError::Needs(Step::Check))));
     assert!(matches!(game.wait_first_present(), Err(StepError::Needs(Step::Token))));
@@ -108,10 +109,20 @@ fn a_step_whose_earlier_step_did_not_pass_names_that_step() {
 }
 
 #[test]
-fn the_place_and_the_key_need_the_start() {
-    let mut game = LiveGame::new(&Settings::default());
+fn the_place_the_key_and_the_cursor_need_the_start() {
+    let mut game = LiveGame::new(&Settings::default(), None);
     assert!(matches!(game.place(), Err(StepError::Needs(Step::Start))));
     assert!(matches!(game.post_key(), Err(StepError::Needs(Step::Start))));
+    let cursor = game.place_cursor(ClientPoint { x: 0, y: 0 });
+    assert!(matches!(cursor, Err(StepError::Needs(Step::Start))));
+}
+
+#[test]
+fn the_game_runs_on_the_desktop_the_trial_started_on() {
+    let on_input = LiveGame::new(&Settings::default(), None);
+    assert_eq!(on_input.desktop(), None);
+    let on_trial = LiveGame::new(&Settings::default(), Some("arcane-eye-trial-7".to_owned()));
+    assert_eq!(on_trial.desktop(), Some("arcane-eye-trial-7"));
 }
 
 #[test]
@@ -122,7 +133,7 @@ fn the_place_comes_from_the_game_state_lines_of_the_core_log_in_the_home_log_fol
     let line = "2026-11-14T09:12:03.418 INFO  thread=1 arcane_eye_core::game_state \
                 msg=\"game state\" place=menu state_id=7\n";
     fs::write(log_dir.join("arcane-eye-vr.log"), line).expect("write");
-    let mut game = LiveGame::new(&Settings::default());
+    let mut game = LiveGame::new(&Settings::default(), None);
     let at = SystemTime::UNIX_EPOCH;
     game.game = Some(Started { child: exited_game(), at, log_dir, places: None });
     assert_eq!(game.place().expect("a place"), Some(Place::Menu));
@@ -133,7 +144,7 @@ fn the_place_comes_from_the_game_state_lines_of_the_core_log_in_the_home_log_fol
 fn a_place_read_with_no_core_log_names_the_log_folder() {
     let dir = test_dir("home-place-no-log");
     let log_dir = dir.path().join(r"home\logs");
-    let mut game = LiveGame::new(&Settings::default());
+    let mut game = LiveGame::new(&Settings::default(), None);
     let at = SystemTime::UNIX_EPOCH;
     game.game = Some(Started { child: exited_game(), at, log_dir: log_dir.clone(), places: None });
     let error = game.place().expect_err("no core log");
@@ -159,7 +170,7 @@ fn the_core_log_and_its_copy_come_from_the_home_log_folder() {
     fs::create_dir_all(&log_dir).expect("create the home log folder");
     fs::write(log_dir.join("arcane-eye-vr.log"), "the core's session log\n").expect("write");
     let started = SystemTime::UNIX_EPOCH;
-    let mut game = LiveGame::new(&Settings::default());
+    let mut game = LiveGame::new(&Settings::default(), None);
     let child = exited_game();
     game.game = Some(Started { child, at: started, log_dir: log_dir.clone(), places: None });
     assert_eq!(game.core_log().expect("the core log"), log_dir.join("arcane-eye-vr.log"));
@@ -170,7 +181,7 @@ fn the_core_log_and_its_copy_come_from_the_home_log_folder() {
 
 #[test]
 fn a_game_that_exited_reports_its_exit_status_and_passes_the_close() {
-    let mut game = LiveGame::new(&Settings::default());
+    let mut game = LiveGame::new(&Settings::default(), None);
     let log_dir = PathBuf::from(r"C:\home\logs");
     let child = exited_game();
     game.game = Some(Started { child, at: SystemTime::now(), log_dir, places: None });

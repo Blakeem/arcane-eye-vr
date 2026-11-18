@@ -12,6 +12,7 @@ use std::time::Duration;
 use diag::error_chain;
 use ipc_layout::game_state_line::Place;
 use launch::checks::{GameRunning, RuntimeError};
+use launch::cursor::{ClientPoint, CursorError};
 use launch::direct::{Save, StartError};
 use launch::game_dir::GameDirError;
 use launch::status::WaitError;
@@ -22,7 +23,9 @@ use viewer_client::frame::{Frame, ReadError};
 use viewer_client::region::Region;
 
 use crate::args::{Options, Scene, Settings};
+use crate::background::{self, Refused};
 use crate::burst::{self, BurstError, BurstFrame};
+use crate::compare::CompareError;
 use crate::folder::{self, FolderError, RESULT_FILE, TRIAL_FILE};
 use crate::home::{self, HOME_FOLDER, HomeError};
 use crate::level::{self, WaitFailed};
@@ -109,6 +112,10 @@ pub(crate) trait Game {
     fn clear_mod_check_folder(&mut self) -> Result<(), StepError>;
     /// Posts the key that the "Press any key" screen takes to the game's visible windows.
     fn post_key(&mut self) -> Result<(), StepError>;
+    /// Moves the cursor to `point` in the client area of the game window in the foreground.
+    fn place_cursor(&mut self, point: ClientPoint) -> Result<(), StepError>;
+    /// The trial desktop the game runs on, or `None` for the desktop the trial started on.
+    fn desktop(&self) -> Option<&str>;
     /// Waits `time`.
     fn warm_up(&mut self, time: Duration);
     /// The game's exit status once it exited, or `None` while it runs.
@@ -148,6 +155,8 @@ pub(crate) trait Frames {
 pub(crate) enum StepError {
     #[error(transparent)]
     GameRunning(#[from] GameRunning),
+    #[error(transparent)]
+    Refused(#[from] Refused),
     #[error(transparent)]
     GameDir(#[from] GameDirError),
     #[error("the game's bin folder {} lacks {}", bin.display(), files.join(" and "))]
@@ -197,6 +206,10 @@ pub(crate) enum StepError {
     #[error(transparent)]
     Png(#[from] PngError),
     #[error(transparent)]
+    Cursor(#[from] CursorError),
+    #[error(transparent)]
+    Compare(#[from] CompareError),
+    #[error(transparent)]
     Burst(#[from] BurstError),
     #[error(transparent)]
     Stop(#[from] StopError),
@@ -237,7 +250,7 @@ pub(crate) fn trial(
 /// the log copy run whatever failed before them.
 fn run(options: &Options, folder: &Path, game: &mut impl Game, frames: &mut impl Frames) -> Report {
     let settings = &options.settings;
-    let mut report = Report::default();
+    let mut report = Report::on_desktop(game.desktop());
     let started = report.record(Step::Check, check(settings, game))
         && primed(&mut report, settings, folder, game)
         && report.record(Step::Token, game.create_token())
@@ -270,8 +283,10 @@ pub(crate) fn wait_steam_cleared(game: &mut impl Game) {
     }
 }
 
-/// Checks the settings files the command line gives, then the game.
+/// Checks the options a background trial refuses, the settings files the command line gives, then
+/// the game.
 fn check(settings: &Settings, game: &mut impl Game) -> Result<(), StepError> {
+    background::refuse(settings)?;
     home::check(settings)?;
     game.check()
 }
@@ -328,8 +343,11 @@ fn run_in_game(
             return;
         }
     }
-    let capture = while_running(game, Step::Capture, |_game| {
-        write::capture_step(frames, settings.captures, folder)
+    let capture = while_running(game, Step::Capture, |game| {
+        if let Some(point) = settings.cursor {
+            game.place_cursor(point)?;
+        }
+        write::capture_step(frames, settings, folder)
     });
     if !report.record(Step::Capture, capture) || settings.burst.frames == 0 {
         return;
