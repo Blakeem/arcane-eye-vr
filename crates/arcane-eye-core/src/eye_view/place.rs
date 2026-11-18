@@ -1,6 +1,12 @@
 //! Recipe steps 14 and 15, which place the main view and the eye view in the frame, and the full frame
 //! placement that undoes them.
 //!
+//! The eye view's viewport call comes first and the main view's last. Each call updates the aspect of
+//! the camera the two views share, so the camera keeps the aspect of the main view's entire frame,
+//! and each view renders the window-shaped picture. The side by side placement gives the main view
+//! the entire frame too. Its left half comes from `squeeze`, which halves the main view's width
+//! after this placement.
+//!
 //! The engine's viewport system rewrites the main view's Scale when its state changes, so the side by
 //! side placement repeats at every game update. Each placement ends with the writes the viewport
 //! system makes per player view: the `WriteState` Enabled byte, the occlusion object's enabled byte
@@ -18,7 +24,8 @@ pub(crate) enum Placement {
     /// The main view covers the frame, as the game sets it, and the eye view has no width.
     #[default]
     FullFrame,
-    /// The main view covers the left half and the eye view the right half.
+    /// The eye view covers the right half. The main view gets the entire frame here and the left
+    /// half from `squeeze`.
     SideBySide,
 }
 
@@ -52,11 +59,8 @@ pub(crate) struct ViewPlace {
 /// The main view's place in `placement`.
 pub(crate) const fn main_place(placement: Placement) -> ViewPlace {
     match placement {
-        Placement::FullFrame => {
+        Placement::FullFrame | Placement::SideBySide => {
             ViewPlace { scale: [1.0, 1.0], offset: [0.0, 0.0], enabled: 1, side: 0 }
-        }
-        Placement::SideBySide => {
-            ViewPlace { scale: [0.5, 1.0], offset: [0.0, 0.0], enabled: 1, side: 0 }
         }
     }
 }
@@ -90,11 +94,10 @@ pub(crate) fn place(
         Some(view) => Some((view, view.occlusion().ok_or(PlaceFault::ViewUnreadable)?)),
         None => None,
     };
-    place_view(calls, main, main_occlusion, main_place(placement))?;
     if let Some((view, occlusion)) = eye {
         place_view(calls, view, occlusion, eye_place(placement))?;
     }
-    Ok(())
+    place_view(calls, main, main_occlusion, main_place(placement))
 }
 
 fn place_view(

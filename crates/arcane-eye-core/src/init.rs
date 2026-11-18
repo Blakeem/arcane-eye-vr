@@ -150,8 +150,8 @@ fn run(
     let world_translate = view_installed.as_ref().map(|installed| installed.world_translate);
     let (eye_camera_hook, eye_state) =
         installs.eye_camera.map(|installed| (installed.hook, installed.state)).unzip();
-    let (eye_view_hook, eye_view_state) =
-        installs.eye_view.map(|installed| (installed.hook, installed.state)).unzip();
+    let (eye_view_hooks, eye_view_state) =
+        installs.eye_view.map(|installed| (installed.hooks, installed.state)).unzip();
     let (shadow_cache_hook, shadow_state) =
         installs.shadow_cache.map(|installed| (installed.hook, installed.state)).unzip();
     let (object_slot_hook, slot_state) =
@@ -172,7 +172,7 @@ fn run(
         _present_hook: installs.present_hook,
         _view_camera_hook: view_installed.map(|installed| installed.hook),
         _eye_camera_hook: eye_camera_hook,
-        _eye_view_hook: eye_view_hook,
+        _eye_view_hooks: eye_view_hooks,
         _shadow_cache_hook: shadow_cache_hook,
         _object_slot_hook: object_slot_hook,
     };

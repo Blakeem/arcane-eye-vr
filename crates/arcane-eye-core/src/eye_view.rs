@@ -12,6 +12,10 @@
 //! one value the game writes later, in the frame's recording, so the eye view gets it one frame
 //! after the main view. The feature never destroys the eye view.
 //!
+//! Side by side, each half holds the window-shaped picture at half its width, the half side by side
+//! format. The placement halves the main view's width after the game's logic, and a second hook at
+//! the game update's entry gives the full width back before the next logic (`squeeze`).
+//!
 //! The two threads share the held eye view through one mutex. The game thread holds it while its hook
 //! handler runs. The render thread only tries it and never holds it across a game call, so neither
 //! thread waits on a game call of the other. At each Present call site the render thread also reads
@@ -22,8 +26,10 @@
 mod create;
 mod decide;
 pub(crate) mod engine;
+mod entry;
 mod place;
 mod set_up;
+mod squeeze;
 
 use std::mem::ManuallyDrop;
 use std::sync::Mutex;
@@ -40,9 +46,10 @@ use settings::dev::SecondView;
 use tracing::{info, warn};
 
 use self::decide::{Action, Observed, Retry, decide};
-use self::engine::{Addresses, CreateCalls, Held, SetUpCalls};
+use self::engine::{Addresses, CreateCalls, GameMemory, Held, SetUpCalls};
 use self::place::{Placement, place};
 use self::set_up::{Update, observe};
+use self::squeeze::Squeezed;
 use crate::config::Config;
 use crate::context::CoreContext;
 use crate::install::{GameCode, InstallError};
@@ -59,9 +66,10 @@ hooks::game_mid_hook!(
 /// The shortest time between two warnings of one call site.
 const LOG_PERIOD: Duration = Duration::from_secs(10);
 
-/// The installed hook and the feature's state.
+/// The installed hooks, at the game update's entry and at the end of its logic calls, and the
+/// feature's state.
 pub(crate) struct Installed {
-    pub(crate) hook: ManuallyDrop<MidHook>,
+    pub(crate) hooks: [ManuallyDrop<MidHook>; 2],
     pub(crate) state: EyeViewState,
 }
 
@@ -118,9 +126,13 @@ struct Shared {
     held: Option<Held>,
     set_up_retry: Retry,
     placement: Placement,
+    /// The main view whose width the last side by side placement halved, until the next game
+    /// update's entry restores it.
+    squeezed: Option<Squeezed>,
     read_log: RateLimit,
     set_up_log: RateLimit,
     place_log: RateLimit,
+    squeeze_log: RateLimit,
 }
 
 /// The eye view the feature holds and the addresses it reads.
@@ -153,7 +165,9 @@ pub(crate) fn install(health: &Health, code: &GameCode, config: Config) -> Optio
     }
 }
 
-/// Resolves every signature before the hook goes in, so a failure leaves the game unmodified.
+/// Resolves every signature before a hook goes in, so a failed signature leaves the game unmodified.
+/// The entry hook goes in first. Without the logic end hook it restores nothing, since no placement
+/// halves a width.
 fn hook_game_update(
     health: &Health,
     code: &GameCode,
@@ -162,13 +176,14 @@ fn hook_game_update(
         return Err(EyeViewError::NoFrameEnd);
     }
     let located = raw_eye_view::locate(code)?;
+    let entry_hook = entry::hook_at(located.entry)?;
     let hook = hook_at(located.site)?;
     let state = EyeViewState {
         fns: located.fns,
         view: EyeView::new(located.addresses),
         render: RenderCell::default(),
     };
-    Ok((located.site, Installed { hook, state }))
+    Ok((located.site, Installed { hooks: [entry_hook, hook], state }))
 }
 
 fn hook_at(site: GameAddr) -> Result<ManuallyDrop<MidHook>, InstallError> {
@@ -281,8 +296,16 @@ impl EyeView {
         }
     }
 
-    /// The game thread's frame for the game update of the pipeline `pipeline`: forgets a stale eye
-    /// view, sets up an eye view that is not ready and places the views.
+    /// The game thread's start of the game update of the pipeline `pipeline`, before its logic
+    /// calls: gives the squeezed main view its full width back.
+    pub(crate) fn on_game_update_entry(&self, memory: &impl GameMemory, pipeline: GameAddr) {
+        let Ok(mut shared) = self.shared.lock() else { return };
+        squeeze::at_entry(memory, &mut shared, pipeline);
+    }
+
+    /// The game thread's frame for the game update of the pipeline `pipeline`, at the end of its
+    /// logic calls: forgets a stale eye view, sets up an eye view that is not ready, places the views
+    /// and halves the main view's width while they sit side by side.
     pub(crate) fn on_game_update(
         &self,
         calls: &mut impl SetUpCalls,
@@ -304,13 +327,17 @@ impl EyeView {
                 forget(shared, &update);
                 Placement::FullFrame
             }
-            Action::SetUp => self.set_up(calls, shared, &update, now),
+            Action::SetUp => set_up::attempt(&self.addresses, calls, shared, &update, now),
             Action::FullFrame => Placement::FullFrame,
             Action::SideBySide => Placement::SideBySide,
         };
         let Some(main) = update.main else { return };
         let eye = shared.held.map(|held| held.eye);
-        match place(calls, placement, main, eye) {
+        let placed = place(calls, placement, main, eye);
+        if placed.is_ok() {
+            squeeze::after_placement(calls, shared, placement, main);
+        }
+        match placed {
             Ok(()) if placement != shared.placement => {
                 shared.placement = placement;
                 // Only a change of placement reaches this line, so it needs no rate-limit macro.
@@ -321,46 +348,6 @@ impl EyeView {
                 warn_every!(shared.place_log, LOG_PERIOD, fault = %fault, "eye view placement failed");
             }
         }
-    }
-
-    /// Runs the differing steps of 8 to 13, the fog variant step and the player room step after their
-    /// guards, and returns the placement of this frame. A run that leaves the eye view ready places the views side by
-    /// side. A failed guard or any other run gives the main view the entire frame and waits
-    /// [`decide::RETRY_PERIOD`] before the next run.
-    fn set_up(
-        &self,
-        calls: &mut impl SetUpCalls,
-        shared: &mut Shared,
-        update: &Update,
-        now: Instant,
-    ) -> Placement {
-        let (Some(held), Some(contents)) = (shared.held, update.contents) else {
-            return Placement::FullFrame;
-        };
-        let plan = match set_up::plan(&self.addresses, &contents) {
-            Ok(plan) => plan,
-            Err(guard) => {
-                shared.set_up_retry.wait(now);
-                warn_every!(shared.set_up_log, LOG_PERIOD, guard = %guard, "eye view set up waits");
-                return Placement::FullFrame;
-            }
-        };
-        if let Err(error) = set_up::run(calls, held.eye, &plan) {
-            warn_every!(shared.set_up_log, LOG_PERIOD, error = %error, "eye view set up write failed");
-        }
-        let ready = set_up::is_ready(held);
-        let [camera, scene, atmosphere, lighting, fog_variant, player_room] = plan.steps();
-        // A ready eye view runs no set up until the main view changes, and any other run waits
-        // RETRY_PERIOD, so this line needs no rate-limit macro.
-        info!(
-            camera,
-            scene, atmosphere, lighting, fog_variant, player_room, ready, "eye view set up ran"
-        );
-        if ready {
-            return Placement::SideBySide;
-        }
-        shared.set_up_retry.wait(now);
-        Placement::FullFrame
     }
 }
 

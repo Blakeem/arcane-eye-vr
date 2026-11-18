@@ -30,12 +30,12 @@ fn update(view: &EyeView, world: &World, recorder: &mut Recorder, now: Instant) 
     rest.to_vec()
 }
 
-/// The viewport calls of `placement`, the main view's first.
+/// The viewport calls of `placement`, the eye view's first.
 fn placed(world: &World, placement: Placement) -> [Call; 2] {
     let [main, eye] = [main_place(placement), eye_place(placement)];
     [
-        Call::SetViewport { view: world.main.address(), scale: main.scale, offset: main.offset },
         Call::SetViewport { view: world.eye.address(), scale: eye.scale, offset: eye.offset },
+        Call::SetViewport { view: world.main.address(), scale: main.scale, offset: main.offset },
     ]
 }
 

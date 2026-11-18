@@ -3,6 +3,7 @@
 
 mod create;
 mod follow;
+mod squeeze;
 mod update;
 
 use std::time::{Duration, Instant};

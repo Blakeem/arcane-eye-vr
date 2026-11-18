@@ -1,5 +1,6 @@
 //! Stand-in game calls that record their arguments, for the tests of the create and the game update.
 
+use game_bindings::frame_width::{FrameWidth, ViewState};
 use game_bindings::offsets::{VIEW_FOG_VARIANT, VIEW_WRITE_STATE_CONTROLLER};
 use game_bindings::pipeline::{Pipeline, RenderFrame};
 use game_bindings::render_view::RenderView;
@@ -7,6 +8,10 @@ use game_mem::{GameAddr, Plain, WriteDest, try_write};
 
 use super::engine::{Apply, CreateCalls, GameMemory, SetUpCalls};
 use crate::raw::test_support::test_dest;
+
+/// The width of the entire frame that the stand-in viewport setter stores: the render size twice and
+/// the back buffer size.
+pub(crate) const FRAME_WIDTH: FrameWidth = FrameWidth { scale: 1.0, pixels: [2560, 2560, 3840] };
 
 /// A game call with its arguments, as the stand-in recorded it. The `flag` of each of the four
 /// environment calls is the flag byte it passes to the game.
@@ -204,5 +209,15 @@ impl SetUpCalls for Recorder {
 
     fn set_viewport(&mut self, view: RenderView, scale: [f32; 2], offset: [f32; 2]) {
         self.record(Call::SetViewport { view: view.address(), scale, offset });
+        let [scale_x, _] = scale;
+        let entire = FrameWidth { scale: scale_x, ..FRAME_WIDTH };
+        let stored = if entire.is_full() {
+            entire
+        } else {
+            FrameWidth { scale: scale_x, ..FRAME_WIDTH.halved() }
+        };
+        stored
+            .write(test_dest(view.address(), RenderView::WRITE_LEN), ViewState::Write)
+            .expect("a write to a test view");
     }
 }

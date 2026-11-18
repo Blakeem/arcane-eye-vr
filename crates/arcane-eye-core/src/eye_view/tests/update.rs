@@ -45,12 +45,12 @@ fn at(base: GameAddr, offset: usize) -> GameAddr {
     base.checked_add(offset).expect("a test address")
 }
 
-/// The viewport calls of `placement`, the main view's first.
+/// The viewport calls of `placement`, the eye view's first.
 fn placed(world: &World, placement: Placement) -> [Call; 2] {
     let [main, eye] = [main_place(placement), eye_place(placement)];
     [
-        Call::SetViewport { view: world.main.address(), scale: main.scale, offset: main.offset },
         Call::SetViewport { view: world.eye.address(), scale: eye.scale, offset: eye.offset },
+        Call::SetViewport { view: world.main.address(), scale: main.scale, offset: main.offset },
     ]
 }
 
@@ -173,8 +173,8 @@ fn a_ready_eye_view_is_placed_side_by_side_every_frame() {
     assert_eq!(
         placed(&world, Placement::SideBySide),
         [
-            Call::SetViewport { view: world.main.address(), scale: [0.5, 1.0], offset: [0.0, 0.0] },
             Call::SetViewport { view: world.eye.address(), scale: [0.5, 1.0], offset: [0.5, 0.0] },
+            Call::SetViewport { view: world.main.address(), scale: [1.0, 1.0], offset: [0.0, 0.0] },
         ]
     );
     assert_eq!(world.main.get::<u8>(VIEW_WRITE_STATE_ENABLED), 1);
@@ -255,8 +255,8 @@ fn a_cleared_eye_view_returns_the_main_view_to_the_entire_frame() {
     assert_eq!(
         placed(&world, Placement::FullFrame),
         [
-            Call::SetViewport { view: world.main.address(), scale: [1.0, 1.0], offset: [0.0, 0.0] },
             Call::SetViewport { view: world.eye.address(), scale: [0.0, 1.0], offset: [0.0, 0.0] },
+            Call::SetViewport { view: world.main.address(), scale: [1.0, 1.0], offset: [0.0, 0.0] },
         ]
     );
     assert_eq!(world.main.get::<u8>(VIEW_WRITE_STATE_ENABLED), 1);
@@ -291,7 +291,7 @@ fn a_stale_eye_view_is_forgotten_and_the_main_view_gets_the_entire_frame() {
         let view = holding(&world);
         let mut recorder = world.recorder();
         break_world(&world, &mut recorder);
-        let [main, _] = placed(&world, Placement::FullFrame);
+        let [_, main] = placed(&world, Placement::FullFrame);
         let calls = update(&view, &world, &mut recorder, Instant::now());
         assert_eq!(calls, [main_frame(&world), main], "{name}");
         assert_eq!(view.shared.lock().expect("an unpoisoned lock").held, None, "{name}");
@@ -323,13 +323,14 @@ fn a_failed_read_makes_no_call_after_the_main_frame_and_keeps_the_eye_view() {
 fn a_faulted_placement_write_stops_the_placement_and_records_no_change() {
     let world = World::new();
     world.make_eye_ready();
-    world.main.set(VIEW_OCCLUSION, UNMAPPED);
+    world.eye.set(VIEW_OCCLUSION, UNMAPPED);
     let view = holding(&world);
     let mut recorder = world.recorder();
-    let [main, _] = placed(&world, Placement::SideBySide);
-    assert_eq!(update(&view, &world, &mut recorder, Instant::now()), [main_frame(&world), main]);
+    let [eye, _] = placed(&world, Placement::SideBySide);
+    assert_eq!(update(&view, &world, &mut recorder, Instant::now()), [main_frame(&world), eye]);
     let shared = view.shared.lock().expect("an unpoisoned lock");
     assert_eq!(shared.placement, Placement::FullFrame);
+    assert_eq!(shared.squeezed, None, "no width is halved after a failed placement");
     assert_eq!(shared.held, Some(world.held()));
 }
 
@@ -378,8 +379,10 @@ fn the_frame_paths_make_no_heap_allocation() {
     let guard = arm_alloc_guard().expect("arm the allocation guard");
     let layout = view.layout(&mut render_state, &health);
     view.on_present_call(&mut recorder, &mut render_state, &health, now);
+    view.on_game_update_entry(&recorder, world.pipeline.address());
     view.on_game_update(&mut recorder, world.pipeline.address(), now + RETRY_PERIOD);
     world.make_eye_ready();
+    view.on_game_update_entry(&recorder, world.pipeline.address());
     view.on_game_update(&mut recorder, world.pipeline.address(), now + RETRY_PERIOD);
     assert_eq!(guard.count(), 0, "the eye view's frame allocated");
     assert_eq!(

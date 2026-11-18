@@ -107,6 +107,19 @@ pub const GAME_PIPELINE_SETUP: Signature = Signature {
     rip: None,
 };
 
+/// The entry of the game update (pipeline vtable slot 81). It runs on the game thread once per frame,
+/// before the update's logic calls, with the pipeline in `rcx`. The game thread's run function is its
+/// one caller, through the vtable (a disassembly and a scan for direct calls). The first bytes are
+/// `mov [rsp+18h],rbx`, six pushes of one or two bytes each and `sub rsp,50h`, 16 bytes with no
+/// RIP-relative operand and no jump. Derived from a disassembly.
+pub const GAME_UPDATE_ENTRY: Signature = Signature {
+    name: "game_update_entry",
+    pattern: "48 89 5C 24 18 55 56 57 41 56 41 57 48 83 EC 50 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 \
+              40 48 8B DA 48 8B F1 48 8B 89 38 01 00 00 48 85 C9 74",
+    offset: 0,
+    rip: None,
+};
+
 /// The game update (pipeline vtable slot 81) at the end of its logic calls, where it runs on the game
 /// thread once per frame with the pipeline in `rsi`. The game's logic sets a view's camera and fog
 /// variant in the calls before this point, and the update builds the frame from the views after it
@@ -296,6 +309,7 @@ pub const SIGNATURES: &[Signature] = &[
     PIPELINE_MAIN_FRAME,
     VIEW_CREATE_PLAYER,
     GAME_PIPELINE_SETUP,
+    GAME_UPDATE_ENTRY,
     GAME_UPDATE_LOGIC_END,
     VIEW_SET_FOG_VARIANT,
     VIEW_SET_SCENE,

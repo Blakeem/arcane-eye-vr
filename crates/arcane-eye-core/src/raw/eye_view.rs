@@ -14,7 +14,7 @@ use game_bindings::pipeline::{Pipeline, RenderFrame};
 use game_bindings::render_view::RenderView;
 use game_bindings::signatures::{
     G_ID_POOL, G_LEVEL_MANAGER, G_PIPELINE, G_PLAYER_MANAGER, GAME_PIPELINE_SETUP,
-    GAME_UPDATE_LOGIC_END, ID_POOL_RELEASE, PIPELINE_MAIN_FRAME, Signature,
+    GAME_UPDATE_ENTRY, GAME_UPDATE_LOGIC_END, ID_POOL_RELEASE, PIPELINE_MAIN_FRAME, Signature,
     VIEW_ATTACH_LEVEL_ATMOSPHERE, VIEW_ATTACH_LEVEL_LIGHTING, VIEW_CREATE_PLAYER,
     VIEW_SET_ATMOSPHERE, VIEW_SET_FOG_VARIANT, VIEW_SET_LIGHTING, VIEW_SET_SCENE,
     VIEW_SET_VIEWPORT, VT_GAME_RENDER_VIEW,
@@ -67,6 +67,8 @@ pub(crate) struct Located {
     pub(crate) addresses: Addresses,
     /// The end of the game update's logic calls, the hook site.
     pub(crate) site: GameAddr,
+    /// The game update's entry, the entry hook's site.
+    pub(crate) entry: GameAddr,
 }
 
 /// Resolves every signature of the eye view feature in `code` and reads `SetCamera` from the game
@@ -86,6 +88,7 @@ pub(crate) fn locate(code: &GameCode) -> Result<Located, EyeViewError> {
         pipeline_setup: located(code, &GAME_PIPELINE_SETUP)?,
     };
     let site = located(code, &GAME_UPDATE_LOGIC_END)?;
+    let entry = located(code, &GAME_UPDATE_ENTRY)?;
     let fns = EngineFns {
         main_frame: located(code, &PIPELINE_MAIN_FRAME)?.get(),
         create_player_view: addresses.create_player_view.get(),
@@ -100,7 +103,7 @@ pub(crate) fn locate(code: &GameCode) -> Result<Located, EyeViewError> {
         set_fog_variant: located(code, &VIEW_SET_FOG_VARIANT)?.get(),
         set_viewport: located(code, &VIEW_SET_VIEWPORT)?.get(),
     };
-    Ok(Located { fns, addresses, site })
+    Ok(Located { fns, addresses, site, entry })
 }
 
 fn located(code: &GameCode, signature: &Signature) -> Result<GameAddr, InstallError> {
@@ -130,6 +133,25 @@ pub(crate) fn install_game_update_hook(
     // targets a later byte of the 15. The game thread runs the game update, the only thread the game
     // thunk's token allows: its one caller is the game thread's run function, through pipeline
     // vtable slot 81.
+    let hook = unsafe { hooks::install_mid_hook(address, thunk) }?;
+    Ok(ManuallyDrop::new(hook))
+}
+
+/// Installs `thunk` as the mid hook at `address`, the entry of the game update.
+///
+/// `address` must be the one match of the `game_update_entry` signature in the loaded game exe. The
+/// hook never drops, so it stays installed for the process life, and no game thread runs a freed
+/// stub.
+pub(crate) fn install_game_update_entry_hook(
+    address: GameAddr,
+    thunk: MidThunk,
+) -> Result<ManuallyDrop<MidHook>, HookError> {
+    // SAFETY: the signature's one match is a function entry that starts with `mov [rsp+18h],rbx`, six
+    // pushes and `sub rsp,50h`, 16 bytes with no RIP-relative operand and no jump. SafetyHook's
+    // 5-byte jump moves the first instruction and its 14-byte jump the first seven, and no jump
+    // targets a byte past a function's entry. The game thread runs the game update, the only thread
+    // the game thunk's token allows: its one caller is the game thread's run function, through
+    // pipeline vtable slot 81.
     let hook = unsafe { hooks::install_mid_hook(address, thunk) }?;
     Ok(ManuallyDrop::new(hook))
 }

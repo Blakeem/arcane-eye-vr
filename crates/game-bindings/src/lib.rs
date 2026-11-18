@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod camera;
+pub mod frame_width;
 pub mod game_client;
 pub mod object_stage;
 pub mod offsets;

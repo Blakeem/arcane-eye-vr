@@ -11,13 +11,20 @@
 //! frame's recording, which ends before the next game update, so the feature compares them every
 //! frame too.
 
+use std::time::Instant;
+
+use diag::warn_every;
 use game_bindings::offsets::{ID_POOL_RELEASE_LIST, LEVEL_ATMOSPHERE_ID, LEVEL_LIGHTING_ID};
 use game_bindings::pipeline::{Level, LevelManager, Pipeline};
 use game_bindings::render_view::{Environment, PlayerRoom, RenderView, ViewContent};
 use game_mem::{GameAddr, WriteError, try_read};
 
+use tracing::info;
+
 use super::decide::{Observed, Readiness, Stale, readiness};
 use super::engine::{Addresses, Apply, Held, SetUpCalls};
+use super::place::Placement;
+use super::{LOG_PERIOD, Shared};
 
 /// The request id that names no request, which the game's own scene setup passes to the level
 /// attaches.
@@ -308,4 +315,44 @@ fn release_list(addresses: &Addresses) -> Result<GameAddr, SetUpGuard> {
         return Err(SetUpGuard::NoIdPool);
     }
     GameAddr::new(pool).checked_add(ID_POOL_RELEASE_LIST).ok_or(SetUpGuard::NoIdPool)
+}
+
+/// Runs the differing steps of 8 to 13, the fog variant step and the player room step after their
+/// guards, and returns the placement of this frame. A run that leaves the eye view ready places the
+/// views side by side. A failed guard or any other run gives the main view the entire frame and
+/// waits [`RETRY_PERIOD`](super::decide::RETRY_PERIOD) before the next run.
+pub(super) fn attempt(
+    addresses: &Addresses,
+    calls: &mut impl SetUpCalls,
+    shared: &mut Shared,
+    update: &Update,
+    now: Instant,
+) -> Placement {
+    let (Some(held), Some(contents)) = (shared.held, update.contents) else {
+        return Placement::FullFrame;
+    };
+    let plan = match plan(addresses, &contents) {
+        Ok(plan) => plan,
+        Err(guard) => {
+            shared.set_up_retry.wait(now);
+            warn_every!(shared.set_up_log, LOG_PERIOD, guard = %guard, "eye view set up waits");
+            return Placement::FullFrame;
+        }
+    };
+    if let Err(error) = run(calls, held.eye, &plan) {
+        warn_every!(shared.set_up_log, LOG_PERIOD, error = %error, "eye view set up write failed");
+    }
+    let ready = is_ready(held);
+    let [camera, scene, atmosphere, lighting, fog_variant, player_room] = plan.steps();
+    // A ready eye view runs no set up until the main view changes, and any other run waits
+    // RETRY_PERIOD, so this line needs no rate-limit macro.
+    info!(
+        camera,
+        scene, atmosphere, lighting, fog_variant, player_room, ready, "eye view set up ran"
+    );
+    if ready {
+        return Placement::SideBySide;
+    }
+    shared.set_up_retry.wait(now);
+    Placement::FullFrame
 }

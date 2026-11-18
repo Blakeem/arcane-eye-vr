@@ -54,8 +54,9 @@ pub(crate) struct CoreContext {
     /// [`install_eye_camera_hook`](crate::raw::install_eye_camera_hook)).
     pub(crate) _eye_camera_hook: Option<ManuallyDrop<MidHook>>,
     /// Never dropped, like the Present call-site hook (see
-    /// [`install_game_update_hook`](crate::raw::eye_view::install_game_update_hook)).
-    pub(crate) _eye_view_hook: Option<ManuallyDrop<MidHook>>,
+    /// [`install_game_update_hook`](crate::raw::eye_view::install_game_update_hook) and
+    /// [`install_game_update_entry_hook`](crate::raw::eye_view::install_game_update_entry_hook)).
+    pub(crate) _eye_view_hooks: Option<[ManuallyDrop<MidHook>; 2]>,
     /// Never dropped, like the Present call-site hook (see
     /// [`install_shadow_cache_hook`](crate::raw::install_shadow_cache_hook)).
     pub(crate) _shadow_cache_hook: Option<ManuallyDrop<MidHook>>,

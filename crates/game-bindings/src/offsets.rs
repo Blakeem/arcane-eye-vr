@@ -129,6 +129,31 @@ pub const VIEW_WRITE_STATE_ENABLED: usize = 0x21E0;
 /// The camera controller pointer of a render view's `WriteState`.
 pub const VIEW_WRITE_STATE_CONTROLLER: usize = 0x2260;
 
+/// The `ReadState` of a render view, the render thread's copy of the `WriteState`. The frame sync
+/// fills it (a dump of both states in the game).
+pub const VIEW_READ_STATE: usize = 0x2158;
+
+/// The `WriteState` of a render view, which the game thread fills. Its first byte is
+/// [`VIEW_WRITE_STATE_ENABLED`].
+pub const VIEW_WRITE_STATE: usize = 0x21E0;
+
+/// The Scale of a view state, two `f32`: the view's share of the frame's width and of its height.
+pub const STATE_SCALE: usize = 0x08;
+
+/// The first of the three pixel viewports of a view state. The first two hold the render size and
+/// the third the back buffer size (a dump at 2560x1600 and 3840x2160).
+pub const STATE_PIXEL_VIEWPORTS: usize = 0x18;
+
+/// The end of a view state's placement: its Scale, its Offset and its pixel viewports.
+pub const STATE_PLACEMENT_END: usize = 0x78;
+
+/// The size of a pixel viewport: a scale and an offset of two `f32` each, then its width, its
+/// height, its x and its y in pixels as four `i32`.
+pub const PIXEL_VIEWPORT_SIZE: usize = 0x20;
+
+/// The pixel width of a pixel viewport, one `i32`.
+pub const PIXEL_VIEWPORT_WIDTH: usize = 0x10;
+
 /// The split-screen index byte of a render view. 0 is the primary player and 1 the second.
 pub const VIEW_SPLIT_INDEX: usize = 0x2268;
 
