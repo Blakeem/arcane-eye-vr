@@ -35,6 +35,9 @@ pub enum Feature {
     /// The read of the game client's state id at each Present call site, which logs each change of
     /// the id.
     GameState,
+    /// The draw of the game's UI texture into each half of a side by side frame at each Present call
+    /// site, with the composite stage's UI enable byte held at 0.
+    UiLayer,
 }
 
 impl Feature {
@@ -48,6 +51,7 @@ impl Feature {
             Self::ShadowCache => "shadow-cache",
             Self::ObjectSlot => "object-slot",
             Self::GameState => "game-state",
+            Self::UiLayer => "ui-layer",
         }
     }
 }
@@ -130,6 +134,7 @@ pub struct Health {
     shadow_cache: AtomicU8,
     object_slot: AtomicU8,
     game_state: AtomicU8,
+    ui_layer: AtomicU8,
 }
 
 impl Health {
@@ -143,6 +148,7 @@ impl Health {
             shadow_cache: AtomicU8::new(FeatureState::Pending as u8),
             object_slot: AtomicU8::new(FeatureState::Pending as u8),
             game_state: AtomicU8::new(FeatureState::Pending as u8),
+            ui_layer: AtomicU8::new(FeatureState::Pending as u8),
         }
     }
 
@@ -185,6 +191,7 @@ impl Health {
             Feature::ShadowCache => &self.shadow_cache,
             Feature::ObjectSlot => &self.object_slot,
             Feature::GameState => &self.game_state,
+            Feature::UiLayer => &self.ui_layer,
         }
     }
 

@@ -2,8 +2,8 @@
 //!
 //! The install resolves the `dx11_present_call` signature in the game exe's code and puts a mid hook
 //! on the match. The handler reads the eye view's layout for the next frame, ends the frames of the
-//! eye camera, the shadow cache and the view camera, runs the frame work before the engine's `Present`
-//! call, reports the first frame through the launch token, reads the game state and runs the eye
+//! eye camera, the shadow cache and the view camera, runs the frame work with the UI layer before the
+//! engine's `Present` call, reports the first frame through the launch token, reads the game state and runs the eye
 //! view's create. It copies the published player settings once, so a frame uses one set of values.
 
 use std::mem::ManuallyDrop;
@@ -20,7 +20,7 @@ use tracing::{info, warn};
 use crate::context::CoreContext;
 use crate::eye_camera;
 use crate::eye_view;
-use crate::frame::{self, FrameReport};
+use crate::frame::{self, FrameReport, UiFrame};
 use crate::game_state;
 use crate::install::{GameCode, InstallError};
 use crate::object_slot;
@@ -95,8 +95,9 @@ fn on_present_call(context: &CoreContext, thread: &RenderThread, registers: &mut
     shadow_cache::end_frame(context, thread, layout);
     object_slot::end_frame(context, thread, layout);
     let cameras = view_camera::end_frame(context, thread, layout);
+    let ui = UiFrame { health: &context.health, next: layout };
     let frame =
-        context.frame.with(thread, |state| frame::on_present_call(state, registers, cameras));
+        context.frame.with(thread, |state| frame::on_present_call(state, registers, cameras, ui));
     if frame == Some(FrameReport::FirstPresent) {
         report(context.status.as_ref(), Status::FirstPresent);
     }

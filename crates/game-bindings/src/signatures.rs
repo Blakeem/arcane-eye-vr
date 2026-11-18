@@ -300,6 +300,20 @@ pub const VT_GAME_RENDER_VIEW: Signature = Signature {
     rip: Some(Rip { disp_offset: 3, instr_len: 7 }),
 };
 
+/// The composite stage's vtable, from the `lea rax,[rip+disp32]` in the pipeline setup that stores it
+/// in a new stage. The pattern runs on to the store of the stage's UI enable byte at +0x2188, which
+/// no other stage's set-up holds. Derived from a disassembly.
+pub const VT_COMPOSITE_STAGE: Signature = Signature {
+    name: "vt_composite_stage",
+    pattern: "48 8D 05 ?? ?? ?? ?? 48 89 03 48 8D 05 ?? ?? ?? ?? 48 89 43 20 48 B8 00 00 00 00 00 00 \
+              C0 FF 48 89 83 40 21 00 00 48 89 83 48 21 00 00 48 89 83 50 21 00 00 33 C0 48 89 83 58 \
+              21 00 00 48 89 83 60 21 00 00 48 89 83 68 21 00 00 48 89 83 70 21 00 00 48 89 83 78 21 \
+              00 00 48 89 83 80 21 00 00 B2 19 48 8B 4B 10 E8 ?? ?? ?? ?? 48 85 C0 0F 95 C0 88 83 88 \
+              21 00 00",
+    offset: 0,
+    rip: Some(Rip { disp_offset: 3, instr_len: 7 }),
+};
+
 /// Every signature the mod resolves at start-up and `sigcheck` checks against an exe.
 pub const SIGNATURES: &[Signature] = &[
     DX11_PRESENT_CALL,
@@ -327,6 +341,7 @@ pub const SIGNATURES: &[Signature] = &[
     G_ID_POOL,
     G_GAME_CLIENT,
     VT_GAME_RENDER_VIEW,
+    VT_COMPOSITE_STAGE,
 ];
 
 /// Why a signature yields no address.

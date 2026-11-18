@@ -13,8 +13,8 @@ use gfx::publish::{Outcome, Publisher, ViewNames};
 use tracing::Level;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 
+use crate::game_source::GameSource;
 use crate::raw::{self, Devices};
-use crate::viewer_source::GameSource;
 
 /// The shortest time between two lines of one rate-limited call site.
 const LOG_PERIOD: Duration = Duration::from_secs(10);

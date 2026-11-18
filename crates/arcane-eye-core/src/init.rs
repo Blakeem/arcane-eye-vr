@@ -28,6 +28,7 @@ use crate::context::CoreContext;
 use crate::eye_camera;
 use crate::eye_view;
 use crate::frame::FrameState;
+use crate::game_source::GameSource;
 use crate::game_state::{self, GameStateWatch};
 use crate::install::GameCode;
 use crate::object_slot;
@@ -35,8 +36,9 @@ use crate::present;
 use crate::raw::StatusView;
 use crate::reload::{self, Published, Reload};
 use crate::shadow_cache;
+use crate::ui_layer::{self, UiLayer};
 use crate::view_camera::{self, ViewCamera};
-use crate::viewer_source::{self, GameSource};
+use crate::viewer_source;
 
 /// The code `arcane_eye_init` returns. 0 is success, every other value names the failure.
 #[repr(u32)]
@@ -162,7 +164,7 @@ fn run(
         _reload: reload,
         health,
         status,
-        frame: RenderCell::new(FrameState::with_game_source(installs.game_source)),
+        frame: RenderCell::new(FrameState::new(installs.game_source, installs.ui_layer)),
         view_camera: RenderCell::new(ViewCamera::new(world_translate)),
         eye_camera: RenderCell::new(eye_state),
         eye_view: eye_view_state,
@@ -196,6 +198,7 @@ fn start_reload(watch: Watch, started: DevFlags, published: &Arc<Published>) -> 
 struct Installs {
     present_hook: Option<ManuallyDrop<MidHook>>,
     game_source: Option<GameSource>,
+    ui_layer: Option<UiLayer>,
     game_state: Option<GameStateWatch>,
     view_camera: Option<view_camera::Installed>,
     eye_camera: Option<eye_camera::Installed>,
@@ -205,14 +208,15 @@ struct Installs {
 }
 
 /// Runs every install against one copy of the game exe's code, which drops on return. The installs
-/// run in field order. The game state, view camera, eye camera and eye view installs follow the
-/// Present call-site install, which all four need, and the shadow cache and object slot installs
+/// run in field order. The UI layer, game state, view camera, eye camera and eye view installs follow
+/// the Present call-site install, which all five need, and the shadow cache and object slot installs
 /// follow the eye view install, which they need.
 fn install_all(health: &Health, status: Option<&StatusView>, config: Config) -> Installs {
     let code = GameCode::copy();
     Installs {
         present_hook: present::install(health, status, &code),
         game_source: viewer_source::install(&code, config),
+        ui_layer: ui_layer::install(health, &code, config),
         game_state: game_state::install(health, &code),
         view_camera: view_camera::install(health, &code),
         eye_camera: eye_camera::install(health, &code, config),

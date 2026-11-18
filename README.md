@@ -25,7 +25,7 @@ These parts work in tests:
 - A debug viewer shows that frame in its own window.
 - For trials, the debug viewer can show the game's scene with no interface, or the interface alone. The key `source` under Settings sets it.
 - For trials, the game's view can render from the left or right eye. The keys `main_view_eye` and `ipd_mm` under Settings set it.
-- For trials, the game can draw a second view beside its own view. Once the second view is ready, each frame holds a stereo pair side by side. The game's view fills the left half from the left eye position and the second view fills the right half from the right eye position. Each half holds the entire picture at half its width, the half side by side format of 3D video. The game's interface is not drawn per half yet, so it spans both halves. The keys `second_view` and `ipd_mm` under Settings set it, and `main_view_eye` has no effect while `second_view` is on.
+- For trials, the game can draw a second view beside its own view. Once the second view is ready, each frame holds a stereo pair side by side. The game's view fills the left half from the left eye position and the second view fills the right half from the right eye position. Each half holds the entire picture at half its width, the half side by side format of 3D video. The mod draws the game's interface into each half, so both eyes see it at the same place. The mouse cursor is not drawn per half yet. The keys `second_view` and `ipd_mm` under Settings set it, and `main_view_eye` has no effect while `second_view` is on.
 
 Output to a 3D display, headset output and controller input are not built yet.
 

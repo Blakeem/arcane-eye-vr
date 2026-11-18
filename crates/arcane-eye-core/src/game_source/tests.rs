@@ -5,11 +5,10 @@ use game_bindings::offsets::{PIPELINE_MAIN_VIEW, TEXTURE_RECORD_TEXTURE, VIEW_TE
 use game_bindings::texture_table::TextureKey;
 use game_mem::GameAddr;
 use game_mem::module::LoadedModule;
-use settings::dev::ViewerSource;
 use windows::core::Interface as _;
 
 use super::test_support::{Block, World};
-use super::{GameSource, SourceFault, key_of};
+use super::{GameSource, SourceFault};
 use crate::raw::game_texture;
 use crate::raw::test_support::TestSwapchain;
 
@@ -18,13 +17,6 @@ const UNMAPPED: GameAddr = GameAddr::new(0x10);
 
 /// An address the record names as its texture, which no test reads through.
 const TEXTURE: usize = 0x7FF6_5555_0000;
-
-#[test]
-fn each_flag_value_names_its_key_and_the_back_buffer_names_none() {
-    assert_eq!(key_of(ViewerSource::BackBuffer), None);
-    assert_eq!(key_of(ViewerSource::Scene), Some(TextureKey::SCENE));
-    assert_eq!(key_of(ViewerSource::Ui), Some(TextureKey::UI));
-}
 
 #[test]
 fn the_source_reads_the_keys_texture_through_the_main_views_table() {

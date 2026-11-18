@@ -377,9 +377,12 @@ impl Drop for StatusView {
     }
 }
 
+pub(crate) mod composite_stage;
 pub(crate) mod eye_view;
 pub(crate) mod game_texture;
 
+#[cfg(test)]
+pub(crate) mod test_pixels;
 #[cfg(test)]
 pub(crate) mod test_support;
 

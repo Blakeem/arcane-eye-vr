@@ -6,12 +6,14 @@ mod source;
 use std::fs;
 use std::time::{Duration, Instant};
 
+use diag::health::Health;
 use diag::logging::LogName;
 use game_bindings::state::arm_alloc_guard;
 use gfx::publish::ViewNames;
 use ipc_layout::perf_line::{self, PerfSummary};
 
-use super::{FrameReport, FrameState, keep_cameras, on_frame, record_interval};
+use super::{FrameReport, FrameState, UiFrame, keep_cameras, on_frame, record_interval};
+use crate::eye_view::Layout;
 use crate::raw::{
     self,
     test_support::{FORMAT, TestSwapchain, TestViewer, test_view_names},
@@ -39,7 +41,9 @@ fn log_lines(name: &str, frames: impl FnOnce()) -> Vec<String> {
 }
 
 fn frame(state: &mut FrameState, test: &TestSwapchain) -> FrameReport {
-    test.with(|address, swapchain| on_frame(state, address, swapchain)).expect("a swapchain")
+    let health = Health::new();
+    let ui = UiFrame { health: &health, next: Layout::MainOnly };
+    test.with(|address, swapchain| on_frame(state, address, swapchain, ui)).expect("a swapchain")
 }
 
 /// A frame as `on_present_call` runs it, with the call's time given as `now` and the cameras the
@@ -270,8 +274,10 @@ fn a_new_device_at_a_reused_swapchain_address_replaces_the_held_devices() {
     let second = TestSwapchain::new(64, 64);
     let (mut state, _names) = test_state("reused-address");
     let reused = first.address();
-    first.with(|_, swapchain| on_frame(&mut state, reused, swapchain)).expect("a swapchain");
-    let report = second.with(|_, swapchain| on_frame(&mut state, reused, swapchain));
+    let health = Health::new();
+    let ui = UiFrame { health: &health, next: Layout::MainOnly };
+    first.with(|_, swapchain| on_frame(&mut state, reused, swapchain, ui)).expect("a swapchain");
+    let report = second.with(|_, swapchain| on_frame(&mut state, reused, swapchain, ui));
     assert_eq!(report, Some(FrameReport::Later));
     let (held_device, held_context) = state.devices.as_ref().expect("the held devices");
     let expected = raw::device(&second.swapchain).expect("the second swapchain's device");

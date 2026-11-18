@@ -6,7 +6,7 @@ use game_bindings::offsets::{
     TEXTURE_TABLE_VALUES, VIEW_TEXTURE_TABLE,
 };
 use game_bindings::texture_table::TextureKey;
-use game_mem::{GameAddr, Plain, try_write};
+use game_mem::{GameAddr, Plain, try_read, try_write};
 
 use super::GameSource;
 use crate::raw::test_support::test_dest;
@@ -27,10 +27,15 @@ impl Block {
         let field = self.address().checked_add(offset).expect("a test address");
         try_write(test_dest(field, size_of::<T>()), value).expect("a write to test memory");
     }
+
+    pub(crate) fn get<T: Plain>(&self, offset: usize) -> T {
+        let field = self.address().checked_add(offset).expect("a test address");
+        try_read(field).expect("a read of test memory")
+    }
 }
 
-/// A pipeline whose main view holds a table of one bucket and one entry, the scene key, whose
-/// record names a texture.
+/// A pipeline whose main view holds a table of one bucket and one entry, whose record names a
+/// texture.
 pub(crate) struct World {
     pub(crate) global: Block,
     pub(crate) pipeline: Block,
@@ -43,6 +48,11 @@ pub(crate) struct World {
 impl World {
     /// A world whose scene key names the object at `texture`.
     pub(crate) fn new(texture: usize) -> Self {
+        Self::with_key(TextureKey::SCENE, texture)
+    }
+
+    /// A world whose `key` names the object at `texture`.
+    pub(crate) fn with_key(key: TextureKey, texture: usize) -> Self {
         let world = Self {
             global: Block::new(8),
             pipeline: Block::new(0x100),
@@ -62,7 +72,7 @@ impl World {
         world.table.set(TEXTURE_TABLE_KEYS, keys.address().get());
         world.table.set(TEXTURE_TABLE_VALUES, values.address().get());
         next.set(0, -1_i32);
-        keys.set(0, TextureKey::SCENE.0);
+        keys.set(0, key.0);
         values.set(0, node.address().get());
         node.set(TEXTURE_NODE_RECORD, world.record.address().get());
         world.record.set(TEXTURE_RECORD_TEXTURE, texture);

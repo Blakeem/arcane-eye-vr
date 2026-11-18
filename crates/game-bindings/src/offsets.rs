@@ -114,6 +114,15 @@ pub const TEXTURE_RECORD_TEXTURE: usize = 0x00;
 /// The stage array pointer of a render view's stage group.
 pub const VIEW_STAGE_ARRAY: usize = 0x28;
 
+/// The stage count of a render view's stage array, one `u32` (a dump of the special view and the
+/// main view in the game).
+pub const VIEW_STAGE_COUNT: usize = 0x34;
+
+/// The UI enable byte of a composite stage. The stage's job draws the UI texture into the back
+/// buffer only while it is nonzero (a write of 0 in the game, and the store in the stage's
+/// constructor).
+pub const COMPOSITE_STAGE_UI_ENABLED: usize = 0x2188;
+
 /// The job context pointer of a render view.
 pub const VIEW_JOB_CONTEXT: usize = 0x40;
 

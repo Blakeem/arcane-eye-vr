@@ -2,7 +2,8 @@
 //!
 //! On the first frame it takes the device and the immediate context. On every frame it tracks the
 //! swapchain, its device and its back buffer, and hands the frame to the debug viewer link, with the
-//! game source when the dev flag `viewer.source` names one. It times
+//! game source when the dev flag `viewer.source` names one. Before that hand-over the UI layer draws
+//! into the back buffer. It times
 //! each call and logs the perf summary line once per window of frames, after the camera lines of the
 //! window's newest main view camera and newest eye view camera.
 //!
@@ -12,6 +13,7 @@
 use std::mem;
 use std::time::{Duration, Instant};
 
+use diag::health::Health;
 use diag::perf::{FrameWindow, SUMMARY_FRAMES};
 use diag::rate::{Once, RateLimit};
 use diag::{error_every, once, warn_every};
@@ -23,10 +25,12 @@ use tracing::Level;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 use windows::core::HRESULT;
 
+use crate::eye_view::Layout;
+use crate::game_source::GameSource;
 use crate::raw::{self, BackBuffer, Devices};
+use crate::ui_layer::{Target, UiLayer};
 use crate::view_camera::{FrameCamera, FrameCameras, Viewpoint};
 use crate::viewer::ViewerLink;
-use crate::viewer_source::GameSource;
 
 /// The shortest time between two lines of one rate-limited call site.
 const LOG_PERIOD: Duration = Duration::from_secs(10);
@@ -51,6 +55,8 @@ pub(crate) struct FrameState {
     viewer: ViewerLink,
     /// The game texture the viewer gets, or `None` for the back buffer.
     game_source: Option<GameSource>,
+    /// The UI layer feature's state, or `None` while it is not installed.
+    ui_layer: Option<UiLayer>,
     /// The time of the previous Present call, from which the next frame interval runs.
     last_call: Option<Instant>,
     frame_times: FrameWindow,
@@ -60,10 +66,19 @@ pub(crate) struct FrameState {
 }
 
 impl FrameState {
-    /// The state of a frame handler whose viewer gets `game_source`, or the back buffer for `None`.
-    pub(crate) fn with_game_source(game_source: Option<GameSource>) -> Self {
-        Self { game_source, ..Self::default() }
+    /// The state of a frame handler whose viewer gets `game_source`, or the back buffer for `None`,
+    /// and that runs `ui_layer` when it holds one.
+    pub(crate) fn new(game_source: Option<GameSource>, ui_layer: Option<UiLayer>) -> Self {
+        Self { game_source, ui_layer, ..Self::default() }
     }
+}
+
+/// What the UI layer takes from the Present call-site handler: the health registry and the layout of
+/// the next frame.
+#[derive(Clone, Copy)]
+pub(crate) struct UiFrame<'frame> {
+    pub(crate) health: &'frame Health,
+    pub(crate) next: Layout,
 }
 
 /// The rate-limit state of each log call site of the frame handler.
@@ -85,16 +100,18 @@ struct Snapshot {
 }
 
 /// Runs the frame work for the swapchain that `registers` hold at the Present call site. `cameras`
-/// are the cameras of the frame's views that the view camera feature read.
+/// are the cameras of the frame's views that the view camera feature read, and `ui` is the UI
+/// layer's part of the handler's state.
 pub(crate) fn on_present_call(
     state: &mut FrameState,
     registers: &Registers,
     cameras: FrameCameras,
+    ui: UiFrame<'_>,
 ) -> FrameReport {
     let now = Instant::now();
     keep_cameras(state, cameras);
     let frame = raw::with_present_swapchain(registers, |address, swapchain| {
-        on_frame(state, address, swapchain)
+        on_frame(state, address, swapchain, ui)
     });
     let report = frame.unwrap_or_else(|| {
         error_every!(
@@ -187,7 +204,12 @@ const fn camera_eye(viewpoint: Viewpoint) -> CameraEye {
 }
 
 /// Runs the frame work for `swapchain`, which lives at `address`.
-fn on_frame(state: &mut FrameState, address: usize, swapchain: &IDXGISwapChain) -> FrameReport {
+fn on_frame(
+    state: &mut FrameState,
+    address: usize,
+    swapchain: &IDXGISwapChain,
+    ui: UiFrame<'_>,
+) -> FrameReport {
     let back_buffer = match raw::back_buffer(swapchain) {
         Ok(back_buffer) => back_buffer,
         Err(code) => {
@@ -224,6 +246,9 @@ fn on_frame(state: &mut FrameState, address: usize, swapchain: &IDXGISwapChain) 
         "first present"
     );
     if let Some(devices) = &state.devices {
+        if let Some(layer) = &mut state.ui_layer {
+            layer.on_frame(ui.health, ui.next, &Target { swapchain, devices, size: back_buffer });
+        }
         state.viewer.on_frame(swapchain, devices, state.game_source.as_mut());
     }
     if first { FrameReport::FirstPresent } else { FrameReport::Later }
