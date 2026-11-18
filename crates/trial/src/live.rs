@@ -162,6 +162,10 @@ impl Game for LiveGame {
         Ok(mod_check::read()?)
     }
 
+    fn clear_mod_check_folder(&mut self) -> Result<(), StepError> {
+        Ok(mod_check::clear()?)
+    }
+
     fn post_key(&mut self) -> Result<(), StepError> {
         let pid = self.game()?.child.id();
         // A key that reached no window is a warn line, and the next key period posts again.

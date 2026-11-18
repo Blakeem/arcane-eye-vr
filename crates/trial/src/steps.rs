@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use diag::error_chain;
 use ipc_layout::game_state_line::Place;
@@ -17,7 +17,7 @@ use launch::game_dir::GameDirError;
 use launch::status::WaitError;
 use launch::stop::StopError;
 use launch::token::TokenCreateError;
-use tracing::{info, warn};
+use tracing::warn;
 use viewer_client::frame::{Frame, ReadError};
 use viewer_client::region::Region;
 
@@ -28,17 +28,11 @@ use crate::home::{self, HOME_FOLDER, HomeError};
 use crate::level::{self, WaitFailed};
 use crate::log_tail::TailError;
 use crate::mod_check::{ModCheckError, ModCheckFolder};
-use crate::perf::{self, PerfError, PerfWindow};
-use crate::pixels::{self, SizeError};
+use crate::perf::{PerfError, PerfWindow};
+use crate::pixels::SizeError;
 use crate::place::PlaceError;
-use crate::png_file::{self, PngError};
+use crate::png_file::PngError;
 use crate::report::Report;
-
-/// The name of the perf window's totals in the result folder.
-const PERF_FILE: &str = "perf.txt";
-
-/// The name of the perf window's camera lines in the result folder.
-const CAMERA_FILE: &str = "camera.txt";
 
 /// The name of the copy of the core's session log in the result folder.
 const CORE_LOG_COPY: &str = "arcane-eye-vr.log";
@@ -111,6 +105,8 @@ pub(crate) trait Game {
     fn place(&mut self) -> Result<Option<Place>, StepError>;
     /// Whether the game's mod check folder exists.
     fn mod_check_folder(&mut self) -> Result<ModCheckFolder, StepError>;
+    /// Moves the game's empty mod check folder to the Recycle Bin.
+    fn clear_mod_check_folder(&mut self) -> Result<(), StepError>;
     /// Posts the key that the "Press any key" screen takes to the game's visible windows.
     fn post_key(&mut self) -> Result<(), StepError>;
     /// Waits `time`.
@@ -327,13 +323,14 @@ fn run_in_game(
     }
     if settings.perf_lines > 0 {
         let lines = settings.perf_lines;
-        let perf = while_running(game, Step::Perf, |game| perf_step(game, lines, folder));
+        let perf = while_running(game, Step::Perf, |game| write::perf_step(game, lines, folder));
         if !report.record(Step::Perf, perf) {
             return;
         }
     }
-    let capture =
-        while_running(game, Step::Capture, |_game| capture_step(frames, settings.captures, folder));
+    let capture = while_running(game, Step::Capture, |_game| {
+        write::capture_step(frames, settings.captures, folder)
+    });
     if !report.record(Step::Capture, capture) || settings.burst.frames == 0 {
         return;
     }
@@ -364,35 +361,13 @@ pub(crate) fn while_running<G: Game>(
     }
 }
 
-/// Collects the perf window and writes `perf.txt` and `camera.txt`.
-fn perf_step(game: &mut impl Game, lines: u32, folder: &Path) -> Result<(), StepError> {
-    let window = game.perf_window(lines)?;
-    let summaries: Vec<_> = window.lines.iter().map(|line| line.summary).collect();
-    folder::write(folder, PERF_FILE, &perf::text(&summaries, window.dropped))?;
-    folder::write(folder, CAMERA_FILE, &perf::camera_text(&window.lines))?;
-    Ok(())
-}
-
-/// Starts the heartbeat and writes `count` frames as `frame-0001.png` onward. Logs the time each
-/// frame took from its read to its written file.
-fn capture_step(frames: &mut impl Frames, count: u32, folder: &Path) -> Result<(), StepError> {
-    frames.start_heartbeat()?;
-    for number in 1..=count {
-        let frame = frames.read()?;
-        let read_at = Instant::now();
-        let image = pixels::to_rgb(&frame)?;
-        png_file::write(&folder.join(format!("frame-{number:04}.png")), &image)?;
-        let elapsed_ms = u64::try_from(read_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-        info!(frame = number, elapsed_ms, "frame written");
-    }
-    Ok(())
-}
-
 /// `error` and each error below it, joined by ": " on one line, since `result.txt` holds one line
 /// per step.
 pub(crate) fn cause(error: &dyn Error) -> String {
     error_chain::chain(error).replace(['\r', '\n'], " ")
 }
+
+mod write;
 
 #[cfg(test)]
 mod tests;

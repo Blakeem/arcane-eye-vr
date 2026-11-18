@@ -86,10 +86,10 @@ fn held(last: Option<Place>) -> String {
 }
 
 /// The prime step. While the game's mod check folder exists, the game refuses to load the latest
-/// save, so a game session without the save option, with the root folder `prime` in the result
-/// folder `folder`, runs until the game shows the main menu, and closes. Once the game started, it
-/// closes whatever failed before. Returns how the priming game went at its close, or `None` when
-/// the folder did not exist and no session ran.
+/// save, so the step moves the folder to the Recycle Bin. When that fails, a game session without
+/// the save option, with the root folder `prime` in the result folder `folder`, runs until the game
+/// shows the main menu, and closes. Once the game started, it closes whatever failed before. Returns
+/// how the priming game went at its close, or `None` when no session ran.
 pub(crate) fn prime(
     settings: &Settings,
     folder: &Path,
@@ -98,6 +98,18 @@ pub(crate) fn prime(
     if game.mod_check_folder()? == ModCheckFolder::Absent {
         info!("the game's mod check folder does not exist, so no priming session runs");
         return Ok(None);
+    }
+    match game.clear_mod_check_folder() {
+        Ok(()) => {
+            info!(
+                "the game's mod check folder went to the Recycle Bin, so no priming session runs"
+            );
+            return Ok(None);
+        }
+        Err(error) => {
+            let cause = steps::cause(&error);
+            warn!(error = %cause, "the game's mod check folder stays, so a priming session runs");
+        }
     }
     game.create_token()?;
     let home = home::prepare(folder, PRIME_FOLDER, settings)?;

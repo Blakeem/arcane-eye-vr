@@ -13,13 +13,14 @@ use ipc_layout::game_state_line::Place;
 use ipc_layout::perf_line::PerfSummary;
 use launch::checks::GameRunning;
 use launch::direct::Save;
+use launch::recycle::RecycleError;
 use launch::status::WaitError;
 use launch::stop::StopError;
 use viewer_client::frame::{Frame, PixelFormat, ReadError};
 use viewer_client::region::Region;
 
 use crate::burst::BurstFrame;
-use crate::mod_check::ModCheckFolder;
+use crate::mod_check::{ModCheckError, ModCheckFolder};
 use crate::perf::{CountedLine, PerfError, PerfWindow};
 use crate::steps::{Closed, Frames, Game, Step, StepError};
 
@@ -70,6 +71,8 @@ pub(super) struct StandInGame {
     pub(super) folders: Vec<Vec<ModCheckFolder>>,
     /// The reads of the mod check folder since the last start.
     folder_reads: usize,
+    /// Whether the move of the mod check folder to the Recycle Bin works.
+    pub(super) folder_clears: bool,
     /// The start's index and the place read count at each key, in order.
     pub(super) keys: Vec<(usize, usize)>,
     /// The cameras of each of the perf window's two summary lines.
@@ -96,6 +99,7 @@ impl StandInGame {
             folder_before: ModCheckFolder::Present,
             folders: Vec::new(),
             folder_reads: 0,
+            folder_clears: false,
             keys: Vec::new(),
             cameras: [Vec::new(), Vec::new()],
             steam_running_reads: Some(0),
@@ -146,6 +150,15 @@ impl Game for StandInGame {
         let read = script.get(self.folder_reads).or_else(|| script.last()).copied();
         self.folder_reads = self.folder_reads.saturating_add(1);
         Ok(read.unwrap_or(ModCheckFolder::Present))
+    }
+
+    fn clear_mod_check_folder(&mut self) -> Result<(), StepError> {
+        if self.folder_clears {
+            self.folder_before = ModCheckFolder::Absent;
+            return Ok(());
+        }
+        let path = PathBuf::from(r"C:\profile\ModCrashSanityCheck");
+        Err(ModCheckError::Recycle(RecycleError::NotEmpty { path }).into())
     }
 
     fn post_key(&mut self) -> Result<(), StepError> {

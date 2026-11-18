@@ -377,6 +377,8 @@ extern "system" fn collect_window(window: HWND, search: LPARAM) -> BOOL {
     TRUE
 }
 
+pub(crate) mod recycle;
+
 #[cfg(test)]
 mod key_tests;
 #[cfg(test)]

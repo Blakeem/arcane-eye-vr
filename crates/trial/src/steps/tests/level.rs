@@ -74,6 +74,20 @@ fn a_level_trial_primes_a_session_then_runs_its_steps_in_the_level() {
 }
 
 #[test]
+fn a_level_trial_whose_mod_check_folder_goes_to_the_recycle_bin_starts_no_priming_session() {
+    let dir = test_dir("level-cleared");
+    let folder = dir.path();
+    let mut game = StandInGame::failing_at(None);
+    game.folder_clears = true;
+    game.places = vec![vec![OTHER, MENU, OTHER, LEVEL]];
+    let (report, result) = level_trial(folder, &mut game);
+    assert_eq!(result, PASSED);
+    assert_eq!(game.starts, [(folder.join("home"), Save::LoadLatest)]);
+    assert!(!folder.join("prime").exists(), "a priming root folder with no priming session");
+    assert_eq!(report.exit_code(), ExitCode::SUCCESS);
+}
+
+#[test]
 fn a_level_trial_with_no_mod_check_folder_starts_no_priming_session() {
     let dir = test_dir("level-no-prime");
     let folder = dir.path();
