@@ -139,6 +139,11 @@ fn passing_window() -> RgbImage {
     window([10, 20, 30], [40, 50, 60])
 }
 
+/// A 6x3 copy bright in every pixel, as SteamVR's environment fills each eye's picture.
+fn filled_window() -> RgbImage {
+    RgbImage { width: 6, height: 3, depth: Depth::Eight, data: vec![200; 6 * 3 * 3] }
+}
+
 /// The options of a headset screen trial in `folder` with no perf step.
 fn headset_options(folder: &Path) -> Options {
     let mut options = options(folder);
@@ -238,7 +243,39 @@ fn a_headset_window_whose_halves_never_show_a_screen_fails_with_no_screen() {
     headset.copies = vec![None, Some(window([10, 10, 10], [40, 50, 60]))];
     let (_report, _frames, result) =
         run(&headset_options(dir.path()), dir.path(), &mut game, &mut headset);
-    let cause = "failed: SteamVR's headset window showed no screen in each half within 30s";
+    let cause = "failed: SteamVR's headset window showed no screen in each half within 30s: the \
+                 left half of the headset window's copy holds no pixel brighter than 10 of 255";
+    assert_eq!(result, result_lines(cause, "passed", "failed"));
+}
+
+#[test]
+fn a_headset_window_filled_by_steamvr_s_environment_is_no_screen_until_black_surrounds_it() {
+    let dir = test_dir("headset-environment");
+    let mut game = StandInGame::failing_at(None);
+    let mut headset = StandInHeadset::new();
+    headset.copies = vec![Some(filled_window()), Some(filled_window()), Some(passing_window())];
+    let (_report, _frames, result) =
+        run(&headset_options(dir.path()), dir.path(), &mut game, &mut headset);
+    assert_eq!(result, result_lines("passed", "passed", "passed"));
+    assert_eq!(game.pauses, [Duration::from_secs(1); 2]);
+    let text = fs::read_to_string(dir.path().join("headset.txt")).expect("read headset.txt");
+    assert!(text.contains("left-eye-box: 1,1,1,1\n"), "{text}");
+    assert!(text.contains("right-eye-box: 4,1,1,1\n"), "{text}");
+}
+
+#[test]
+fn a_headset_window_that_stays_filled_fails_with_the_eye_whose_picture_reaches_the_edge() {
+    let dir = test_dir("headset-environment-stays");
+    let mut game = StandInGame::failing_at(None);
+    let mut headset = StandInHeadset::new();
+    headset.copies = vec![Some(filled_window())];
+    let (_report, _frames, result) =
+        run(&headset_options(dir.path()), dir.path(), &mut game, &mut headset);
+    let cause = "failed: SteamVR's headset window showed no screen in each half within 30s: the \
+                 left eye's picture reaches the edge of its half of the headset window's copy. \
+                 SteamVR's own environment or another application covers the launch app's \
+                 screen, or the keys under [screen] in the settings make the screen fill the eye's \
+                 view";
     assert_eq!(result, result_lines(cause, "passed", "failed"));
 }
 

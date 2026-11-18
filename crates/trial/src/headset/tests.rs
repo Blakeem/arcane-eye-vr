@@ -1,9 +1,12 @@
 //! The headset comparison against small window copies and frames with known pictures.
 
+use std::ops::Range;
+
 use viewer_client::region::Region;
 
 use super::{
-    Comparison, Eye, EyePicture, HeadsetError, Orientation, check, compare, has_screen, text,
+    Comparison, Eye, EyePicture, HeadsetError, Orientation, ScreenMissing, check, compare,
+    missing_screen, text,
 };
 use crate::compare::Limit;
 use crate::pixels::{Depth, RgbImage};
@@ -133,14 +136,99 @@ fn an_eye_that_shows_the_other_eye_s_half_fails_with_that_eye_named() {
     );
 }
 
+/// A window copy whose `eye` half is bright in `columns` and `rows` of the half and black elsewhere,
+/// and whose other half shows its picture inside a black border.
+fn half_box(eye: Eye, columns: Range<u32>, rows: Range<u32>) -> RgbImage {
+    let mut copy = window(left_picture, right_picture, false);
+    let half_x = match eye {
+        Eye::Left => 0,
+        Eye::Right => WINDOW_HALF_WIDTH,
+    };
+    let (pixels, _rest) = copy.data.as_chunks_mut::<3>();
+    for (index, pixel) in pixels.iter_mut().enumerate() {
+        let index = u32::try_from(index).expect("a small copy");
+        let (x, y) = (index % WINDOW_WIDTH, index / WINDOW_WIDTH);
+        let Some(column) = x.checked_sub(half_x).filter(|column| *column < WINDOW_HALF_WIDTH)
+        else {
+            continue;
+        };
+        let bright = columns.contains(&column) && rows.contains(&y);
+        pixel.fill(if bright { 200 } else { 0 });
+    }
+    copy
+}
+
+/// The half of `copy` that shows no screen first, or `None` when each half shows one.
+fn missing(copy: &RgbImage) -> Option<ScreenMissing> {
+    missing_screen(copy).expect("a copy with pixels")
+}
+
+/// Asserts that an `eye` half bright in `columns` and `rows` of the half shows no screen, and that
+/// the comparison fails for that eye.
+fn assert_at_edge(eye: Eye, columns: Range<u32>, rows: Range<u32>) {
+    let copy = half_box(eye, columns, rows);
+    let at_edge = ScreenMissing::AtEdge { eye };
+    assert_eq!(missing(&copy), Some(at_edge));
+    let error = compare(&copy, &frame()).expect_err("a box at the edge of its half");
+    assert!(matches!(error, HeadsetError::NoPicture(missing) if missing == at_edge), "{error:?}");
+}
+
+#[test]
+fn a_half_entirely_bright_shows_no_screen_and_names_steamvr_s_environment() {
+    assert_at_edge(Eye::Left, 0..WINDOW_HALF_WIDTH, 0..WINDOW_HEIGHT);
+    let filled = image(WINDOW_WIDTH, WINDOW_HEIGHT, |_x, _y| [200; 3]);
+    assert_eq!(missing(&filled), Some(ScreenMissing::AtEdge { eye: Eye::Left }));
+    assert_eq!(
+        compare(&filled, &frame()).expect_err("two bright halves").to_string(),
+        "the left eye's picture reaches the edge of its half of the headset window's copy. \
+         SteamVR's own environment or another application covers the launch app's screen, or the \
+         keys under [screen] in the settings make the screen fill the eye's view"
+    );
+}
+
+#[test]
+fn a_box_that_touches_the_left_edge_of_its_half_shows_no_screen() {
+    assert_at_edge(Eye::Left, 0..WINDOW_HALF_WIDTH - 1, 1..WINDOW_HEIGHT - 1);
+}
+
+#[test]
+fn a_box_that_touches_the_left_edge_of_the_right_half_shows_no_screen() {
+    assert_at_edge(Eye::Right, 0..WINDOW_HALF_WIDTH - 1, 1..WINDOW_HEIGHT - 1);
+}
+
+#[test]
+fn a_box_that_touches_the_right_edge_of_its_half_shows_no_screen() {
+    assert_at_edge(Eye::Left, 1..WINDOW_HALF_WIDTH, 1..WINDOW_HEIGHT - 1);
+}
+
+#[test]
+fn a_box_that_touches_the_top_edge_of_its_half_shows_no_screen() {
+    assert_at_edge(Eye::Left, 1..WINDOW_HALF_WIDTH - 1, 0..WINDOW_HEIGHT - 1);
+}
+
+#[test]
+fn a_box_that_touches_the_bottom_edge_of_its_half_shows_no_screen() {
+    assert_at_edge(Eye::Left, 1..WINDOW_HALF_WIDTH - 1, 1..WINDOW_HEIGHT);
+}
+
+#[test]
+fn a_box_with_one_black_column_or_row_on_each_side_shows_a_screen() {
+    let copy = half_box(Eye::Left, 1..WINDOW_HALF_WIDTH - 1, 1..WINDOW_HEIGHT - 1);
+    assert_eq!(missing(&copy), None);
+    let comparison = compare(&copy, &frame()).expect("a screen in each half");
+    let inside = Region { x: 1, y: 1, width: WINDOW_HALF_WIDTH - 2, height: WINDOW_HEIGHT - 2 };
+    assert_eq!((comparison.left.bounds, comparison.right.bounds), (inside, RIGHT_BOX));
+}
+
 #[test]
 fn a_half_with_no_bright_pixel_reports_no_screen_for_its_eye() {
     let dark = |_x: u32, _y: u32| [10, 10, 10];
     let copy = window(dark, right_picture, false);
-    let shows = |window_copy: &RgbImage| has_screen(window_copy).expect("a copy with pixels");
+    let shows = |window_copy: &RgbImage| missing(window_copy).is_none();
     assert!(!shows(&copy), "a dark left half shows a screen");
     let error = compare(&copy, &frame()).expect_err("a dark left half");
-    assert!(matches!(error, HeadsetError::Dark { eye: Eye::Left }), "{error:?}");
+    let dark_left = ScreenMissing::Dark { eye: Eye::Left };
+    assert!(matches!(error, HeadsetError::NoPicture(missing) if missing == dark_left), "{error:?}");
     assert_eq!(
         error.to_string(),
         "the left half of the headset window's copy holds no pixel brighter than 10 of 255"

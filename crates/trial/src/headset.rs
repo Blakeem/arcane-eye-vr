@@ -3,10 +3,13 @@
 //!
 //! The headset window shows the left eye's picture in its left half and the right eye's picture in
 //! its right half. An eye's picture is its half cut to the bounding box of its bright pixels, since
-//! the picture is black around the screen. The null headset's head is rolled by 180 degrees, so the
-//! comparison also measures each picture rotated by 180 degrees and takes the orientation whose
-//! eyes match their own halves better. Measured differences were 9.2 to 10.5 for an eye's own half
-//! and 13.1 to 15.6 for the other half, on the title screen with a stereo pair.
+//! the picture is black around the screen once the launch app's scene shows. A box that reaches an
+//! edge of its half is no screen, since SteamVR draws its own environment across each entire eye
+//! picture until about 1.5 s after an application's session starts. The null headset's head is
+//! rolled by 180 degrees, so the comparison also measures each picture rotated by 180 degrees and
+//! takes the orientation whose eyes match their own halves better. Measured differences were 9.2 to
+//! 10.5 for an eye's own half and 13.1 to 15.6 for the other half, on the title screen with a
+//! stereo pair.
 
 use std::fmt;
 use std::io;
@@ -111,7 +114,12 @@ pub(crate) enum HeadsetError {
     )]
     NoWindow { waited: Duration },
     #[error("SteamVR's headset window showed no screen in each half within {waited:?}")]
-    NoScreen { waited: Duration },
+    NoScreen {
+        waited: Duration,
+        /// Why the last copy showed no screen, with the eye whose half showed none.
+        #[source]
+        last: ScreenMissing,
+    },
     #[error(
         "the launch app exited with {status} before SteamVR's headset window showed a screen. Its \
          output is in {}",
@@ -122,11 +130,8 @@ pub(crate) enum HeadsetError {
     WindowGone,
     #[error(transparent)]
     Compare(#[from] CompareError),
-    #[error(
-        "the {eye} half of the headset window's copy holds no pixel brighter than {bright} of 255",
-        bright = BRIGHT_ABOVE
-    )]
-    Dark { eye: Eye },
+    #[error(transparent)]
+    NoPicture(#[from] ScreenMissing),
     #[error("a {width}x{height} frame has no two halves to compare the eyes' pictures with")]
     NoHalves { width: u32, height: u32 },
     #[error(
@@ -147,11 +152,28 @@ pub(crate) enum HeadsetError {
     AppRunning { waited: Duration },
 }
 
-/// Whether each half of `window`, a copy of the headset window, holds a bright pixel.
-pub(crate) fn has_screen(window: &RgbImage) -> Result<bool, HeadsetError> {
+/// Why one half of a copy of the headset window shows no screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum ScreenMissing {
+    #[error(
+        "the {eye} half of the headset window's copy holds no pixel brighter than {bright} of 255",
+        bright = BRIGHT_ABOVE
+    )]
+    Dark { eye: Eye },
+    #[error(
+        "the {eye} eye's picture reaches the edge of its half of the headset window's copy. \
+         SteamVR's own environment or another application covers the launch app's screen, or the \
+         keys under [screen] in the settings make the screen fill the eye's view"
+    )]
+    AtEdge { eye: Eye },
+}
+
+/// The first half of `window`, a copy of the headset window, that shows no screen, or `None` when
+/// each half shows one.
+pub(crate) fn missing_screen(window: &RgbImage) -> Result<Option<ScreenMissing>, HeadsetError> {
     let samples = Samples::new(window)?;
     let mut halves = [Eye::Left, Eye::Right].into_iter();
-    Ok(halves.all(|eye| bright_box(&samples, half_of(window, eye)).is_some()))
+    Ok(halves.find_map(|eye| screen_box(&samples, half_of(window, eye), eye).err()))
 }
 
 /// Compares each eye's picture in `window`, a copy of the headset window, with each half of
@@ -226,9 +248,9 @@ struct Cropped {
 }
 
 impl Cropped {
-    /// `eye`'s half of `window`, cut to the bounding box of its bright pixels.
+    /// `eye`'s half of `window`, cut to the screen in it.
     fn of(window: &RgbImage, samples: &Samples<'_>, eye: Eye) -> Result<Self, HeadsetError> {
-        let bounds = bright_box(samples, half_of(window, eye)).ok_or(HeadsetError::Dark { eye })?;
+        let bounds = screen_box(samples, half_of(window, eye), eye)?;
         Ok(Self { eye, bounds, picture: crop(window, bounds) })
     }
 
@@ -265,6 +287,22 @@ fn half_of(window: &RgbImage, eye: Eye) -> Region {
         Eye::Right => half,
     };
     Region { x, y: 0, width: half, height: window.height }
+}
+
+/// The screen in `eye`'s half `area`: the bounding box of its bright pixels, which touches no edge
+/// of `area`.
+fn screen_box(samples: &Samples<'_>, area: Region, eye: Eye) -> Result<Region, ScreenMissing> {
+    let bounds = bright_box(samples, area).ok_or(ScreenMissing::Dark { eye })?;
+    if touches_no_edge(bounds, area) { Ok(bounds) } else { Err(ScreenMissing::AtEdge { eye }) }
+}
+
+/// Whether `bounds` keeps at least one column or row of `area` on each of its four sides.
+fn touches_no_edge(bounds: Region, area: Region) -> bool {
+    let (Some((right, bottom)), Some((area_right, area_bottom))) = (bounds.end(), area.end())
+    else {
+        return false;
+    };
+    bounds.x > area.x && bounds.y > area.y && right < area_right && bottom < area_bottom
 }
 
 /// The bounding box of the bright pixels of `area`, or `None` when it holds none.

@@ -88,28 +88,29 @@ fn wait_for_screen(
 ) -> Result<(), StepError> {
     let mut waited = Duration::ZERO;
     loop {
-        let copy = headset.copy_window()?;
-        let shown = match &copy {
-            Some(window) => headset::has_screen(window)?,
-            None => false,
-        };
-        if shown {
+        let Some(failure) = look(headset, waited)? else {
             info!(?waited, "the headset window shows a screen");
             return Ok(());
-        }
+        };
         if let Some(status) = headset.wait_exit(Duration::ZERO)? {
             return Err(HeadsetError::AppExited { status, output: output.to_path_buf() }.into());
         }
         if waited >= SCREEN_TIMEOUT {
-            let failure = match copy {
-                Some(_) => HeadsetError::NoScreen { waited },
-                None => HeadsetError::NoWindow { waited },
-            };
             return Err(failure.into());
         }
         game.pause(LOOK_INTERVAL);
         waited = waited.saturating_add(LOOK_INTERVAL);
     }
+}
+
+/// Copies the headset window once, `waited` into the wait, and returns the failure the copy shows,
+/// or `None` when each half of it shows a screen.
+fn look(headset: &mut impl Headset, waited: Duration) -> Result<Option<HeadsetError>, StepError> {
+    let Some(window) = headset.copy_window()? else {
+        return Ok(Some(HeadsetError::NoWindow { waited }));
+    };
+    let missing = headset::missing_screen(&window)?;
+    Ok(missing.map(|last| HeadsetError::NoScreen { waited, last }))
 }
 
 /// Waits up to 30 s for the launch app to exit, and passes on exit code 0. A launch app that still
