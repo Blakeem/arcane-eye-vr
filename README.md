@@ -25,7 +25,7 @@ These parts work in tests:
 - A debug viewer shows that frame in its own window.
 - For trials, the debug viewer can show the game's scene with no interface, or the interface alone. The key `source` under Settings sets it.
 - For trials, the game's view can render from the left or right eye when `second_view` is off. The keys `main_view_eye` and `ipd_mm` under Settings set it.
-- By default, the game draws a second view beside its own view. Every frame is then a stereo pair side by side, flat frames included. Each half holds the entire picture at half its width, the half side by side format of 3D video. Once the second view is ready, the game's view fills the left half from the left eye position and the second view fills the right half from the right eye position. Before that, such as during the start-up video and a level load, the game draws a flat frame, and the mod puts that flat picture into each half. The mod draws the game's interface and mouse cursor into each half, so both eyes see them at the same place. In this mode, the Windows cursor is hidden only while the mod draws its cursor inside the game window. It shows over the window's title bar and borders. When the mod cannot stop the game's own interface draw in a side by side frame, the game's interface covers the entire frame and the Windows cursor shows beside the drawn cursor. When the game presents its frames from a thread that does not own its window, the mod draws no cursor and the Windows cursor stays visible. If the mod cannot start this drawing or a draw of the picture or the interface fails, flat frames stay flat and the game draws its interface across the entire frame. The Windows cursor then shows again. The keys `second_view` and `ipd_mm` under Settings set it.
+- By default, the game draws a second view beside its own view. Every frame is then a stereo pair side by side, flat frames included. Each half holds the entire picture at half its width, the half side by side format of 3D video. Once the second view is ready, the game's view fills the left half from the left eye position and the second view fills the right half from the right eye position. Before that, such as during the start-up video and a level load, the game draws a flat frame, and the mod puts that flat picture into each half. The mod draws the game's interface and mouse cursor into each half, so both eyes see them at the same place. Under them, the mod moves the second view's picture to the right, so the scene appears behind the screen and the interface and cursor appear on it. In this mode, the Windows cursor is hidden only while the mod draws its cursor inside the game window. It shows over the window's title bar and borders. When the mod cannot stop the game's own interface draw in a side by side frame, the game's interface covers the entire frame, the second view's picture is not moved, and the Windows cursor shows beside the drawn cursor. When the game presents its frames from a thread that does not own its window, the mod draws no cursor and the Windows cursor stays visible. If the mod cannot start this drawing or a draw of the picture or the interface fails, flat frames stay flat, the second view's picture is not moved, and the game draws its interface across the entire frame. The Windows cursor then shows again. The keys `second_view`, `ipd_mm` and `depth_offset_percent` under Settings set it.
 
 - The launch app can show the game on a flat screen in a headset. The section Headset screen describes it.
 
@@ -46,7 +46,8 @@ The mod reads two files from its root folder `%LOCALAPPDATA%\arcane-eye-vr\` at 
 version = 1
 
 [stereo]
-ipd_mm = 65.0    # distance between the eyes in millimeters, 50 to 80
+ipd_mm = 65.0                 # distance between the eyes in millimeters, 50 to 80
+depth_offset_percent = 1.5    # move of the right half's picture in percent of the half's width, 0 to 5
 
 [screen]
 distance_m = 2.5    # distance from the seated position in SteamVR to the headset screen in meters, 0.5 to 10
@@ -66,6 +67,8 @@ source = "back_buffer"      # what the debug viewer shows: back_buffer (the pres
 A file with an invalid value is rejected as an entire file and its defaults apply. The session log in `logs\` names the line and column of the problem. An unknown key in `settings.toml` is logged and skipped, and an unknown key in `dev.toml` rejects the file.
 
 `second_view = false` turns the stereo pair off, so the game draws its own view across the entire frame.
+
+A larger `depth_offset_percent` sets the scene further behind the screen.
 
 While the game runs, `arcane-eye-vr.exe --reload-settings` makes the mod read both files again and exits. A saved change to `settings.toml` then applies at once. An invalid change keeps the settings in use. A change to `dev.toml` applies at the next start. The mod reads the files at no other time while the game runs. When no running game accepts the request, the command shows a message that says so. The launch app reads `[screen]` once, when the headset screen starts.
 

@@ -24,6 +24,7 @@ pub(crate) fn load(folder: &Path) -> Config {
     let dev = dev_flags(file::read_dev(folder));
     info!(
         ipd_mm = settings.stereo.ipd_mm.millimeters(),
+        depth_offset_percent = settings.stereo.depth_offset_percent.percent(),
         main_view_eye = dev.stereo.main_view_eye.as_str(),
         second_view = dev.stereo.second_view.as_bool(),
         viewer_source = dev.viewer.source.as_str(),
@@ -75,7 +76,7 @@ mod tests {
 
     use diag::logging::{self, LogName};
     use settings::dev::{DevFlags, MainViewEye, SecondView};
-    use settings::player::{IpdMm, Settings};
+    use settings::player::{DepthOffsetPercent, IpdMm, Settings};
     use tracing::dispatcher;
 
     use super::{Config, load};
@@ -102,8 +103,8 @@ mod tests {
         assert_eq!(config.dev.stereo.second_view, SecondView::On);
         assert_eq!(
             lines,
-            ["\"settings loaded\" ipd_mm=65.0 main_view_eye=center second_view=true \
-              viewer_source=back_buffer"]
+            ["\"settings loaded\" ipd_mm=65.0 depth_offset_percent=1.5 main_view_eye=center \
+              second_view=true viewer_source=back_buffer"]
         );
     }
 
@@ -111,19 +112,22 @@ mod tests {
     fn valid_files_give_their_values_and_each_unknown_key_is_a_warning() {
         let dir = test_dir("config-valid");
         let root = dir.path();
-        fs::write(root.join("settings.toml"), "[stereo]\nipd_mm = 58.5\nipd = 1\n").expect("write");
+        let player = "[stereo]\nipd_mm = 58.5\ndepth_offset_percent = 3\nipd = 1\n";
+        fs::write(root.join("settings.toml"), player).expect("write");
         let dev = "[stereo]\nmain_view_eye = \"left\"\nsecond_view = false\n\
                    [viewer]\nsource = \"ui\"\n";
         fs::write(root.join("dev.toml"), dev).expect("write");
         let (config, lines) = load_logged(root, &root.join("logs"));
         let ipd_mm = IpdMm::try_from(58.5).expect("in range");
         assert_eq!(config.settings.stereo.ipd_mm, ipd_mm);
+        let depth_offset = DepthOffsetPercent::try_from(3.0).expect("in range");
+        assert_eq!(config.settings.stereo.depth_offset_percent, depth_offset);
         assert_eq!(config.dev.stereo.main_view_eye, MainViewEye::Left);
         assert_eq!(config.dev.stereo.second_view, SecondView::Off);
         let expected = [
             "\"unknown settings key ignored\" file=settings.toml key=stereo.ipd",
-            "\"settings loaded\" ipd_mm=58.5 main_view_eye=left second_view=false \
-             viewer_source=ui",
+            "\"settings loaded\" ipd_mm=58.5 depth_offset_percent=3.0 main_view_eye=left \
+             second_view=false viewer_source=ui",
         ];
         assert_eq!(lines, expected);
     }
@@ -147,8 +151,8 @@ mod tests {
             lines,
             [
                 warning,
-                "\"settings loaded\" ipd_mm=58.5 main_view_eye=center second_view=true \
-                 viewer_source=back_buffer"
+                "\"settings loaded\" ipd_mm=58.5 depth_offset_percent=1.5 \
+                 main_view_eye=center second_view=true viewer_source=back_buffer"
                     .to_owned()
             ]
         );

@@ -28,6 +28,7 @@ pub struct Settings {
 #[serde(default)]
 pub struct StereoSettings {
     pub ipd_mm: IpdMm,
+    pub depth_offset_percent: DepthOffsetPercent,
 }
 
 /// A distance between the eyes in millimeters, from [`IpdMm::MIN`] to [`IpdMm::MAX`] inclusive.
@@ -154,6 +155,49 @@ pub struct ScreenRangeError {
     pub max: f32,
     pub value: f32,
 }
+
+/// How far the right eye's picture moves right in a side by side frame, in percent of the half's
+/// width, from [`DepthOffsetPercent::MIN`] to [`DepthOffsetPercent::MAX`] inclusive. A larger move
+/// sets the scene further behind the screen surface.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(try_from = "f32")]
+pub struct DepthOffsetPercent(f32);
+
+impl DepthOffsetPercent {
+    pub const MIN: f32 = 0.0;
+    pub const MAX: f32 = 5.0;
+
+    pub const fn percent(self) -> f32 {
+        self.0
+    }
+}
+
+impl Default for DepthOffsetPercent {
+    fn default() -> Self {
+        Self(1.5)
+    }
+}
+
+impl TryFrom<f32> for DepthOffsetPercent {
+    type Error = DepthOffsetRangeError;
+
+    fn try_from(percent: f32) -> Result<Self, DepthOffsetRangeError> {
+        if (Self::MIN..=Self::MAX).contains(&percent) {
+            Ok(Self(percent))
+        } else {
+            Err(DepthOffsetRangeError(percent))
+        }
+    }
+}
+
+/// A depth offset outside the range of [`DepthOffsetPercent`].
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+#[error(
+    "depth_offset_percent must be from {min} to {max} percent, got {0}",
+    min = DepthOffsetPercent::MIN,
+    max = DepthOffsetPercent::MAX
+)]
+pub struct DepthOffsetRangeError(pub f32);
 
 /// The value of the top-level key `version`, which holds no information once it is checked.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]

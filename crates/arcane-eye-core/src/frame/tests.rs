@@ -11,6 +11,7 @@ use diag::logging::LogName;
 use game_bindings::state::arm_alloc_guard;
 use gfx::publish::ViewNames;
 use ipc_layout::perf_line::{self, PerfSummary};
+use settings::player::DepthOffsetPercent;
 
 use super::{FrameReport, FrameState, UiFrame, keep_cameras, on_frame, record_interval, skipped};
 use crate::eye_view::Layout;
@@ -43,9 +44,14 @@ fn log_lines(name: &str, frames: impl FnOnce()) -> Vec<String> {
     text.lines().map(str::to_owned).collect()
 }
 
+/// The UI layer's part of a flat frame's handler state, with the default depth offset.
+fn flat_ui(health: &Health) -> UiFrame<'_> {
+    UiFrame { health, next: Layout::MainOnly, depth_offset: DepthOffsetPercent::default() }
+}
+
 fn frame(state: &mut FrameState, test: &TestSwapchain) -> FrameReport {
     let health = Health::new();
-    let ui = UiFrame { health: &health, next: Layout::MainOnly };
+    let ui = flat_ui(&health);
     test.with(|address, swapchain| on_frame(state, address, swapchain, ui)).expect("a swapchain")
 }
 
@@ -296,7 +302,7 @@ fn a_new_device_at_a_reused_swapchain_address_replaces_the_held_devices() {
     let (mut state, _names) = test_state("reused-address");
     let reused = first.address();
     let health = Health::new();
-    let ui = UiFrame { health: &health, next: Layout::MainOnly };
+    let ui = flat_ui(&health);
     first.with(|_, swapchain| on_frame(&mut state, reused, swapchain, ui)).expect("a swapchain");
     let report = second.with(|_, swapchain| on_frame(&mut state, reused, swapchain, ui));
     assert_eq!(report, Some(FrameReport::Later));

@@ -7,11 +7,13 @@
 //!   [composite stage]   found each frame: pipeline global, special view, stage array, vtable
 //!   [UI enable byte]    read. The composite job of this frame read the same value, since the core
 //!                       writes the byte only here
-//!   [decide]            the pair and the UI texture the core draws into this frame, whether
-//!                       Windows shows its cursor over a drawn cursor, and what the core writes
-//!                       for the next frame
+//!   [decide]            the pair, the move and the UI texture the core draws into this frame,
+//!                       whether Windows shows its cursor over a drawn cursor, and what the core
+//!                       writes for the next frame
 //!   [aim]               the drawn cursor's pointer and cursor handle, in `cursor`
 //!   [pair]              a flat frame's entire picture into each half of the back buffer
+//!   [move]              a side by side frame's right half moved right by the player's depth
+//!                       offset, black in the columns it uncovers, in a frame that holds no UI yet
 //!   [draw]              the UI key's texture over each half of the back buffer
 //!   [cursor]            the game's cursor over each half of the back buffer, in each frame whose
 //!                       pointer is in the game window's client area
@@ -24,10 +26,11 @@
 //! flat frames before the eye view is ready, such as the start-up video and a level load. The game's
 //! UI stage fills the UI texture whether or not the byte is set, the texture table holds the UI
 //! texture in the start-up video and the loading picture, and the texture is premultiplied (all
-//! measured in the game). A failed draw of the pair or the UI texture switches the feature off. A
-//! feature that is off presents flat frames flat and gives the byte the game's value back, so the
-//! game draws its UI again. It also gives the cursor display counter the game's value back, so
-//! Windows shows the cursor over the game window again.
+//! measured in the game). A failed draw of the pair, the move or the UI texture switches the feature
+//! off. A feature that is off presents flat frames flat, leaves the right half where the game
+//! rendered it, and gives the byte the game's value back, so the game draws its UI again. It also
+//! gives the cursor display counter the game's value back, so Windows shows the cursor over the game
+//! window again.
 
 pub(crate) mod cursor;
 mod decide;
@@ -46,13 +49,14 @@ use game_bindings::texture_table::TextureKey;
 use game_mem::{GameAddr, try_read};
 use gfx::layer::{LayerDraw, LayerError};
 use settings::dev::SecondView;
+use settings::player::DepthOffsetPercent;
 use tracing::{info, warn};
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 use windows::core::HRESULT;
 
 use self::cursor::counter::{Marked, WindowsCursor};
 use self::cursor::{Aim, Canvas, Cursor};
-use self::decide::{Draw, Picture, Seen, Write, halves, step};
+use self::decide::{Draw, Picture, Seen, Write, depth_shift, halves, step};
 use crate::config::Config;
 use crate::eye_view::Layout;
 use crate::game_source::{GameSource, SourceFault};
@@ -77,10 +81,10 @@ enum UiLayerError {
     Locate(#[from] LocateError),
 }
 
-/// Why a frame's pair, UI texture or cursor was not drawn: a fault of the back buffer, of the UI
-/// texture's read or of the layer draw. It stops the UI layer only in a frame that draws the pair or
-/// the UI texture. A fault of the cursor's own read, conversion or placed draw skips only the cursor
-/// and is not one.
+/// Why a frame's pair, move, UI texture or cursor was not drawn: a fault of the back buffer, of the
+/// UI texture's read or of the layer draw. It stops the UI layer only in a frame that draws the
+/// pair, the move or the UI texture. A fault of the cursor's own read, conversion or placed draw
+/// skips only the cursor and is not one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum DrawFault {
     #[error("the back buffer's size {width} by {height} holds no rectangle")]
@@ -173,14 +177,20 @@ impl UiLayer {
         }
     }
 
-    /// Runs the feature for the frame whose back buffer is `target`. `next` is the layout of the
-    /// frame after it, which the eye view feature read at this Present call site. The work runs
-    /// inside its own `catch_unwind`, so a panic latches `ui-layer` off and leaves the frame handler
-    /// running.
-    pub(crate) fn on_frame(&mut self, health: &Health, next: Layout, target: &Target<'_>) {
+    /// Runs the feature for the frame whose back buffer is `target`, with the right half of a side
+    /// by side frame moved by `depth_offset`. `next` is the layout of the frame after it, which the
+    /// eye view feature read at this Present call site. The work runs inside its own
+    /// `catch_unwind`, so a panic latches `ui-layer` off and leaves the frame handler running.
+    pub(crate) fn on_frame(
+        &mut self,
+        health: &Health,
+        next: Layout,
+        depth_offset: DepthOffsetPercent,
+        target: &Target<'_>,
+    ) {
         let layout = mem::replace(&mut self.next, next);
         present::guarded(health, Feature::UiLayer, || {
-            if let Err(fault) = self.run(layout, target) {
+            if let Err(fault) = self.run(layout, depth_offset, target) {
                 // The failed check switches the feature off, so this line appears once.
                 warn!(
                     fault = %fault,
@@ -202,13 +212,20 @@ impl UiLayer {
     }
 
     /// One frame of `layout`: reads the composite stage's UI enable byte, draws a flat frame's
-    /// entire picture into each half, draws the UI texture into each half when the game's composite
-    /// job left it out, draws the cursor into each half, and writes the byte for the next frame.
-    fn run(&mut self, layout: Layout, target: &Target<'_>) -> Result<(), DrawFault> {
+    /// entire picture into each half, moves a side by side frame's right half by `depth_offset`,
+    /// draws the UI texture into each half when the game's composite job left it out, draws the
+    /// cursor into each half, and writes the byte for the next frame.
+    fn run(
+        &mut self,
+        layout: Layout,
+        depth_offset: DepthOffsetPercent,
+        target: &Target<'_>,
+    ) -> Result<(), DrawFault> {
         let picture = match layout {
             Layout::SideBySide { .. } => Picture::SideBySide,
             Layout::MainOnly => Picture::Flat,
         };
+        let shift = depth_shift(target.size.width, target.size.height, depth_offset);
         let read = self.stage().and_then(|stage| Some((stage, stage.ui_enabled()?)));
         let seen = read.map(|(stage, enabled)| self.see(stage, enabled));
         if seen.is_none() && picture == Picture::SideBySide {
@@ -218,7 +235,7 @@ impl UiLayer {
                 "ui layer found no composite stage, so the game draws its UI"
             );
         }
-        let step = step(picture, seen);
+        let step = step(picture, seen, shift);
         let aim = self.cursor.aim(target.window);
         self.draw(step.draw, step.windows_cursor, aim, target)?;
         if let (Write::Clear, Some((stage, enabled))) = (step.write, read) {
@@ -282,10 +299,11 @@ impl UiLayer {
         Ok(())
     }
 
-    /// Runs `draw` on each half of the back buffer: the pair first, then the UI key's texture of this
-    /// frame, then the cursor of `aim`. The UI texture is read before the pair, so a failed read
-    /// leaves the frame as the game drew it. A fault of the cursor's read, conversion or placed draw
-    /// skips only the cursor. Returns whether the cursor was drawn.
+    /// Runs `draw` on the back buffer: the pair or the move first, then the UI key's texture of this
+    /// frame into each half, then the cursor of `aim` into each half. The UI texture is read before
+    /// the pair and the move, so a failed read leaves the frame as the game drew it. A fault of the
+    /// cursor's read, conversion or placed draw skips only the cursor. Returns whether the cursor
+    /// was drawn.
     fn draw_halves(
         &mut self,
         draw: Draw,
@@ -310,6 +328,10 @@ impl UiLayer {
         };
         if draw.makes_pair() {
             layer.draw_copy(context, &back_buffer, &rects)?;
+        }
+        if let Some(shift) = draw.shift() {
+            layer.draw_copy_placed(context, &back_buffer, shift.source, &[shift.picture])?;
+            layer.draw_black(context, &back_buffer, &[shift.uncovered])?;
         }
         if let Some(ui) = ui {
             layer.draw(context, &back_buffer, &ui, &rects)?;

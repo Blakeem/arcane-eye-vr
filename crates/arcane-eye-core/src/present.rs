@@ -95,7 +95,8 @@ fn on_present_call(context: &CoreContext, thread: &RenderThread, registers: &mut
     shadow_cache::end_frame(context, thread, layout);
     object_slot::end_frame(context, thread, layout);
     let cameras = view_camera::end_frame(context, thread, layout);
-    let ui = UiFrame { health: &context.health, next: layout };
+    let depth_offset = settings.stereo.depth_offset_percent;
+    let ui = UiFrame { health: &context.health, next: layout, depth_offset };
     let frame =
         context.frame.with(thread, |state| frame::on_present_call(state, registers, cameras, ui));
     if frame == Some(FrameReport::FirstPresent) {

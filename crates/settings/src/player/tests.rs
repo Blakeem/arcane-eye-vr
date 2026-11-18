@@ -1,7 +1,8 @@
 //! The player file parser against texts written by hand.
 
 use super::{
-    IpdMm, IpdRangeError, Parsed, ScreenDistanceM, ScreenRangeError, ScreenWidthM, Settings, parse,
+    DepthOffsetPercent, DepthOffsetRangeError, IpdMm, IpdRangeError, Parsed, ScreenDistanceM,
+    ScreenRangeError, ScreenWidthM, Settings, parse,
 };
 use crate::rejection::{Position, Rejection};
 
@@ -41,6 +42,30 @@ fn the_distance_between_the_eyes_accepts_50_to_80_millimeters() {
     let not_a_number = rejection("ipd_mm must be from 50 to 80 millimeters, got NaN", 2, 10);
     assert_eq!(parsed_ipd("nan"), Err(not_a_number));
     assert_eq!(IpdMm::try_from(80.001), Err(IpdRangeError(80.001)));
+}
+
+fn depth(percent: f32) -> DepthOffsetPercent {
+    DepthOffsetPercent::try_from(percent).expect("a depth offset in range")
+}
+
+#[test]
+fn the_depth_offset_defaults_to_1_5_percent_and_accepts_0_to_5_percent() {
+    let default = Settings::default().stereo.depth_offset_percent;
+    assert_eq!(default.percent().to_bits(), 1.5_f32.to_bits());
+    let parsed_depth = |value: &str| parse(&format!("[stereo]\ndepth_offset_percent = {value}\n"));
+    let lower = parsed_depth("0").expect("the lower end");
+    assert_eq!(lower.settings.stereo.depth_offset_percent, depth(0.0));
+    let upper = parsed_depth("5.0").expect("the upper end");
+    assert_eq!(upper.settings.stereo.depth_offset_percent, depth(5.0));
+    assert_eq!(upper.settings.stereo.ipd_mm, IpdMm::default(), "the other key keeps its default");
+    let below = rejection("depth_offset_percent must be from 0 to 5 percent, got -0.1", 2, 24);
+    assert_eq!(parsed_depth("-0.1"), Err(below));
+    let above = rejection("depth_offset_percent must be from 0 to 5 percent, got 5.1", 2, 24);
+    assert_eq!(parsed_depth("5.1"), Err(above));
+    let not_a_number =
+        rejection("depth_offset_percent must be from 0 to 5 percent, got NaN", 2, 24);
+    assert_eq!(parsed_depth("nan"), Err(not_a_number));
+    assert_eq!(DepthOffsetPercent::try_from(5.001), Err(DepthOffsetRangeError(5.001)));
 }
 
 #[test]

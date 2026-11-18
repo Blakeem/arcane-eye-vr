@@ -14,7 +14,7 @@ use windows::Win32::Foundation::{E_INVALIDARG, RECT};
 use windows::Win32::Graphics::Direct3D::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_SHADER_RESOURCE, D3D11_BLEND_DESC, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_ONE,
-    D3D11_BLEND_OP_ADD, D3D11_COLOR_WRITE_ENABLE_ALL, D3D11_CULL_BACK, D3D11_FILL_SOLID,
+    D3D11_BLEND_OP_ADD, D3D11_BOX, D3D11_COLOR_WRITE_ENABLE_ALL, D3D11_CULL_BACK, D3D11_FILL_SOLID,
     D3D11_RASTERIZER_DESC, D3D11_RENDER_TARGET_BLEND_DESC, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT,
     D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC, D3D11_USAGE_IMMUTABLE, D3D11_VIEWPORT,
     ID3D11BlendState, ID3D11Device, ID3D11DeviceContext, ID3D11PixelShader, ID3D11RasterizerState,
@@ -264,14 +264,34 @@ impl TargetCopy {
     }
 
     /// Copies the first subresource of `target`, which `desc` describes, into the copy. A
-    /// multisampled target is resolved.
+    /// single-sampled target with a `source` box inside it gives only the pixels of that box, to the
+    /// same place. Any other target is copied entire, and a multisampled one is resolved, since a
+    /// box copy cannot read a multisampled texture.
     pub(crate) fn fill(
         &self,
         context: &ID3D11DeviceContext,
         target: &ID3D11Texture2D,
         desc: &D3D11_TEXTURE2D_DESC,
+        source: Option<D3D11_BOX>,
     ) {
-        copy_first_subresource(context, &self.texture, target, desc);
+        let Some(source) = source.filter(|_| desc.SampleDesc.Count == 1) else {
+            copy_first_subresource(context, &self.texture, target, desc);
+            return;
+        };
+        // SAFETY: both textures belong to the context's device, are single-sampled and share the
+        // size and format of `desc`, and the caller's box lies inside that size.
+        unsafe {
+            context.CopySubresourceRegion(
+                &self.texture,
+                0,
+                source.left,
+                source.top,
+                0,
+                target,
+                0,
+                Some(&raw const source),
+            );
+        }
     }
 }
 

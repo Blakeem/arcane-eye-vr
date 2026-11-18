@@ -3,6 +3,7 @@
 
 mod cursor;
 mod decide;
+mod depth;
 mod pair;
 
 use diag::health::{Feature, FeatureState, Health};
@@ -14,7 +15,7 @@ use game_bindings::state::arm_alloc_guard;
 use game_bindings::texture_table::TextureKey;
 use game_mem::GameAddr;
 use settings::dev::{DevFlags, MainViewEye, SecondView, StereoFlags};
-use settings::player::Settings;
+use settings::player::{DepthOffsetPercent, Settings};
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 use windows::core::Interface as _;
@@ -105,14 +106,31 @@ fn running() -> Health {
     health
 }
 
+/// A depth offset of `percent` percent.
+fn depth(percent: f32) -> DepthOffsetPercent {
+    DepthOffsetPercent::try_from(percent).expect("a depth offset in range")
+}
+
 /// One frame of `layer` at the Present call site of `swapchain`, where the eye view feature read
-/// `next`.
+/// `next`, with no depth offset.
 fn frame(layer: &mut UiLayer, health: &Health, swapchain: &IDXGISwapChain, next: Layout) {
+    offset_frame(layer, health, swapchain, next, depth(0.0));
+}
+
+/// One frame as `frame` runs it, with `depth_offset`.
+fn offset_frame(
+    layer: &mut UiLayer,
+    health: &Health,
+    swapchain: &IDXGISwapChain,
+    next: Layout,
+    depth_offset: DepthOffsetPercent,
+) {
     let device = raw::device(swapchain).expect("the swapchain's device");
     let context = raw::immediate_context(&device).expect("the immediate context");
     let (size, window) = raw::swapchain_desc(swapchain).expect("the swapchain's description");
     let devices = (device, context);
-    layer.on_frame(health, next, &Target { swapchain, devices: &devices, size, window });
+    let target = Target { swapchain, devices: &devices, size, window };
+    layer.on_frame(health, next, depth_offset, &target);
 }
 
 /// The indices in the back buffer's pixels of row 16, the middle row, at the columns 8, 24, 40 and
@@ -294,15 +312,18 @@ fn a_flat_frame_and_a_side_by_side_frame_make_no_heap_allocation() {
     let devices = (device, context);
     let target = Target { swapchain: &test.swapchain, devices: &devices, size, window };
 
+    // 5 percent of a 32-column half moves it 2 columns.
+    let offset = depth(5.0);
+
     let guard = arm_alloc_guard().expect("arm the allocation guard");
-    layer.on_frame(&health, SIDE_BY_SIDE, &target);
+    layer.on_frame(&health, SIDE_BY_SIDE, offset, &target);
     let flat = guard.count();
-    layer.on_frame(&health, SIDE_BY_SIDE, &target);
+    layer.on_frame(&health, SIDE_BY_SIDE, offset, &target);
     let side_by_side = guard.count();
     drop(guard);
 
     assert_eq!(flat, 0, "the flat frame's pair and UI draw allocated");
-    assert_eq!(side_by_side, 0, "the side by side frame's UI draw allocated");
+    assert_eq!(side_by_side, 0, "the side by side frame's move and UI draw allocated");
     assert_eq!(eighths(&test), [RED, GREEN, RED, GREEN], "the guarded frames drew");
 }
 

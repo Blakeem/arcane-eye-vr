@@ -112,7 +112,12 @@ fn apply(folder: &Path, started: DevFlags, published: &Published) {
         Ok(parsed) => {
             config::warn_unknown_keys(&parsed);
             published.set(parsed.settings);
-            info!(ipd_mm = parsed.settings.stereo.ipd_mm.millimeters(), "settings reloaded");
+            let stereo = parsed.settings.stereo;
+            info!(
+                ipd_mm = stereo.ipd_mm.millimeters(),
+                depth_offset_percent = stereo.depth_offset_percent.percent(),
+                "settings reloaded"
+            );
         }
         Err(error) => warn!(
             error = %error_chain::chain(&error),

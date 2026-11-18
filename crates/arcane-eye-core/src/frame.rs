@@ -20,6 +20,7 @@ use diag::{error_every, once, warn_every};
 use hooks::Registers;
 use ipc_layout::camera_line::{self, CameraEye};
 use ipc_layout::perf_line;
+use settings::player::DepthOffsetPercent;
 use stereo_core::eye::Eye;
 use tracing::Level;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
@@ -73,12 +74,13 @@ impl FrameState {
     }
 }
 
-/// What the UI layer takes from the Present call-site handler: the health registry and the layout of
-/// the next frame.
+/// What the UI layer takes from the Present call-site handler: the health registry, the layout of
+/// the next frame and the player's depth offset in the frame's copy of the settings.
 #[derive(Clone, Copy)]
 pub(crate) struct UiFrame<'frame> {
     pub(crate) health: &'frame Health,
     pub(crate) next: Layout,
+    pub(crate) depth_offset: DepthOffsetPercent,
 }
 
 /// The rate-limit state of each log call site of the frame handler.
@@ -248,7 +250,7 @@ fn on_frame(
     if let Some(devices) = &state.devices {
         if let Some(layer) = &mut state.ui_layer {
             let target = Target { swapchain, devices, size: back_buffer, window };
-            layer.on_frame(ui.health, ui.next, &target);
+            layer.on_frame(ui.health, ui.next, ui.depth_offset, &target);
         }
         state.viewer.on_frame(swapchain, devices, state.game_source.as_mut());
     }

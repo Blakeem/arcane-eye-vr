@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use diag::logging::{self, LogName, Logging};
 use settings::dev::{DevFlags, SecondView};
-use settings::player::{IpdMm, Settings};
+use settings::player::{DepthOffsetPercent, IpdMm, Settings};
 use tracing::dispatcher;
 
 use super::{Published, Reload, StartError, apply, run, start};
@@ -74,16 +74,19 @@ fn a_player_file_that_parses_becomes_the_published_settings_and_logs_its_values(
     let dir = test_dir("reload-parsed");
     let root = dir.path();
     let published = Published::new(with_ipd(58.0));
-    fs::write(root.join("settings.toml"), "[stereo]\nipd_mm = 72.5\nipd = 1\n").expect("write");
+    let player = "[stereo]\nipd_mm = 72.5\ndepth_offset_percent = 4\nipd = 1\n";
+    fs::write(root.join("settings.toml"), player).expect("write");
+    let mut changed = with_ipd(72.5);
+    changed.stereo.depth_offset_percent = DepthOffsetPercent::try_from(4.0).expect("in range");
     let lines = apply_logged(root, &published, &root.join("logs-1"));
-    assert_eq!(published.get(), with_ipd(72.5));
+    assert_eq!(published.get(), changed);
     let expected = [
         "\"unknown settings key ignored\" file=settings.toml key=stereo.ipd",
-        "\"settings reloaded\" ipd_mm=72.5",
+        "\"settings reloaded\" ipd_mm=72.5 depth_offset_percent=4.0",
     ];
     assert_eq!(lines, expected);
     let again = apply_logged(root, &published, &root.join("logs-2"));
-    assert_eq!(published.get(), with_ipd(72.5));
+    assert_eq!(published.get(), changed);
     assert_eq!(again, expected, "an unchanged file is read and logged again");
 }
 
@@ -94,7 +97,7 @@ fn a_missing_player_file_publishes_the_defaults() {
     let published = Published::new(with_ipd(58.0));
     let lines = apply_logged(root, &published, &root.join("logs"));
     assert_eq!(published.get(), Settings::default());
-    assert_eq!(lines, ["\"settings reloaded\" ipd_mm=65.0"]);
+    assert_eq!(lines, ["\"settings reloaded\" ipd_mm=65.0 depth_offset_percent=1.5"]);
 }
 
 #[test]
@@ -120,7 +123,7 @@ fn dev_flags_that_differ_from_the_start_change_no_setting_and_wait_for_the_next_
     let lines = apply_logged(root, &published, &root.join("logs-1"));
     assert_eq!(published.get(), Settings::default());
     let expected = [
-        "\"settings reloaded\" ipd_mm=65.0",
+        "\"settings reloaded\" ipd_mm=65.0 depth_offset_percent=1.5",
         "\"dev file changed, and its flags apply at the next start\" main_view_eye=center \
          second_view=false viewer_source=back_buffer",
     ];
@@ -133,7 +136,11 @@ fn dev_flags_that_differ_from_the_start_change_no_setting_and_wait_for_the_next_
     assert!(warning.starts_with(message), "{warning}");
     fs::write(root.join("dev.toml"), "").expect("write");
     let back = apply_logged(root, &published, &root.join("logs-3"));
-    assert_eq!(back, ["\"settings reloaded\" ipd_mm=65.0"], "the flags read at start again");
+    assert_eq!(
+        back,
+        ["\"settings reloaded\" ipd_mm=65.0 depth_offset_percent=1.5"],
+        "the flags read at start again"
+    );
 }
 
 #[test]
@@ -182,7 +189,10 @@ fn the_thread_reads_the_files_once_per_request_and_never_without_one() {
     stop.set().expect("signal the stop event");
     thread.join().expect("the settings thread ends without a panic");
     assert_eq!(published.get(), with_ipd(63.0));
-    let reloads = ["\"settings reloaded\" ipd_mm=61.0", "\"settings reloaded\" ipd_mm=63.0"];
+    let reloads = [
+        "\"settings reloaded\" ipd_mm=61.0 depth_offset_percent=1.5",
+        "\"settings reloaded\" ipd_mm=63.0 depth_offset_percent=1.5",
+    ];
     assert_eq!(messages(logging), reloads, "one read for each request and none without one");
 }
 

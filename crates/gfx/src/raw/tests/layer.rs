@@ -1,5 +1,6 @@
 //! The layer draw against a WARP device, with the shaders the build script compiled.
 
+mod placed_copy;
 mod restore;
 
 use windows::Win32::Graphics::Direct3D11::{
@@ -196,12 +197,10 @@ fn a_target_of_another_size_gets_a_new_copy() {
     }
 }
 
-#[test]
-fn a_multisampled_target_is_resolved_into_its_copy() {
-    let gpu = warp();
-    let mut draw = LayerDraw::create(&gpu.device).expect("create the layer draw");
-    let (multisampled, resolved_desc) = (desc(4, 2, 4), desc(4, 2, 1));
-    let (mut target, mut resolved, mut view) = (None, None, None);
+/// A 4x multisampled render target of 4 by 2 pixels, cleared to green.
+fn green_multisampled(gpu: &Gpu) -> ID3D11Texture2D {
+    let multisampled = desc(4, 2, 4);
+    let (mut target, mut view) = (None, None);
     // SAFETY: the descriptor and the out slot are live for the call.
     unsafe { gpu.device.CreateTexture2D(&raw const multisampled, None, Some(&raw mut target)) }
         .expect("create a 4x multisampled target");
@@ -211,9 +210,13 @@ fn a_multisampled_target_is_resolved_into_its_copy() {
         .expect("create the render target view");
     // SAFETY: the view belongs to this device's immediate context.
     unsafe { gpu.context.ClearRenderTargetView(&view.expect("the view"), &[0.0, 1.0, 0.0, 1.0]) };
+    target
+}
 
-    draw.draw_copy(&gpu.context, &target, &halves(4, 2)).expect("the copy draw");
-
+/// The pixels of `target`, a multisampled texture of 4 by 2 pixels, resolved.
+fn resolved_pixels(gpu: &Gpu, target: &ID3D11Texture2D) -> Vec<[u8; 4]> {
+    let resolved_desc = desc(4, 2, 1);
+    let mut resolved = None;
     // SAFETY: the descriptor and the out slot are live for the call.
     unsafe { gpu.device.CreateTexture2D(&raw const resolved_desc, None, Some(&raw mut resolved)) }
         .expect("create the resolved texture");
@@ -221,8 +224,33 @@ fn a_multisampled_target_is_resolved_into_its_copy() {
     let format = resolved_desc.Format;
     // SAFETY: both textures belong to this device, and `resolved` is single-sampled with the
     // target's size and format.
-    unsafe { gpu.context.ResolveSubresource(&resolved, 0, &target, 0, format) };
-    assert_eq!(pixels(&gpu, &resolved), [GREEN; 8]);
+    unsafe { gpu.context.ResolveSubresource(&resolved, 0, target, 0, format) };
+    pixels(gpu, &resolved)
+}
+
+#[test]
+fn a_multisampled_target_is_resolved_into_its_copy() {
+    let gpu = warp();
+    let mut draw = LayerDraw::create(&gpu.device).expect("create the layer draw");
+    let target = green_multisampled(&gpu);
+
+    draw.draw_copy(&gpu.context, &target, &halves(4, 2)).expect("the copy draw");
+
+    assert_eq!(resolved_pixels(&gpu, &target), [GREEN; 8]);
+}
+
+#[test]
+fn a_multisampled_target_is_resolved_entire_for_a_placed_copy_of_part_of_it() {
+    let gpu = warp();
+    let mut draw = LayerDraw::create(&gpu.device).expect("create the layer draw");
+    let target = green_multisampled(&gpu);
+    let [left, _] = halves(4, 2);
+    let whole = Rect { x: 0, y: 0, width: 4, height: 2 };
+    let in_place = Placement { area: area(0.0, 0.0, 4.0, 2.0), clip: whole };
+
+    draw.draw_copy_placed(&gpu.context, &target, left, &[in_place]).expect("the placed copy");
+
+    assert_eq!(resolved_pixels(&gpu, &target), [GREEN; 8]);
 }
 
 #[test]
