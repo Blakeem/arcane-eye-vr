@@ -198,12 +198,14 @@ fn bind_other_state(gpu: &Gpu) -> Bound {
 #[test]
 fn the_draw_leaves_the_context_state_as_it_found_it() {
     let gpu = warp();
-    let draw = LayerDraw::create(&gpu.device).expect("create the layer draw");
+    let mut draw = LayerDraw::create(&gpu.device).expect("create the layer draw");
     let (target, layer) = (filled(&gpu, 4, 4, BLUE), filled(&gpu, 2, 2, HALF_RED));
     let before = bind_other_state(&gpu);
 
     draw.draw(&gpu.context, &target, &layer, &[Rect { x: 0, y: 0, width: 4, height: 4 }])
         .expect("the draw");
+    assert_eq!(bound(&gpu), before);
+    draw.draw_copy(&gpu.context, &target, &halves(4, 4)).expect("the copy draw");
 
     assert_eq!(bound(&gpu), before);
     let drawn = pixels(&gpu, &target);
@@ -225,6 +227,107 @@ fn a_texture_without_the_needed_bind_flag_is_an_error_that_names_its_view() {
     assert_eq!(no_target.step, LayerStep::TargetView);
     assert_eq!(no_layer.step, LayerStep::LayerView);
     assert_eq!(pixels(&gpu, &both), [BLUE; 4], "a failed draw changes nothing");
+}
+
+/// Two colors with alpha 0 whose mean in each channel is a whole number.
+const DARK_CLEAR: [u8; 4] = [64, 32, 192, 0];
+const LIGHT_CLEAR: [u8; 4] = [192, 96, 64, 0];
+const MEAN_CLEAR: [u8; 4] = [128, 64, 128, 0];
+
+/// The left half and the right half of a target `width` pixels wide and `height` pixels high.
+fn halves(width: u16, height: u16) -> [Rect; 2] {
+    let half = width / 2;
+    [Rect { x: 0, y: 0, width: half, height }, Rect { x: half, y: 0, width: half, height }]
+}
+
+/// A render target of `width` by 2 pixels whose columns alternate `DARK_CLEAR` and `LIGHT_CLEAR`.
+fn striped(gpu: &Gpu, width: u32) -> ID3D11Texture2D {
+    let row: Vec<[u8; 4]> =
+        (0..width).map(|x| if x % 2 == 0 { DARK_CLEAR } else { LIGHT_CLEAR }).collect();
+    texture(gpu, width, 2, D3D11_BIND_RENDER_TARGET.0, &row.repeat(2))
+}
+
+#[test]
+fn a_copy_draw_squeezes_each_pair_of_columns_into_their_mean_and_replaces_the_pixels() {
+    let gpu = warp();
+    let mut draw = LayerDraw::create(&gpu.device).expect("create the layer draw");
+    let target = striped(&gpu, 8);
+
+    draw.draw_copy(&gpu.context, &target, &halves(8, 2)).expect("the copy draw");
+
+    for (index, pixel) in pixels(&gpu, &target).into_iter().enumerate() {
+        assert_near(pixel, MEAN_CLEAR, &format!("pixel {index}"));
+    }
+}
+
+#[test]
+fn each_half_gets_the_entire_target_at_half_its_width_in_its_orientation() {
+    let gpu = warp();
+    let mut draw = LayerDraw::create(&gpu.device).expect("create the layer draw");
+    let picture = [RED, RED, GREEN, GREEN, WHITE, WHITE, BLUE, BLUE];
+    let target = texture(&gpu, 4, 2, D3D11_BIND_RENDER_TARGET.0, &picture);
+
+    draw.draw_copy(&gpu.context, &target, &halves(4, 2)).expect("the copy draw");
+
+    let rows = [[RED, GREEN, RED, GREEN], [WHITE, BLUE, WHITE, BLUE]];
+    assert_eq!(pixels(&gpu, &target), rows.as_flattened());
+}
+
+#[test]
+fn a_target_of_another_size_gets_a_new_copy() {
+    let gpu = warp();
+    let mut draw = LayerDraw::create(&gpu.device).expect("create the layer draw");
+    let (small, large) = (striped(&gpu, 4), striped(&gpu, 8));
+
+    draw.draw_copy(&gpu.context, &small, &halves(4, 2)).expect("the small copy draw");
+    draw.draw_copy(&gpu.context, &large, &halves(8, 2)).expect("the large copy draw");
+
+    for pixel in pixels(&gpu, &small).into_iter().chain(pixels(&gpu, &large)) {
+        assert_near(pixel, MEAN_CLEAR, "a squeezed pixel");
+    }
+}
+
+#[test]
+fn a_multisampled_target_is_resolved_into_its_copy() {
+    let gpu = warp();
+    let mut draw = LayerDraw::create(&gpu.device).expect("create the layer draw");
+    let (multisampled, resolved_desc) = (desc(4, 2, 4), desc(4, 2, 1));
+    let (mut target, mut resolved, mut view) = (None, None, None);
+    // SAFETY: the descriptor and the out slot are live for the call.
+    unsafe { gpu.device.CreateTexture2D(&raw const multisampled, None, Some(&raw mut target)) }
+        .expect("create a 4x multisampled target");
+    let target = target.expect("the multisampled target");
+    // SAFETY: `target` is a render target of this device, and the out slot is live.
+    unsafe { gpu.device.CreateRenderTargetView(&target, None, Some(&raw mut view)) }
+        .expect("create the render target view");
+    // SAFETY: the view belongs to this device's immediate context.
+    unsafe { gpu.context.ClearRenderTargetView(&view.expect("the view"), &[0.0, 1.0, 0.0, 1.0]) };
+
+    draw.draw_copy(&gpu.context, &target, &halves(4, 2)).expect("the copy draw");
+
+    // SAFETY: the descriptor and the out slot are live for the call.
+    unsafe { gpu.device.CreateTexture2D(&raw const resolved_desc, None, Some(&raw mut resolved)) }
+        .expect("create the resolved texture");
+    let resolved = resolved.expect("the resolved texture");
+    let format = resolved_desc.Format;
+    // SAFETY: both textures belong to this device, and `resolved` is single-sampled with the
+    // target's size and format.
+    unsafe { gpu.context.ResolveSubresource(&resolved, 0, &target, 0, format) };
+    assert_eq!(pixels(&gpu, &resolved), [GREEN; 8]);
+}
+
+#[test]
+fn a_copy_draw_into_a_texture_that_cannot_be_a_target_names_the_view_and_changes_nothing() {
+    let gpu = warp();
+    let mut draw = LayerDraw::create(&gpu.device).expect("create the layer draw");
+    let sample_only = texture(&gpu, 2, 2, D3D11_BIND_SHADER_RESOURCE.0, &[RED, BLUE, RED, BLUE]);
+
+    let error = draw
+        .draw_copy(&gpu.context, &sample_only, &halves(2, 2))
+        .expect_err("no view to draw into");
+
+    assert_eq!(error.step, LayerStep::TargetView);
+    assert_eq!(pixels(&gpu, &sample_only), [RED, BLUE, RED, BLUE]);
 }
 
 #[test]

@@ -118,7 +118,8 @@ impl Drop for HeaderView {
     }
 }
 
-/// The back buffer properties the shared texture copies: its size and format.
+/// The properties a copy of a texture takes from it, in the shared texture and in the layer draw's
+/// copy: its size and format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SourceKey {
     pub(crate) width: u32,
@@ -129,6 +130,42 @@ pub(crate) struct SourceKey {
 impl SourceKey {
     pub(crate) const fn of(desc: &D3D11_TEXTURE2D_DESC) -> Self {
         Self { width: desc.Width, height: desc.Height, format: desc.Format }
+    }
+
+    /// The description of a single-sampled texture of the key's size and format that a shader
+    /// samples, with `misc_flags`.
+    pub(crate) const fn copy_desc(self, misc_flags: u32) -> D3D11_TEXTURE2D_DESC {
+        D3D11_TEXTURE2D_DESC {
+            Width: self.width,
+            Height: self.height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: self.format,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned(),
+            CPUAccessFlags: 0,
+            MiscFlags: misc_flags,
+        }
+    }
+}
+
+/// Copies the first subresource of `source`, which `desc` describes, into `copy`, a texture of
+/// `SourceKey::copy_desc` for `desc`. A multisampled source is resolved.
+pub(crate) fn copy_first_subresource(
+    context: &ID3D11DeviceContext,
+    copy: &ID3D11Texture2D,
+    source: &ID3D11Texture2D,
+    desc: &D3D11_TEXTURE2D_DESC,
+) {
+    if desc.SampleDesc.Count > 1 {
+        // SAFETY: both textures belong to the context's device, and `copy` is single-sampled with
+        // the source's size and format.
+        unsafe { context.ResolveSubresource(copy, 0, source, 0, desc.Format) };
+    } else {
+        // SAFETY: both textures belong to the context's device, and the first subresource of each
+        // has the same size and format.
+        unsafe { context.CopySubresourceRegion(copy, 0, 0, 0, 0, source, 0, None) };
     }
 }
 
@@ -158,18 +195,7 @@ impl SharedTexture {
         name: &HSTRING,
     ) -> Result<Self, PublishError> {
         let misc = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
-        let desc = D3D11_TEXTURE2D_DESC {
-            Width: key.width,
-            Height: key.height,
-            MipLevels: 1,
-            ArraySize: 1,
-            Format: key.format,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
-            Usage: D3D11_USAGE_DEFAULT,
-            BindFlags: D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned(),
-            CPUAccessFlags: 0,
-            MiscFlags: misc.0.cast_unsigned(),
-        };
+        let desc = key.copy_desc(misc.0.cast_unsigned());
         let mut texture = None;
         // SAFETY: `desc` and `texture` are live for the call, and no initial data is passed.
         let created =
@@ -214,14 +240,7 @@ impl SharedTexture {
         source: &ID3D11Texture2D,
         desc: &D3D11_TEXTURE2D_DESC,
     ) {
-        if desc.SampleDesc.Count > 1 {
-            // SAFETY: both textures belong to the context's device, and the texture is single-sampled
-            // with the source's size and format.
-            unsafe { context.ResolveSubresource(&self.texture, 0, source, 0, desc.Format) };
-        } else {
-            // SAFETY: both textures belong to the context's device and have the same size and format.
-            unsafe { context.CopyResource(&self.texture, source) };
-        }
+        copy_first_subresource(context, &self.texture, source, desc);
     }
 
     pub(crate) fn release(&self) -> Result<(), HRESULT> {

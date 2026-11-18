@@ -1,4 +1,4 @@
-// Draws one texture with premultiplied alpha over the entire viewport.
+// Samples one texture over the entire viewport. The blend state the draw binds combines it with the target.
 
 Texture2D<float4> layer : register(t0);
 SamplerState layer_sampler : register(s0);

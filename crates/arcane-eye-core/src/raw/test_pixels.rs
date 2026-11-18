@@ -1,5 +1,5 @@
-//! Pixel fixtures for the core's tests: a texture with given pixels and the pixels of a test
-//! swapchain's back buffer.
+//! Pixel fixtures for the core's tests: a texture with given pixels, and the pixels written into and
+//! read from a test swapchain's back buffer.
 
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
@@ -52,6 +52,18 @@ pub(crate) fn texture_of(test: &TestSwapchain, width: u32, pixels: &[Pixel]) -> 
     }
     .expect("create the test texture");
     texture.expect("the test texture")
+}
+
+/// Copies `pixels`, in row order, into `test`'s back buffer, as the engine fills it before the
+/// Present call site.
+pub(crate) fn fill_back_buffer(test: &TestSwapchain, pixels: &[Pixel]) {
+    let device = super::device(&test.swapchain).expect("the swapchain's device");
+    let context = super::immediate_context(&device).expect("the immediate context");
+    let size = super::back_buffer(&test.swapchain).expect("the back buffer's size");
+    let picture = texture_of(test, size.width, pixels);
+    let back_buffer = super::back_buffer_texture(&test.swapchain).expect("the back buffer");
+    // SAFETY: both textures belong to this device and have the back buffer's size and format.
+    unsafe { context.CopyResource(&back_buffer, &picture) };
 }
 
 /// The pixels of `test`'s back buffer in row order.

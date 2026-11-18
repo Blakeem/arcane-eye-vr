@@ -1,5 +1,6 @@
-//! The UI layer feature: in a side by side frame the core draws the game's UI texture into each half
-//! of the back buffer, in place of the game's own draw across both halves.
+//! The UI layer feature: every frame the game presents is a half side by side pair, and the core
+//! draws the game's UI texture into each half of the back buffer, in place of the game's own draw
+//! across the entire frame.
 //!
 //! ```text
 //! PRESENT CALL SITE, render thread, before the debug viewer's copy
@@ -7,14 +8,18 @@
 //!   [UI enable byte]    read. The composite job of this frame read the same value, since the core
 //!                       writes the byte only here
 //!   [decide]            what the core draws into this frame and what it writes for the next
+//!   [pair]              a flat frame's entire picture into each half of the back buffer
 //!   [draw]              the UI key's texture over each half of the back buffer
-//!   [write]             0 while frames are side by side, the game's value otherwise
+//!   [write]             0 while the feature runs, the game's value when it stops
 //! ```
 //!
-//! The feature has no hook of its own. The frame handler runs it once per frame. The game's UI stage
-//! fills the UI texture whether or not the byte is set, and the texture is premultiplied (both
-//! measured in the game). A draw that fails switches the feature off. A feature that is off gives
-//! the byte the game's value back, so the game draws its UI again.
+//! The feature has no hook of its own. The frame handler runs it once per frame. The engine renders
+//! flat frames before the eye view is ready, such as the start-up video and a level load. The game's
+//! UI stage fills the UI texture whether or not the byte is set, the texture table holds the UI
+//! texture in the start-up video and the loading picture, and the texture is premultiplied (all
+//! measured in the game). A draw that fails switches the feature off. A feature that is off
+//! presents flat frames flat and gives the byte the game's value back, so the game draws its UI
+//! again.
 
 mod decide;
 
@@ -36,7 +41,7 @@ use tracing::{info, warn};
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 use windows::core::HRESULT;
 
-use self::decide::{Cover, Picture, Seen, Write, rects, step};
+use self::decide::{Draw, Picture, Seen, Write, halves, step};
 use crate::config::Config;
 use crate::eye_view::Layout;
 use crate::game_source::{GameSource, SourceFault};
@@ -60,7 +65,7 @@ enum UiLayerError {
     Locate(#[from] LocateError),
 }
 
-/// Why the UI texture was not drawn into a frame.
+/// Why the pair or the UI texture was not drawn into a frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum DrawFault {
     #[error("the back buffer's size {width} by {height} holds no rectangle")]
@@ -94,7 +99,7 @@ pub(crate) struct UiLayer {
     /// The composite stage's vtable.
     vtable: GameAddr,
     source: GameSource,
-    /// The layer draw of the device that the last drawn frame had.
+    /// The layer draw of the device that the last drawn frame had, dropped when the feature stops.
     layer: Option<LayerDraw>,
     /// The layout of the frame at the next Present call site.
     next: Layout,
@@ -157,7 +162,10 @@ impl UiLayer {
         present::guarded(health, Feature::UiLayer, || {
             if let Err(fault) = self.run(layout, target) {
                 // The failed check switches the feature off, so this line appears once.
-                warn!(fault = %fault, "ui layer draw failed, so the game draws its UI again");
+                warn!(
+                    fault = %fault,
+                    "ui layer draw failed, so flat frames stay flat and the game draws its UI again"
+                );
                 health.check_failed(Feature::UiLayer);
             }
         });
@@ -166,47 +174,42 @@ impl UiLayer {
         }
     }
 
-    /// One frame of `layout`: reads the composite stage's UI enable byte, draws the UI texture when
-    /// the game's composite job left it out, and writes the byte for the next frame.
+    /// One frame of `layout`: reads the composite stage's UI enable byte, draws a flat frame's
+    /// entire picture into each half, draws the UI texture into each half when the game's composite
+    /// job left it out, and writes the byte for the next frame.
     fn run(&mut self, layout: Layout, target: &Target<'_>) -> Result<(), DrawFault> {
         let picture = match layout {
             Layout::SideBySide { .. } => Picture::SideBySide,
             Layout::MainOnly => Picture::Flat,
         };
         let read = self.stage().and_then(|stage| Some((stage, stage.ui_enabled()?)));
-        let Some((stage, enabled)) = read else {
-            if picture == Picture::SideBySide {
-                warn_every!(
-                    self.stage_log,
-                    LOG_PERIOD,
-                    "ui layer found no composite stage, so the game draws its UI"
-                );
-            }
-            return Ok(());
-        };
+        let seen = read.map(|(stage, enabled)| self.see(stage, enabled));
+        if seen.is_none() && picture == Picture::SideBySide {
+            warn_every!(
+                self.stage_log,
+                LOG_PERIOD,
+                "ui layer found no composite stage, so the game draws its UI"
+            );
+        }
+        let step = step(picture, seen);
+        self.draw(step.draw, target)?;
+        if let (Write::Clear, Some((stage, enabled))) = (step.write, read) {
+            self.write(stage, UI_OFF);
+            self.cleared = Some(Cleared { stage, game_value: enabled });
+        }
+        Ok(())
+    }
+
+    /// Who drew the UI of this frame, from the byte `enabled` of `stage`. Forgets a held 0 that the
+    /// game overwrote or that belongs to a stage the pipeline no longer holds.
+    fn see(&mut self, stage: CompositeStage, enabled: u8) -> Seen {
         let held = self.cleared.filter(|cleared| cleared.stage == stage && enabled == UI_OFF);
         self.cleared = held;
-        let seen = match (enabled, held) {
+        match (enabled, held) {
             (UI_OFF, Some(_)) => Seen::LeftToCore,
             (UI_OFF, None) => Seen::OffByGame,
             _ => Seen::DrawnByGame,
-        };
-        let step = step(picture, seen);
-        if let Some(cover) = step.draw {
-            self.draw(cover, target)?;
         }
-        match (step.write, held) {
-            (Write::Clear, _) => {
-                self.write(stage, UI_OFF);
-                self.cleared = Some(Cleared { stage, game_value: enabled });
-            }
-            (Write::Restore, Some(cleared)) => {
-                self.write(stage, cleared.game_value);
-                self.cleared = None;
-            }
-            (Write::Restore, None) | (Write::Keep, _) => {}
-        }
-        Ok(())
     }
 
     /// The composite stage of the pipeline's special view, or `None` when a read fails or the view
@@ -220,12 +223,17 @@ impl UiLayer {
         CompositeStage::of(RenderView::new(views.special), self.vtable)
     }
 
-    /// Draws the UI key's texture of this frame over `cover` of the back buffer.
-    fn draw(&mut self, cover: Cover, target: &Target<'_>) -> Result<(), DrawFault> {
+    /// Runs `draw` on each half of the back buffer: the pair first, then the UI key's texture of this
+    /// frame. The UI texture is read before the pair, so a failed read leaves the frame as the game
+    /// drew it.
+    fn draw(&mut self, draw: Draw, target: &Target<'_>) -> Result<(), DrawFault> {
+        if draw == Draw::Nothing {
+            return Ok(());
+        }
         let (device, context) = target.devices;
         let BackBuffer { width, height, .. } = target.size;
-        let rects = rects(cover, width, height).ok_or(DrawFault::Size { width, height })?;
-        let ui = self.source.texture()?;
+        let rects = halves(width, height).ok_or(DrawFault::Size { width, height })?;
+        let ui = if draw.draws_ui() { Some(self.source.texture()?) } else { None };
         let layer = match self.layer.take().filter(|layer| layer.belongs_to(device)) {
             Some(layer) => layer,
             None => LayerDraw::create(device)?,
@@ -235,7 +243,13 @@ impl UiLayer {
             Ok(texture) => texture,
             Err(code) => return Err(DrawFault::BackBuffer { code }),
         };
-        Ok(layer.draw(context, &back_buffer, &ui, rects.as_slice())?)
+        if draw.makes_pair() {
+            layer.draw_copy(context, &back_buffer, &rects)?;
+        }
+        if let Some(ui) = ui {
+            layer.draw(context, &back_buffer, &ui, &rects)?;
+        }
+        Ok(())
     }
 
     /// Writes `enabled` to the UI enable byte of `stage`. The game's composite job of the next frame
@@ -251,9 +265,11 @@ impl UiLayer {
         }
     }
 
-    /// Gives the UI enable byte the game's value back when the core still holds it at 0 in the stage
-    /// the pipeline holds now.
+    /// Drops the layer draw, whose copy of the back buffer holds video memory, and gives the UI enable
+    /// byte the game's value back when the core still holds it at 0 in the stage the pipeline holds
+    /// now.
     fn release(&mut self) {
+        self.layer = None;
         let Some(cleared) = self.cleared.take() else { return };
         if self.stage() == Some(cleared.stage) && cleared.stage.ui_enabled() == Some(UI_OFF) {
             self.write(cleared.stage, cleared.game_value);

@@ -35,8 +35,8 @@ pub enum Feature {
     /// The read of the game client's state id at each Present call site, which logs each change of
     /// the id.
     GameState,
-    /// The draw of the game's UI texture into each half of a side by side frame at each Present call
-    /// site, with the composite stage's UI enable byte held at 0.
+    /// The draws into each half of the back buffer at each Present call site: a flat frame's entire
+    /// picture, then the game's UI texture, with the composite stage's UI enable byte held at 0.
     UiLayer,
 }
 
