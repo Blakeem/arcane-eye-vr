@@ -6,10 +6,9 @@ use viewer_client::{Copied, Device, GpuError, SharedTexture};
 use windows::Win32::Foundation::DXGI_STATUS_OCCLUDED;
 use windows::Win32::Graphics::Direct3D::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_SHADER_RESOURCE, D3D11_RENDER_TARGET_VIEW_DESC, D3D11_RENDER_TARGET_VIEW_DESC_0,
-    D3D11_RTV_DIMENSION_TEXTURE2D, D3D11_TEX2D_RTV, D3D11_VIEWPORT, ID3D11PixelShader,
-    ID3D11RenderTargetView, ID3D11SamplerState, ID3D11ShaderResourceView, ID3D11Texture2D,
-    ID3D11VertexShader,
+    D3D11_RENDER_TARGET_VIEW_DESC, D3D11_RENDER_TARGET_VIEW_DESC_0, D3D11_RTV_DIMENSION_TEXTURE2D,
+    D3D11_TEX2D_RTV, D3D11_VIEWPORT, ID3D11PixelShader, ID3D11RenderTargetView, ID3D11SamplerState,
+    ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_UNSPECIFIED, DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -52,20 +51,14 @@ impl Renderer {
     /// Opens the shared texture `name` and creates the private copy the viewer draws from.
     pub(crate) fn open(&self, name: &HSTRING) -> Result<Source, GpuError> {
         let shared = self.device.open(name)?;
-        let mut desc = shared.desc();
-        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned();
-        desc.MiscFlags = 0;
-        let (mut copy, mut view) = (None, None);
-        let d3d = self.device.d3d();
-        // SAFETY: the descriptor and the out slot are live for the call.
-        let copy_made = unsafe { d3d.CreateTexture2D(&raw const desc, None, Some(&raw mut copy)) };
-        GpuError::check("creating the private copy", copy_made)?;
-        let copy = GpuError::created("creating the private copy", copy)?;
+        let copy = self.device.create_private_copy(&shared)?;
+        let mut view = None;
         // SAFETY: `copy` is a shader resource of this device, and the out slot is live.
-        let view_made = unsafe { d3d.CreateShaderResourceView(&copy, None, Some(&raw mut view)) };
+        let view_made =
+            unsafe { self.device.d3d().CreateShaderResourceView(&copy, None, Some(&raw mut view)) };
         GpuError::check("creating the private copy's view", view_made)?;
         let view = GpuError::created("creating the private copy's view", view)?;
-        let screen_format = screen_format(desc.Format);
+        let screen_format = screen_format(shared.desc().Format);
         Ok(Source { shared, copy, view, screen_format })
     }
 

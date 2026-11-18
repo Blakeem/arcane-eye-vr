@@ -15,3 +15,4 @@ crates/proxy/src/lib.rs | expect(unsafe_code, reason = "DllMain, the launch toke
 crates/shim/src/raw.rs | expect(unsafe_code, reason = "the shim's C ABI is a block of foreign functions")
 crates/viewer-client/src/raw.rs | expect(unsafe_code, reason = "the header mapping and the D3D11 and DXGI calls are Windows calls")
 crates/viewer/src/raw.rs | expect(unsafe_code, reason = "the window and the D3D11 and DXGI calls are Windows calls")
+crates/xr/src/raw.rs | expect(unsafe_code, reason = "the runtime library load, the OpenXR session create and the DXGI and D3D11 calls are foreign calls")

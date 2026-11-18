@@ -1,6 +1,6 @@
 [package]
 name = "launcher"
-description = "The VR launch app. Writes the launch token and starts the game through Steam."
+description = "The VR launch app. Writes the launch token, starts the game through Steam and shows the game's frames on a screen in the headset."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -13,14 +13,28 @@ path = "src/main.rs"
 
 [dependencies]
 diag = { path = "../diag" }
+gfx = { path = "../gfx" }
 ipc-layout = { path = "../ipc-layout" }
 launch = { path = "../launch" }
+settings = { path = "../settings" }
+stereo-core = { path = "../stereo-core" }
 thiserror.workspace = true
 tracing.workspace = true
+viewer-client = { path = "../viewer-client" }
+xr = { path = "../xr" }
 
 [dependencies.windows]
 workspace = true
-features = ["Win32_UI_WindowsAndMessaging"]
+features = [
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[dev-dependencies]
+openxr.workspace = true
+test-support = { path = "../test-support" }
+viewer-client = { path = "../viewer-client", features = ["fixture"] }
 
 [lints]
 workspace = true

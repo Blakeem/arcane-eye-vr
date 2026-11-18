@@ -1,6 +1,8 @@
 //! The player file parser against texts written by hand.
 
-use super::{IpdMm, IpdRangeError, Parsed, Settings, parse};
+use super::{
+    IpdMm, IpdRangeError, Parsed, ScreenDistanceM, ScreenRangeError, ScreenWidthM, Settings, parse,
+};
 use crate::rejection::{Position, Rejection};
 
 fn ipd(millimeters: f32) -> IpdMm {
@@ -76,4 +78,37 @@ fn an_unknown_key_is_a_warning_with_its_path_and_the_rest_loads() {
     assert_eq!(parsed.settings.stereo.ipd_mm, ipd(60.0));
     parsed.unknown_keys.sort();
     assert_eq!(parsed.unknown_keys, ["extra", "speed", "stereo.ipd"]);
+}
+
+#[test]
+fn the_screen_defaults_to_2_5_meters_away_and_3_meters_wide() {
+    let screen = Settings::default().screen;
+    assert_eq!(screen.distance_m.meters().to_bits(), 2.5_f32.to_bits());
+    assert_eq!(screen.width_m.meters().to_bits(), 3.0_f32.to_bits());
+    let parsed = parse("[screen]\ndistance_m = 4\n").expect("a valid file").settings.screen;
+    assert_eq!(parsed.distance_m, ScreenDistanceM::try_from(4.0).expect("in range"));
+    assert_eq!(parsed.width_m, ScreenWidthM::default(), "the key the file omits");
+}
+
+#[test]
+fn each_screen_length_accepts_0_5_to_10_meters() {
+    let parsed = |key: &str, value: &str| parse(&format!("[screen]\n{key} = {value}\n"));
+    for key in ["distance_m", "width_m"] {
+        for value in ["0.5", "10.0"] {
+            let screen = parsed(key, value).expect("an end of the range").settings.screen;
+            let meters = value.parse::<f32>().expect("a test number");
+            let read =
+                if key == "width_m" { screen.width_m.meters() } else { screen.distance_m.meters() };
+            assert_eq!(read.to_bits(), meters.to_bits(), "{key} = {value}");
+        }
+        let column = key.len() + 4;
+        let below = format!("{key} must be from 0.5 to 10 meters, got 0.49");
+        assert_eq!(parsed(key, "0.49"), Err(rejection(&below, 2, column)));
+        let above = format!("{key} must be from 0.5 to 10 meters, got 10.01");
+        assert_eq!(parsed(key, "10.01"), Err(rejection(&above, 2, column)));
+    }
+    let error = ScreenRangeError { key: "width_m", min: 0.5, max: 10.0, value: -1.0 };
+    assert_eq!(ScreenWidthM::try_from(-1.0), Err(error));
+    let not_a_number = ScreenDistanceM::try_from(f32::NAN);
+    assert!(matches!(not_a_number, Err(ScreenRangeError { key: "distance_m", .. })));
 }

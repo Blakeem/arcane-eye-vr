@@ -1,7 +1,7 @@
 //! The launch steps' decisions as pure functions: the runtime check, the running-game check and what
 //! each status poll does.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ipc_layout::launch_token::{LaunchToken, Status, TokenError, UnknownStatus};
@@ -20,17 +20,18 @@ pub(crate) enum Poll {
     Done,
 }
 
-/// Checks that `active_runtime`, the registry's active OpenXR runtime manifest path, is SteamVR's.
-/// Windows file names ignore case.
-pub(crate) fn check_runtime(active_runtime: Option<String>) -> Result<(), RuntimeError> {
-    let file_name = active_runtime
+/// Checks that `active_runtime`, the registry's active OpenXR runtime manifest path, is SteamVR's,
+/// and returns that path. Windows file names ignore case.
+pub(crate) fn check_runtime(active_runtime: Option<String>) -> Result<PathBuf, RuntimeError> {
+    let is_steamvr = active_runtime
         .as_deref()
         .and_then(|path| Path::new(path).file_name())
-        .and_then(|name| name.to_str());
-    if file_name.is_some_and(|name| name.eq_ignore_ascii_case(STEAMVR_RUNTIME_FILE)) {
-        return Ok(());
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(STEAMVR_RUNTIME_FILE));
+    match active_runtime {
+        Some(path) if is_steamvr => Ok(PathBuf::from(path)),
+        active => Err(RuntimeError::NotSteamVr { active }),
     }
-    Err(RuntimeError::NotSteamVr { active: active_runtime })
 }
 
 /// Whether `running`, Steam's `Running` value for the game, says it runs. A missing value means it
@@ -90,6 +91,7 @@ mod tests {
     use crate::registry::{Hive, RegistryError, RegistryValue};
     use crate::status::{Goal, WaitError};
     use ipc_layout::launch_token::{LaunchToken, Mode, STATUS_OFFSET, Status, TokenError};
+    use std::path::{Path, PathBuf};
     use std::time::Duration;
 
     const STARTED: Duration = Duration::ZERO;
@@ -102,7 +104,7 @@ mod tests {
         LaunchToken::decode(&bytes)
     }
 
-    fn runtime(path: &str) -> Result<(), RuntimeError> {
+    fn runtime(path: &str) -> Result<PathBuf, RuntimeError> {
         check_runtime(Some(path.to_owned()))
     }
 
@@ -111,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn steamvr_manifest_passes_the_runtime_check_in_any_case() {
+    fn steamvr_manifest_passes_the_runtime_check_in_any_case_and_gives_its_path() {
         let steam = r"C:\Program Files (x86)\Steam\steamapps\common\SteamVR\steamxr_win64.json";
         for path in [
             steam,
@@ -119,7 +121,7 @@ mod tests {
             "D:/SteamVR/steamxr_win64.json",
             "steamxr_win64.json",
         ] {
-            assert!(matches!(runtime(path), Ok(())), "{path}");
+            assert_eq!(runtime(path).expect("SteamVR's manifest"), Path::new(path), "{path}");
         }
     }
 

@@ -13,19 +13,26 @@ use launch::registry::RegistryError;
 use launch::status::{Goal, WaitError};
 use launch::steam::OpenUrlError;
 use launch::token::TokenCreateError;
+use viewer_client::HeaderViewError;
 
 use crate::args::ArgsError;
+use crate::screen::failure::ScreenFailure;
 
 const SECONDS_PER_MINUTE: u64 = 60;
 
 const STEAMVR_FIX: &str =
     "In SteamVR settings, open OpenXR and choose Set SteamVR as OpenXR runtime.";
 
-/// Why the launch app stopped before the game reported its goal status.
+/// Why the launch app stopped before the game reported its goal status, or before the headset
+/// screen's end.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Failure {
-    #[error("{0}. Start it with no arguments for VR, or with --mode desktop-stereo.")]
+    #[error(
+        "{0}. Start it with no arguments for VR, with --mode desktop-stereo or with --mode screen."
+    )]
     Args(#[from] ArgsError),
+    #[error(transparent)]
+    Screen(#[from] ScreenFailure),
     #[error(
         "Arcane Eye VR could not find its folder ({}). Set {HOME_VARIABLE} to an absolute folder \
          path, then start Arcane Eye VR again.",
@@ -111,6 +118,12 @@ impl From<RuntimeError> for Failure {
 impl From<GameRunning> for Failure {
     fn from(_: GameRunning) -> Self {
         Self::GameRunning
+    }
+}
+
+impl From<HeaderViewError> for Failure {
+    fn from(error: HeaderViewError) -> Self {
+        Self::Screen(ScreenFailure::Link(error))
     }
 }
 

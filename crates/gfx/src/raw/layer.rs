@@ -9,7 +9,7 @@
 //! The saved state holds no shader class instances and no unordered-access view above slot 7.
 
 use crate::layer::{LayerError, LayerStep};
-use windows::Win32::Foundation::E_POINTER;
+use crate::raw::{CreateStep, made};
 use windows::Win32::Graphics::Direct3D::{
     D3D_PRIMITIVE_TOPOLOGY, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
 };
@@ -23,6 +23,7 @@ use windows::Win32::Graphics::Direct3D11::{
     ID3D11RasterizerState, ID3D11RenderTargetView, ID3D11SamplerState, ID3D11ShaderResourceView,
     ID3D11Texture2D, ID3D11UnorderedAccessView, ID3D11VertexShader,
 };
+use windows::core::HRESULT;
 
 const VERTEX_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/layer.vs.dxbc"));
 const PIXEL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/layer.ps.dxbc"));
@@ -376,15 +377,10 @@ fn first_unordered_slot(targets: &[Option<ID3D11RenderTargetView>]) -> usize {
     targets.iter().rposition(Option::is_some).map_or(0, |last| last.saturating_add(1))
 }
 
-/// The object a create call made, or the failed step with its code.
-fn made<T>(
-    step: LayerStep,
-    created: windows::core::Result<()>,
-    object: Option<T>,
-) -> Result<T, LayerError> {
-    match (created, object) {
-        (Ok(()), Some(object)) => Ok(object),
-        (Ok(()), None) => Err(LayerError { step, code: E_POINTER }),
-        (Err(error), _) => Err(LayerError { step, code: error.code() }),
+impl CreateStep for LayerStep {
+    type Error = LayerError;
+
+    fn failed(self, code: HRESULT) -> LayerError {
+        LayerError { step: self, code }
     }
 }

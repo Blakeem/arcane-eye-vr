@@ -1,5 +1,7 @@
 //! The checks before a start: SteamVR is the active OpenXR runtime, and the game is not running.
 
+use std::path::PathBuf;
+
 use tracing::warn;
 
 use crate::decide;
@@ -33,13 +35,13 @@ pub enum RuntimeError {
 #[error("Steam reports that the game is running")]
 pub struct GameRunning;
 
-/// Checks that SteamVR is the active OpenXR runtime.
+/// Checks that SteamVR is the active OpenXR runtime and returns the path of its manifest.
 ///
 /// # Errors
 ///
 /// Returns [`RuntimeError::Read`] when the registry read fails and [`RuntimeError::NotSteamVr`] when
 /// another runtime or no runtime is active.
-pub fn check_runtime() -> Result<(), RuntimeError> {
+pub fn check_runtime() -> Result<PathBuf, RuntimeError> {
     decide::check_runtime(ACTIVE_RUNTIME.read_string()?)
 }
 

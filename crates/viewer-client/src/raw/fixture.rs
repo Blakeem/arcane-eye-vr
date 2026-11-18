@@ -1,8 +1,9 @@
 //! Test fixtures in the core's place: a viewer header mapping and a WARP device that shares a
-//! texture. Each name holds the test process id, so parallel test processes never meet.
+//! texture. Each name holds the test process id, so parallel test processes never meet. A render
+//! target and its read back stand in for a consumer's target, such as an OpenXR swapchain image.
 
 use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
-use std::{process, ptr};
+use std::{process, ptr, slice};
 
 use ipc_layout::viewer_header::{
     self, AdapterLuid, HEARTBEAT_OFFSET, MUTEX_KEY, SHARED_ACCESS, ViewerHeader,
@@ -12,9 +13,11 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_WARP;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_FLAG, D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX,
-    D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_SDK_VERSION, D3D11_SUBRESOURCE_DATA,
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11CreateDevice, ID3D11Device, ID3D11Texture2D,
+    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ,
+    D3D11_CREATE_DEVICE_FLAG, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX, D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_SDK_VERSION,
+    D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
+    D3D11CreateDevice, ID3D11Device, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{IDXGIDevice, IDXGIKeyedMutex, IDXGIResource1};
@@ -240,4 +243,80 @@ fn warp_device() -> windows::core::Result<ID3D11Device> {
         )
     }?;
     device.ok_or_else(|| E_POINTER.into())
+}
+
+/// A `width` by `height` render target of `format` on `device`, such as a typeless target in an
+/// OpenXR runtime's place.
+///
+/// # Errors
+///
+/// Returns the error of a failed create call.
+pub fn render_target(
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+    format: DXGI_FORMAT,
+) -> windows::core::Result<ID3D11Texture2D> {
+    let bind = D3D11_BIND_RENDER_TARGET.0.cast_unsigned();
+    let desc = texture_desc(width, height, format, bind, 0);
+    let mut texture = None;
+    // SAFETY: the descriptor and the out slot are live for the call.
+    unsafe { device.CreateTexture2D(&raw const desc, None, Some(&raw mut texture)) }?;
+    texture.ok_or_else(|| E_POINTER.into())
+}
+
+/// The 4-byte pixels of `texture`, a texture of `device` with 4-byte pixels, in row order, copied
+/// through a staging texture of `format`, a format of the texture's format family.
+///
+/// # Errors
+///
+/// Returns the error of a failed create or map call, and `E_INVALIDARG` for a size whose bytes
+/// overflow memory sizes.
+pub fn read_pixels(
+    device: &ID3D11Device,
+    texture: &ID3D11Texture2D,
+    format: DXGI_FORMAT,
+) -> windows::core::Result<Vec<[u8; 4]>> {
+    let mut desc = D3D11_TEXTURE2D_DESC::default();
+    // SAFETY: `texture` is live, and `desc` is a writable descriptor.
+    unsafe { texture.GetDesc(&raw mut desc) };
+    let mut staging_desc = texture_desc(desc.Width, desc.Height, format, 0, 0);
+    staging_desc.Usage = D3D11_USAGE_STAGING;
+    staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0.cast_unsigned();
+    let mut staging = None;
+    // SAFETY: the descriptor and the out slot are live for the call.
+    unsafe { device.CreateTexture2D(&raw const staging_desc, None, Some(&raw mut staging)) }?;
+    let staging = staging.ok_or_else(|| windows::core::Error::from(E_POINTER))?;
+    // SAFETY: `device` is live. The call adds the reference the result holds.
+    let context = unsafe { device.GetImmediateContext() }?;
+    // SAFETY: both textures belong to `device` and share a size and a format family.
+    unsafe { context.CopyResource(&staging, texture) };
+    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+    // SAFETY: the staging texture has CPU read access, and `mapped` is writable.
+    unsafe { context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&raw mut mapped)) }?;
+    let pixels = mapped_pixels(&mapped, desc.Width, desc.Height);
+    // SAFETY: the staging texture was mapped above, and no slice of its memory outlives this.
+    unsafe { context.Unmap(&staging, 0) };
+    pixels
+}
+
+/// The `height` rows of `width` 4-byte pixels of `mapped`.
+fn mapped_pixels(
+    mapped: &D3D11_MAPPED_SUBRESOURCE,
+    width: u32,
+    height: u32,
+) -> windows::core::Result<Vec<[u8; 4]>> {
+    let row_bytes = width.checked_mul(BYTES_PER_PIXEL).ok_or(E_INVALIDARG)? as usize;
+    let row_pitch = mapped.RowPitch as usize;
+    let mut pixels = Vec::new();
+    for row in 0..height as usize {
+        let start = row.checked_mul(row_pitch).ok_or(E_INVALIDARG)?;
+        let line = mapped.pData.cast::<u8>().cast_const().wrapping_add(start);
+        // SAFETY: `Map` gave `height` rows `row_pitch` bytes apart, each holding at least
+        // `row_bytes` bytes of pixels, which stay mapped until the caller unmaps them.
+        let bytes = unsafe { slice::from_raw_parts(line, row_bytes) };
+        let (row_pixels, _rest) = bytes.as_chunks::<4>();
+        pixels.extend_from_slice(row_pixels);
+    }
+    Ok(pixels)
 }

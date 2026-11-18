@@ -1,0 +1,32 @@
+[package]
+name = "xr"
+description = "The OpenXR session: the runtime load, the frame loop, the swapchains and the quad layers. No game type."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+openxr.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+stereo-core = { path = "../stereo-core" }
+thiserror.workspace = true
+tracing.workspace = true
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_System_LibraryLoader",
+]
+
+[dev-dependencies]
+test-support = { path = "../test-support" }
+
+[lints]
+workspace = true

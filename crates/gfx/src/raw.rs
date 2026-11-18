@@ -1,5 +1,5 @@
 //! The gfx crate's unsafe edge: the viewer header mapping, the D3D11 and DXGI calls of the
-//! publisher, and the layer draw's calls in `layer`.
+//! publisher, the layer draw's calls in `layer` and the region draw's calls in `region`.
 
 #![expect(
     unsafe_code,
@@ -32,6 +32,7 @@ use windows::core::{HRESULT, HSTRING, Interface as _};
 use crate::publish::{PublishError, SetupError, Step};
 
 pub(crate) mod layer;
+pub(crate) mod region;
 
 /// The header's size as `CreateFileMappingW` takes it.
 const HEADER_MAPPING_SIZE: u32 = 128;
@@ -244,6 +245,27 @@ fn step<T>(step: Step, result: windows::core::Result<T>) -> Result<T, PublishErr
     match result {
         Ok(value) => Ok(value),
         Err(error) => Err(PublishError { step, code: error.code() }),
+    }
+}
+
+/// A draw's create step, which names the draw's error of a failed create.
+pub(crate) trait CreateStep {
+    type Error;
+
+    fn failed(self, code: HRESULT) -> Self::Error;
+}
+
+/// The object a create call made, or the failed `step` with its code. A call that succeeds and
+/// fills no object fails with `E_POINTER`.
+pub(crate) fn made<S: CreateStep, T>(
+    step: S,
+    created: windows::core::Result<()>,
+    object: Option<T>,
+) -> Result<T, S::Error> {
+    match (created, object) {
+        (Ok(()), Some(object)) => Ok(object),
+        (Ok(()), None) => Err(step.failed(E_POINTER)),
+        (Err(error), _) => Err(step.failed(error.code())),
     }
 }
 

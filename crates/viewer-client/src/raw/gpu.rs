@@ -10,9 +10,10 @@ use ipc_layout::viewer_header::{Acquire, AdapterLuid, MUTEX_KEY, SHARED_ACCESS};
 use windows::Win32::Foundation::{E_POINTER, HMODULE, LUID};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_FLAG, D3D11_MAP_READ,
-    D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
-    D3D11CreateDevice, ID3D11Device, ID3D11Device1, ID3D11DeviceContext, ID3D11Texture2D,
+    D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_FLAG,
+    D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11Device1, ID3D11DeviceContext,
+    ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory4, IDXGIKeyedMutex,
@@ -276,6 +277,24 @@ impl Device {
         // SAFETY: `texture` is live. The call adds the reference the result holds.
         let device = unsafe { texture.GetDevice() };
         device.is_ok_and(|device| device == self.d3d)
+    }
+
+    /// Creates a texture of this device with the size and the format of `shared`, which
+    /// [`Device::copy`] can copy `shared` into and a shader can read, so a caller draws one frame
+    /// while the core writes the next.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError::Call`] when the device creates no texture.
+    pub fn create_private_copy(&self, shared: &SharedTexture) -> Result<ID3D11Texture2D, GpuError> {
+        let mut desc = shared.desc;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned();
+        desc.MiscFlags = 0;
+        let mut copy = None;
+        // SAFETY: the descriptor and the out slot are live for the call.
+        let made = unsafe { self.d3d.CreateTexture2D(&raw const desc, None, Some(&raw mut copy)) };
+        GpuError::check("creating the private copy", made)?;
+        GpuError::created("creating the private copy", copy)
     }
 
     /// Creates a texture the CPU can read, with the format of `shared` and `size` in pixels.

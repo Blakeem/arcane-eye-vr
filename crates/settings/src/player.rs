@@ -3,6 +3,8 @@
 //! The file holds overrides only, since each default lives in the `Default` impl of its type. So an
 //! empty file gives [`Settings::default`]. An unknown key does not reject the file.
 
+use std::ops::RangeInclusive;
+
 use serde::Deserialize;
 
 use crate::rejection::Rejection;
@@ -18,6 +20,7 @@ pub struct Settings {
     #[serde(rename = "version")]
     _version: FormatVersion,
     pub stereo: StereoSettings,
+    pub screen: ScreenSettings,
 }
 
 /// The table `[stereo]`.
@@ -63,6 +66,94 @@ impl TryFrom<f32> for IpdMm {
 #[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
 #[error("ipd_mm must be from {min} to {max} millimeters, got {0}", min = IpdMm::MIN, max = IpdMm::MAX)]
 pub struct IpdRangeError(pub f32);
+
+/// The table `[screen]`: the flat screen the launch app shows in the headset.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct ScreenSettings {
+    pub distance_m: ScreenDistanceM,
+    pub width_m: ScreenWidthM,
+}
+
+/// The distance from the seated position of the VR runtime, the origin of OpenXR's LOCAL space, to
+/// the screen in meters, from [`ScreenDistanceM::MIN`] to [`ScreenDistanceM::MAX`] inclusive.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(try_from = "f32")]
+pub struct ScreenDistanceM(f32);
+
+impl ScreenDistanceM {
+    pub const MIN: f32 = 0.5;
+    pub const MAX: f32 = 10.0;
+
+    pub const fn meters(self) -> f32 {
+        self.0
+    }
+}
+
+impl Default for ScreenDistanceM {
+    fn default() -> Self {
+        Self(2.5)
+    }
+}
+
+impl TryFrom<f32> for ScreenDistanceM {
+    type Error = ScreenRangeError;
+
+    fn try_from(meters: f32) -> Result<Self, ScreenRangeError> {
+        screen_meters("distance_m", Self::MIN..=Self::MAX, meters).map(Self)
+    }
+}
+
+/// The width of the screen in meters, from [`ScreenWidthM::MIN`] to [`ScreenWidthM::MAX`]
+/// inclusive.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(try_from = "f32")]
+pub struct ScreenWidthM(f32);
+
+impl ScreenWidthM {
+    pub const MIN: f32 = 0.5;
+    pub const MAX: f32 = 10.0;
+
+    pub const fn meters(self) -> f32 {
+        self.0
+    }
+}
+
+impl Default for ScreenWidthM {
+    fn default() -> Self {
+        Self(3.0)
+    }
+}
+
+impl TryFrom<f32> for ScreenWidthM {
+    type Error = ScreenRangeError;
+
+    fn try_from(meters: f32) -> Result<Self, ScreenRangeError> {
+        screen_meters("width_m", Self::MIN..=Self::MAX, meters).map(Self)
+    }
+}
+
+/// `meters` when `range` holds it, else the error that names the key `key`.
+fn screen_meters(
+    key: &'static str,
+    range: RangeInclusive<f32>,
+    meters: f32,
+) -> Result<f32, ScreenRangeError> {
+    if range.contains(&meters) {
+        return Ok(meters);
+    }
+    Err(ScreenRangeError { key, min: *range.start(), max: *range.end(), value: meters })
+}
+
+/// A length of the table `[screen]` outside its range.
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+#[error("{key} must be from {min} to {max} meters, got {value}")]
+pub struct ScreenRangeError {
+    pub key: &'static str,
+    pub min: f32,
+    pub max: f32,
+    pub value: f32,
+}
 
 /// The value of the top-level key `version`, which holds no information once it is checked.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]

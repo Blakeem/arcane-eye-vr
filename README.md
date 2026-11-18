@@ -27,7 +27,15 @@ These parts work in tests:
 - For trials, the game's view can render from the left or right eye. The keys `main_view_eye` and `ipd_mm` under Settings set it.
 - For trials, the game can draw a second view beside its own view. Once the second view is ready, each frame holds a stereo pair side by side. The game's view fills the left half from the left eye position and the second view fills the right half from the right eye position. Each half holds the entire picture at half its width, the half side by side format of 3D video. The mod draws the game's interface into each half, so both eyes see it at the same place. The mouse cursor is not drawn per half yet. The keys `second_view` and `ipd_mm` under Settings set it, and `main_view_eye` has no effect while `second_view` is on.
 
-Output to a 3D display, headset output and controller input are not built yet.
+- The launch app can show the game on a flat screen in a headset. The section Headset screen describes it.
+
+Output to a 3D display, the immersive headset mode and controller input are not built yet.
+
+## Headset screen
+
+`arcane-eye-vr.exe --mode screen` shows the game on a flat screen in the headset. SteamVR must be the active OpenXR runtime. The launch app starts the game in the desktop stereo mode, or uses a game that already runs with the mod. It then shows each frame of the game until the game ends or SteamVR ends the session.
+
+The screen shows a stereo pair while the second view is on. The left half of each frame goes to the left eye and the right half to the right eye. The game window keeps the keyboard and the mouse, so it needs the keyboard focus for input. The keys under `[screen]` in Settings set the distance and the width of the screen.
 
 ## Settings
 
@@ -39,6 +47,10 @@ version = 1
 
 [stereo]
 ipd_mm = 65.0    # distance between the eyes in millimeters, 50 to 80
+
+[screen]
+distance_m = 2.5    # distance from the seated position in SteamVR to the headset screen in meters, 0.5 to 10
+width_m = 3.0       # width of the headset screen in meters, 0.5 to 10
 ```
 
 ```toml
@@ -53,7 +65,7 @@ source = "back_buffer"      # what the debug viewer shows: back_buffer (the pres
 
 A file with an invalid value is rejected as an entire file and its defaults apply. The session log in `logs\` names the line and column of the problem. An unknown key in `settings.toml` is logged and skipped, and an unknown key in `dev.toml` rejects the file.
 
-A saved change to `settings.toml` applies within a second while the game runs. An invalid change keeps the settings in use. A change to `dev.toml` applies at the next start.
+A saved change to `settings.toml` applies within a second while the game runs. An invalid change keeps the settings in use. A change to `dev.toml` applies at the next start. The launch app reads `[screen]` once, when the headset screen starts.
 
 The environment variable `ARCANE_EYE_VR_HOME` sets a different root folder when its value is an absolute path. The game reads it from the environment it inherits. The launch app starts the game through Steam, so the game gets Steam's environment and not the launch app's. A user variable reaches the game when Steam starts after the variable is set. `trial.exe` sets it on the game it starts.
 
