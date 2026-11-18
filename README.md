@@ -73,6 +73,10 @@ pwsh tools/gate.ps1 -Suite commit    # format, clippy, lint rules, typos
 cargo nextest run --workspace        # tests
 ```
 
+## License
+
+Arcane Eye VR is released under the MIT license. The text is in `LICENSE`.
+
 ## Credits
 
 - [SafetyHook](https://github.com/cursey/safetyhook) and [Zydis](https://github.com/zyantific/zydis) do the hooking. Their license files are in `crates/shim/vendor/safetyhook/`.
