@@ -59,7 +59,7 @@ The environment variable `ARCANE_EYE_VR_HOME` sets a different root folder when 
 
 ## Build
 
-The build needs Windows, PowerShell 7.4, the MSVC build tools (tested with 14.51) and the Rust version in `rust-toolchain.toml`. It also needs the Slang shader compiler, which `pwsh tools/fetch-slang.ps1` downloads once into `reference/downloads/`. The checks also need `cargo-nextest`, `ast-grep` and `typos-cli`.
+The build needs Windows, PowerShell 7.4, the MSVC build tools (tested with 14.51) and the Rust version in `rust-toolchain.toml`. It also needs the Slang shader compiler, which `pwsh tools/fetch-slang.ps1` downloads once into `reference/downloads/`. The checks also need `cargo-nextest` and `ast-grep`.
 
 ```
 pwsh tools/deploy.ps1            # build, stage in dist/, copy the two DLLs into the game's bin folder
