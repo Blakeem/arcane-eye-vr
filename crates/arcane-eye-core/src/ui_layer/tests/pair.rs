@@ -40,10 +40,10 @@ fn a_flat_frame_holds_its_picture_and_the_ui_in_each_half() {
     let mut layer = game.layer();
 
     fill_back_buffer(&test, &blue_then_white());
-    frame(&mut layer, &health, &test, Layout::MainOnly);
+    frame(&mut layer, &health, &test.swapchain, Layout::MainOnly);
     let game_ui_frame = back_buffer_pixels(&test);
     fill_back_buffer(&test, &blue_then_white());
-    frame(&mut layer, &health, &test, Layout::MainOnly);
+    frame(&mut layer, &health, &test.swapchain, Layout::MainOnly);
     let core_ui_frame = back_buffer_pixels(&test);
 
     assert_pair(&game_ui_frame);
@@ -63,7 +63,7 @@ fn a_flat_frame_without_a_composite_stage_becomes_a_pair() {
     let mut layer = game.layer();
 
     fill_back_buffer(&test, &blue_then_white());
-    frame(&mut layer, &health, &test, Layout::MainOnly);
+    frame(&mut layer, &health, &test.swapchain, Layout::MainOnly);
 
     assert_pair(&back_buffer_pixels(&test));
     assert!(health.is_running(Feature::UiLayer));
@@ -76,12 +76,12 @@ fn a_stopped_layer_drops_its_layer_draw_and_presents_flat_frames_flat() {
     let health = running();
     let mut layer = game.layer();
     fill_back_buffer(&test, &blue_then_white());
-    frame(&mut layer, &health, &test, Layout::MainOnly);
+    frame(&mut layer, &health, &test.swapchain, Layout::MainOnly);
     assert!(layer.layer.is_some(), "the pair's frame holds the layer draw");
 
     stop(&mut layer, &health, &test);
     fill_back_buffer(&test, &blue_then_white());
-    frame(&mut layer, &health, &test, Layout::MainOnly);
+    frame(&mut layer, &health, &test.swapchain, Layout::MainOnly);
 
     assert!(layer.layer.is_none(), "the copy of the back buffer is released");
     let bottom = [8, 24, 40, 56].map(|x| at(&back_buffer_pixels(&test), x, 27));

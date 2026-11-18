@@ -1,7 +1,10 @@
-//! The UI layer's decisions: what the core draws into a frame, what it writes to the composite
-//! stage's UI enable byte, and the halves of the back buffer each draw covers.
+//! The UI layer's decisions: the pair and the UI texture the core draws into a frame, what it
+//! writes to the composite stage's UI enable byte, whether Windows shows its cursor, and the halves
+//! of the back buffer each draw covers.
 
 use gfx::layer::Rect;
+
+use super::cursor::counter::WindowsCursor;
 
 /// Who drew the UI of the frame at the Present call site, as the UI enable byte shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,9 +26,11 @@ pub(crate) enum Picture {
     Flat,
 }
 
-/// What the core draws into each half of the back buffer, in the order the variant names.
+/// The pair and the UI texture the core draws into each half of the back buffer, in the order the
+/// variant names. The drawn cursor follows the pointer, not this choice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Draw {
+    /// No pair and no UI texture.
     Nothing,
     /// The UI texture.
     Ui,
@@ -58,6 +63,7 @@ pub(crate) enum Write {
 pub(crate) struct Step {
     pub(crate) draw: Draw,
     pub(crate) write: Write,
+    pub(crate) windows_cursor: WindowsCursor,
 }
 
 /// The step for a frame that holds `picture` and whose UI enable byte shows `seen`. `seen` is `None`
@@ -68,6 +74,10 @@ pub(crate) struct Step {
 /// and a flat frame's pair holds it in each half. The core's draw starts one frame after its clear.
 /// The byte stays at 0 in flat frames, so a side by side frame after them already gets the core's
 /// draw. A frame with no composite stage gets no UI draw and no write.
+///
+/// The game's UI reads the pointer across the entire window. So a side by side frame that keeps the
+/// game's UI across both halves shows the Windows cursor, which marks that UI's pointer, beside the
+/// drawn cursor, which marks the world's pointer in each half.
 pub(crate) const fn step(picture: Picture, seen: Option<Seen>) -> Step {
     let draw = match (picture, seen) {
         (Picture::SideBySide, Some(Seen::LeftToCore)) => Draw::Ui,
@@ -79,7 +89,14 @@ pub(crate) const fn step(picture: Picture, seen: Option<Seen>) -> Step {
         Some(Seen::DrawnByGame) => Write::Clear,
         Some(Seen::LeftToCore | Seen::OffByGame) | None => Write::Keep,
     };
-    Step { draw, write }
+    let windows_cursor = match (picture, seen) {
+        (Picture::SideBySide, Some(Seen::DrawnByGame) | None) => WindowsCursor::Shown,
+        (Picture::SideBySide, Some(Seen::LeftToCore | Seen::OffByGame))
+        | (Picture::Flat, Some(Seen::DrawnByGame | Seen::LeftToCore | Seen::OffByGame) | None) => {
+            WindowsCursor::Hidden
+        }
+    };
+    Step { draw, write, windows_cursor }
 }
 
 /// The left half and the right half of a back buffer of `width` by `height` pixels. The left half

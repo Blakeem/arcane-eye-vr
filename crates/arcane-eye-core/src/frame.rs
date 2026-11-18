@@ -120,7 +120,7 @@ pub(crate) fn on_present_call(
             rcx = format_args!("{:#x}", registers.rcx()),
             "rcx at the Present call site holds no vtable with a nonzero GetDesc slot"
         );
-        FrameReport::Skipped
+        skipped(state.ui_layer.as_mut())
     });
     record_interval(state, now);
     report
@@ -210,8 +210,8 @@ fn on_frame(
     swapchain: &IDXGISwapChain,
     ui: UiFrame<'_>,
 ) -> FrameReport {
-    let back_buffer = match raw::back_buffer(swapchain) {
-        Ok(back_buffer) => back_buffer,
+    let (back_buffer, window) = match raw::swapchain_desc(swapchain) {
+        Ok(desc) => desc,
         Err(code) => {
             error_every!(
                 state.logs.desc_failed,
@@ -219,7 +219,7 @@ fn on_frame(
                 hr = %code,
                 "IDXGISwapChain::GetDesc failed"
             );
-            return FrameReport::Skipped;
+            return skipped(state.ui_layer.as_mut());
         }
     };
     let current = Snapshot { swapchain: address, back_buffer };
@@ -235,7 +235,7 @@ fn on_frame(
             hr = %code,
             "taking the device and immediate context failed"
         );
-        return FrameReport::Skipped;
+        return skipped(state.ui_layer.as_mut());
     }
     let first = once!(
         state.logs.first_present,
@@ -247,11 +247,21 @@ fn on_frame(
     );
     if let Some(devices) = &state.devices {
         if let Some(layer) = &mut state.ui_layer {
-            layer.on_frame(ui.health, ui.next, &Target { swapchain, devices, size: back_buffer });
+            let target = Target { swapchain, devices, size: back_buffer, window };
+            layer.on_frame(ui.health, ui.next, &target);
         }
         state.viewer.on_frame(swapchain, devices, state.game_source.as_mut());
     }
     if first { FrameReport::FirstPresent } else { FrameReport::Later }
+}
+
+/// The report of a frame the handler skips before the UI layer runs. The UI layer shows the Windows
+/// cursor, since the frame gets no drawn cursor.
+fn skipped(ui_layer: Option<&mut UiLayer>) -> FrameReport {
+    if let Some(layer) = ui_layer {
+        layer.on_skipped_frame();
+    }
+    FrameReport::Skipped
 }
 
 /// Takes the swapchain's device, and its immediate context when the device differs from the held one.

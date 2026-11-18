@@ -2,6 +2,7 @@
 //!
 //! The saved state holds no shader class instances and no unordered-access view above slot 7.
 
+use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_VIEWPORT, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE, ID3D11BlendState,
@@ -105,30 +106,39 @@ impl Stages {
     }
 }
 
-/// The rasterizer state and the viewports.
+/// The rasterizer state, the viewports and the scissor rectangles.
 struct Raster {
     state: Option<ID3D11RasterizerState>,
     viewports: [D3D11_VIEWPORT; VIEWPORT_SLOTS],
     viewport_count: u32,
+    scissors: [RECT; VIEWPORT_SLOTS],
+    scissor_count: u32,
 }
 
 impl Raster {
     fn take(context: &ID3D11DeviceContext) -> Self {
         let mut viewports = [D3D11_VIEWPORT::default(); VIEWPORT_SLOTS];
         let mut viewport_count = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+        let mut scissors = [RECT::default(); VIEWPORT_SLOTS];
+        let mut scissor_count = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
         // SAFETY: the context is live. An unset state comes back as an error, which is `None`.
         let state = unsafe { context.RSGetState() }.ok();
         // SAFETY: the count names the array's length, and both live for the call.
         unsafe { context.RSGetViewports(&raw mut viewport_count, Some(viewports.as_mut_ptr())) };
-        Self { state, viewports, viewport_count }
+        // SAFETY: the count names the array's length, and both live for the call.
+        unsafe { context.RSGetScissorRects(&raw mut scissor_count, Some(scissors.as_mut_ptr())) };
+        Self { state, viewports, viewport_count, scissors, scissor_count }
     }
 
     fn restore(self, context: &ID3D11DeviceContext) {
-        let count = usize::try_from(self.viewport_count).unwrap_or(VIEWPORT_SLOTS);
+        let viewports = usize::try_from(self.viewport_count).unwrap_or(VIEWPORT_SLOTS);
+        let scissors = usize::try_from(self.scissor_count).unwrap_or(VIEWPORT_SLOTS);
         // SAFETY: the state is the one the context held, or none.
         unsafe { context.RSSetState(self.state.as_ref()) };
         // SAFETY: the slice holds the viewports the context held.
-        unsafe { context.RSSetViewports(self.viewports.get(..count)) };
+        unsafe { context.RSSetViewports(self.viewports.get(..viewports)) };
+        // SAFETY: the slice holds the scissor rectangles the context held.
+        unsafe { context.RSSetScissorRects(self.scissors.get(..scissors)) };
     }
 }
 

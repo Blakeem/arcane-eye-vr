@@ -2,13 +2,14 @@
 
 use gfx::layer::Rect;
 
+use crate::ui_layer::cursor::counter::WindowsCursor;
 use crate::ui_layer::decide::{Draw, Picture, Seen, Step, Write, halves, step};
 
 #[test]
-fn a_side_by_side_frame_with_the_games_ui_clears_the_byte_and_draws_nothing() {
+fn a_side_by_side_frame_with_the_games_ui_clears_the_byte_and_keeps_the_windows_cursor() {
     assert_eq!(
         step(Picture::SideBySide, Some(Seen::DrawnByGame)),
-        Step { draw: Draw::Nothing, write: Write::Clear }
+        Step { draw: Draw::Nothing, write: Write::Clear, windows_cursor: WindowsCursor::Shown }
     );
 }
 
@@ -16,7 +17,7 @@ fn a_side_by_side_frame_with_the_games_ui_clears_the_byte_and_draws_nothing() {
 fn a_side_by_side_frame_the_game_left_to_the_core_gets_the_ui_in_each_half() {
     assert_eq!(
         step(Picture::SideBySide, Some(Seen::LeftToCore)),
-        Step { draw: Draw::Ui, write: Write::Keep }
+        Step { draw: Draw::Ui, write: Write::Keep, windows_cursor: WindowsCursor::Hidden }
     );
 }
 
@@ -24,7 +25,7 @@ fn a_side_by_side_frame_the_game_left_to_the_core_gets_the_ui_in_each_half() {
 fn a_flat_frame_with_the_games_ui_becomes_a_pair_with_it_and_clears_the_byte() {
     assert_eq!(
         step(Picture::Flat, Some(Seen::DrawnByGame)),
-        Step { draw: Draw::Pair, write: Write::Clear }
+        Step { draw: Draw::Pair, write: Write::Clear, windows_cursor: WindowsCursor::Hidden }
     );
 }
 
@@ -32,7 +33,7 @@ fn a_flat_frame_with_the_games_ui_becomes_a_pair_with_it_and_clears_the_byte() {
 fn a_flat_frame_the_game_left_to_the_core_becomes_a_pair_with_the_ui_and_keeps_the_byte_at_0() {
     assert_eq!(
         step(Picture::Flat, Some(Seen::LeftToCore)),
-        Step { draw: Draw::PairThenUi, write: Write::Keep }
+        Step { draw: Draw::PairThenUi, write: Write::Keep, windows_cursor: WindowsCursor::Hidden }
     );
 }
 
@@ -40,18 +41,25 @@ fn a_flat_frame_the_game_left_to_the_core_becomes_a_pair_with_the_ui_and_keeps_t
 fn a_ui_the_game_switched_off_gets_no_draw_and_no_write_and_a_flat_frame_still_becomes_a_pair() {
     assert_eq!(
         step(Picture::Flat, Some(Seen::OffByGame)),
-        Step { draw: Draw::Pair, write: Write::Keep }
+        Step { draw: Draw::Pair, write: Write::Keep, windows_cursor: WindowsCursor::Hidden }
     );
     assert_eq!(
         step(Picture::SideBySide, Some(Seen::OffByGame)),
-        Step { draw: Draw::Nothing, write: Write::Keep }
+        Step { draw: Draw::Nothing, write: Write::Keep, windows_cursor: WindowsCursor::Hidden }
     );
 }
 
 #[test]
 fn a_frame_without_a_composite_stage_gets_no_ui_or_write_and_a_flat_frame_still_becomes_a_pair() {
-    assert_eq!(step(Picture::Flat, None), Step { draw: Draw::Pair, write: Write::Keep });
-    assert_eq!(step(Picture::SideBySide, None), Step { draw: Draw::Nothing, write: Write::Keep });
+    assert_eq!(
+        step(Picture::Flat, None),
+        Step { draw: Draw::Pair, write: Write::Keep, windows_cursor: WindowsCursor::Hidden }
+    );
+    assert_eq!(
+        step(Picture::SideBySide, None),
+        Step { draw: Draw::Nothing, write: Write::Keep, windows_cursor: WindowsCursor::Shown },
+        "the game's UI across the entire side by side frame keeps the Windows cursor"
+    );
 }
 
 #[test]

@@ -4,8 +4,9 @@
 //! slot hook installs, the write destinations of the render view, of the shadow stage, of the object
 //! data stage and of the pages the core
 //! shares with game threads, the launch token's status field, and the D3D11 and DXGI calls of the
-//! frame handler. Its `eye_view` module holds the eye view feature's hook install and game calls, and
-//! its `game_texture` module the borrow of a texture that game memory names.
+//! frame handler. Its `eye_view` module holds the eye view feature's hook install and game calls, its
+//! `game_texture` module the borrow of a texture that game memory names, and its `cursor` module the
+//! Win32 calls of the drawn cursor.
 
 #![expect(
     unsafe_code,
@@ -33,6 +34,8 @@ use windows::Win32::System::Memory::{
     VirtualAlloc, VirtualFree,
 };
 use windows::core::{HRESULT, HSTRING, Interface as _};
+
+use self::cursor::Window;
 
 /// The byte offset of `IDXGISwapChain::GetDesc` in the swapchain's vtable, the highest slot the
 /// frame handler calls: `IUnknown` 0 to 2, `IDXGIObject` 3 to 6, `GetDevice` 7, `GetDesc` 12.
@@ -279,11 +282,13 @@ unsafe fn with_swapchain<R>(
 // The per-frame calls below return the bare HRESULT, since `windows::core::Error` is not `Copy` and
 // holds a COM error-info reference.
 
-pub(crate) fn back_buffer(swapchain: &IDXGISwapChain) -> Result<BackBuffer, HRESULT> {
+/// The swapchain's back buffer and output window, from one `GetDesc` call.
+pub(crate) fn swapchain_desc(swapchain: &IDXGISwapChain) -> Result<(BackBuffer, Window), HRESULT> {
     // SAFETY: `swapchain` is a live swapchain, and `GetDesc` takes no reference.
     let desc = unsafe { swapchain.GetDesc() }?;
     let mode = desc.BufferDesc;
-    Ok(BackBuffer { width: mode.Width, height: mode.Height, format: mode.Format })
+    let back_buffer = BackBuffer { width: mode.Width, height: mode.Height, format: mode.Format };
+    Ok((back_buffer, Window::new(desc.OutputWindow)))
 }
 
 /// The swapchain's back buffer. The result holds a reference, which must drop before the frame
@@ -378,6 +383,7 @@ impl Drop for StatusView {
 }
 
 pub(crate) mod composite_stage;
+pub(crate) mod cursor;
 pub(crate) mod eye_view;
 pub(crate) mod game_texture;
 

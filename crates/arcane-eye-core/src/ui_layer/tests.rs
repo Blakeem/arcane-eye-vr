@@ -1,6 +1,7 @@
 //! The UI layer's frames against a WARP swapchain and a pipeline, a composite stage and a texture
 //! table in test memory.
 
+mod cursor;
 mod decide;
 mod pair;
 
@@ -15,6 +16,7 @@ use game_mem::GameAddr;
 use settings::dev::{DevFlags, MainViewEye, SecondView, StereoFlags};
 use settings::player::Settings;
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
+use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 use windows::core::Interface as _;
 
 use super::{Target, UiLayer, install};
@@ -103,13 +105,14 @@ fn running() -> Health {
     health
 }
 
-/// One frame of `layer` at `test`'s Present call site, where the eye view feature read `next`.
-fn frame(layer: &mut UiLayer, health: &Health, test: &TestSwapchain, next: Layout) {
-    let device = raw::device(&test.swapchain).expect("the swapchain's device");
+/// One frame of `layer` at the Present call site of `swapchain`, where the eye view feature read
+/// `next`.
+fn frame(layer: &mut UiLayer, health: &Health, swapchain: &IDXGISwapChain, next: Layout) {
+    let device = raw::device(swapchain).expect("the swapchain's device");
     let context = raw::immediate_context(&device).expect("the immediate context");
-    let size = raw::back_buffer(&test.swapchain).expect("the back buffer's size");
+    let (size, window) = raw::swapchain_desc(swapchain).expect("the swapchain's description");
     let devices = (device, context);
-    layer.on_frame(health, next, &Target { swapchain: &test.swapchain, devices: &devices, size });
+    layer.on_frame(health, next, &Target { swapchain, devices: &devices, size, window });
 }
 
 /// The indices in the back buffer's pixels of row 16, the middle row, at the columns 8, 24, 40 and
@@ -126,14 +129,14 @@ fn eighths(test: &TestSwapchain) -> [Pixel; 4] {
 /// that clears the byte and reads the side by side layout.
 fn drawing(game: &Game, health: &Health, test: &TestSwapchain) -> UiLayer {
     let mut layer = game.layer();
-    frame(&mut layer, health, test, SIDE_BY_SIDE);
+    frame(&mut layer, health, &test.swapchain, SIDE_BY_SIDE);
     layer
 }
 
 /// Switches the feature off, as a failed check does, and runs one frame, in which the layer stops.
 fn stop(layer: &mut UiLayer, health: &Health, test: &TestSwapchain) {
     health.check_failed(Feature::UiLayer);
-    frame(layer, health, test, SIDE_BY_SIDE);
+    frame(layer, health, &test.swapchain, SIDE_BY_SIDE);
 }
 
 #[test]
@@ -143,10 +146,10 @@ fn a_flat_frame_clears_the_byte_so_the_next_side_by_side_frame_holds_the_ui_in_e
     let health = running();
     let mut layer = game.layer();
 
-    frame(&mut layer, &health, &test, SIDE_BY_SIDE);
+    frame(&mut layer, &health, &test.swapchain, SIDE_BY_SIDE);
     assert_eq!(game.ui_enabled(), 0, "the frame before the side by side frames is flat");
     assert!(!eighths(&test).contains(&RED), "a frame with the game's UI gets no second UI");
-    frame(&mut layer, &health, &test, SIDE_BY_SIDE);
+    frame(&mut layer, &health, &test.swapchain, SIDE_BY_SIDE);
 
     assert_eq!(eighths(&test), [RED, GREEN, RED, GREEN], "the entire UI texture in each half");
     assert_eq!(game.ui_enabled(), 0);
@@ -159,9 +162,9 @@ fn a_flat_frame_after_side_by_side_frames_gets_the_ui_in_each_half_and_keeps_the
     let health = running();
     let mut layer = drawing(&game, &health, &test);
 
-    frame(&mut layer, &health, &test, Layout::MainOnly);
+    frame(&mut layer, &health, &test.swapchain, Layout::MainOnly);
     assert_eq!(eighths(&test), [RED, GREEN, RED, GREEN], "this frame is still side by side");
-    frame(&mut layer, &health, &test, Layout::MainOnly);
+    frame(&mut layer, &health, &test.swapchain, Layout::MainOnly);
 
     assert_eq!(eighths(&test), [RED, GREEN, RED, GREEN], "the UI texture in each half");
     assert_eq!(game.ui_enabled(), 0);
@@ -175,9 +178,9 @@ fn a_byte_the_game_rewrote_is_cleared_again_and_restored_to_the_games_new_value(
     let mut layer = drawing(&game, &health, &test);
     game.stage.set(COMPOSITE_STAGE_UI_ENABLED, 3_u8);
 
-    frame(&mut layer, &health, &test, Layout::MainOnly);
+    frame(&mut layer, &health, &test.swapchain, Layout::MainOnly);
     assert_eq!(game.ui_enabled(), 0, "cleared again in a side by side frame");
-    frame(&mut layer, &health, &test, Layout::MainOnly);
+    frame(&mut layer, &health, &test.swapchain, Layout::MainOnly);
     assert_eq!(game.ui_enabled(), 0, "held at 0 in a flat frame");
     stop(&mut layer, &health, &test);
 
@@ -193,7 +196,7 @@ fn a_ui_the_game_switched_off_is_neither_drawn_nor_switched_on() {
     let mut layer = game.layer();
 
     for next in [SIDE_BY_SIDE, SIDE_BY_SIDE, Layout::MainOnly, Layout::MainOnly] {
-        frame(&mut layer, &health, &test, next);
+        frame(&mut layer, &health, &test.swapchain, next);
         assert!(!eighths(&test).contains(&RED), "no draw of a UI the game switched off");
     }
 
@@ -209,7 +212,7 @@ fn a_stage_the_game_built_anew_is_cleared_and_the_old_stage_gets_no_write() {
     let rebuilt = composite_stage(1);
     game.array.set(0, rebuilt.address().get());
 
-    frame(&mut layer, &health, &test, Layout::MainOnly);
+    frame(&mut layer, &health, &test.swapchain, Layout::MainOnly);
     assert_eq!(rebuilt.get::<u8>(COMPOSITE_STAGE_UI_ENABLED), 0);
     stop(&mut layer, &health, &test);
 
@@ -227,7 +230,7 @@ fn a_frame_without_a_composite_stage_gets_no_ui_and_warns_in_a_side_by_side_fram
 
     let ((), log) = logged("ui-layer-no-stage", || {
         for _ in 0..3 {
-            frame(&mut layer, &health, &test, SIDE_BY_SIDE);
+            frame(&mut layer, &health, &test.swapchain, SIDE_BY_SIDE);
         }
     });
 
@@ -249,8 +252,8 @@ fn a_failed_draw_switches_the_feature_off_and_gives_the_byte_the_games_value_bac
     assert_eq!(game.ui_enabled(), 0);
 
     let ((), log) = logged("ui-layer-fault", || {
-        frame(&mut layer, &health, &test, SIDE_BY_SIDE);
-        frame(&mut layer, &health, &test, SIDE_BY_SIDE);
+        frame(&mut layer, &health, &test.swapchain, SIDE_BY_SIDE);
+        frame(&mut layer, &health, &test.swapchain, SIDE_BY_SIDE);
     });
 
     assert_eq!(health.state(Feature::UiLayer), FeatureState::Failed);
@@ -269,7 +272,7 @@ fn a_feature_that_is_not_running_reads_and_writes_nothing() {
     let mut layer = game.layer();
 
     for _ in 0..3 {
-        frame(&mut layer, &health, &test, SIDE_BY_SIDE);
+        frame(&mut layer, &health, &test.swapchain, SIDE_BY_SIDE);
     }
 
     assert_eq!(game.ui_enabled(), 1);
@@ -283,13 +286,13 @@ fn a_flat_frame_and_a_side_by_side_frame_make_no_heap_allocation() {
     let game = Game::new(&test);
     let health = running();
     let mut layer = drawing(&game, &health, &test);
-    frame(&mut layer, &health, &test, Layout::MainOnly);
-    frame(&mut layer, &health, &test, Layout::MainOnly);
+    frame(&mut layer, &health, &test.swapchain, Layout::MainOnly);
+    frame(&mut layer, &health, &test.swapchain, Layout::MainOnly);
     let device = raw::device(&test.swapchain).expect("the swapchain's device");
     let context = raw::immediate_context(&device).expect("the immediate context");
-    let size = raw::back_buffer(&test.swapchain).expect("the back buffer's size");
+    let (size, window) = raw::swapchain_desc(&test.swapchain).expect("the swapchain's description");
     let devices = (device, context);
-    let target = Target { swapchain: &test.swapchain, devices: &devices, size };
+    let target = Target { swapchain: &test.swapchain, devices: &devices, size, window };
 
     let guard = arm_alloc_guard().expect("arm the allocation guard");
     layer.on_frame(&health, SIDE_BY_SIDE, &target);

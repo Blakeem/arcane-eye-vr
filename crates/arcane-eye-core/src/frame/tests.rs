@@ -12,13 +12,16 @@ use game_bindings::state::arm_alloc_guard;
 use gfx::publish::ViewNames;
 use ipc_layout::perf_line::{self, PerfSummary};
 
-use super::{FrameReport, FrameState, UiFrame, keep_cameras, on_frame, record_interval};
+use super::{FrameReport, FrameState, UiFrame, keep_cameras, on_frame, record_interval, skipped};
 use crate::eye_view::Layout;
 use crate::raw::{
     self,
-    test_support::{FORMAT, TestSwapchain, TestViewer, test_view_names},
+    test_support::{FORMAT, TestCursor, TestSwapchain, TestViewer, display_count, test_view_names},
 };
 use crate::test_dir;
+use crate::ui_layer::cursor::Aim;
+use crate::ui_layer::cursor::place::{Pointer, spot};
+use crate::ui_layer::test_support::hidden_cursor_layer;
 use crate::view_camera::FrameCameras;
 use crate::viewer::ViewerLink;
 
@@ -266,6 +269,24 @@ fn a_new_swapchain_retakes_the_devices_and_logs_the_change() {
         second.address()
     );
     assert!(line.ends_with(&end), "{line}");
+}
+
+#[test]
+fn a_skipped_frame_after_a_hidden_cursor_gives_the_counter_the_games_value_back_once() {
+    let test = TestSwapchain::new(64, 32);
+    let masks = [0_u8; 128];
+    let test_cursor = TestCursor::monochrome([0, 0], &masks, &masks);
+    let pointer = Pointer { x: 10, y: 4, width: 64, height: 32 };
+    let aim = Aim { handle: test_cursor.handle(), spot: spot(pointer).expect("a pointer inside") };
+    let before = display_count();
+    let mut state = FrameState::new(None, Some(hidden_cursor_layer(&test, aim)));
+    let hidden = display_count();
+
+    let reports = [skipped(state.ui_layer.as_mut()), skipped(state.ui_layer.as_mut())];
+
+    assert_eq!(hidden, before - 1, "the drawn cursor hid the Windows cursor");
+    assert_eq!(reports, [FrameReport::Skipped; 2]);
+    assert_eq!(display_count(), before, "one call for two skipped frames");
 }
 
 #[test]

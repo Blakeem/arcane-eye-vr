@@ -1,8 +1,9 @@
 //! Fixtures for the core's tests.
 //!
 //! It holds a launch token mapping, a WARP device, swapchain and texture on a hidden window, a debug viewer's
-//! view of the viewer header, a call of a proxy controller's slot 9, pages with a read-only tail and
-//! the write destinations of test memory.
+//! view of the viewer header, the cursor display counter, the calling thread's cursor and cursors
+//! made from known bits, a call of a proxy controller's slot 9, pages with a read-only tail and the
+//! write destinations of test memory.
 
 use std::ffi::c_void;
 use std::{mem, process, ptr};
@@ -27,14 +28,17 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_SWAP_CHAIN_DESC, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_DISCARD,
     DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGISwapChain,
 };
+use windows::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject};
 use windows::Win32::System::Memory::{
     CreateFileMappingW, PAGE_PROTECTION_FLAGS, PAGE_READONLY, PAGE_READWRITE, VirtualProtect,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP,
+    CreateCursor, CreateIconIndirect, CreateWindowExW, DestroyCursor, DestroyWindow, HCURSOR,
+    ICONINFO, SetCursor, ShowCursor, WINDOW_EX_STYLE, WS_POPUP,
 };
 use windows::core::{HSTRING, Interface as _, w};
 
+use super::cursor::CursorHandle;
 use super::{SharedPages, StatusView};
 
 /// A zero-filled launch token mapping under a name only this test process uses, closed on drop.
@@ -277,6 +281,88 @@ impl ReadOnlyTail {
     /// The pages, which a test hands to code that writes to its own pages.
     pub(crate) fn into_pages(self) -> SharedPages {
         self.pages
+    }
+}
+
+/// The calling thread's cursor display counter. The read raises the counter and lowers it again.
+pub(crate) fn display_count() -> i32 {
+    // SAFETY: the call changes only the calling thread's counter, which the next call restores.
+    unsafe { ShowCursor(true) };
+    // SAFETY: the call changes only the calling thread's counter, and returns its restored value.
+    unsafe { ShowCursor(false) }
+}
+
+/// Sets the calling thread's cursor to `cursor`, or to none.
+pub(crate) fn set_cursor(cursor: Option<CursorHandle>) {
+    let cursor = cursor.map(|cursor| HCURSOR(ptr::with_exposed_provenance_mut(cursor.get())));
+    // SAFETY: the cursor is a live cursor of this process or none, and the call changes only the
+    // calling thread's cursor.
+    unsafe { SetCursor(cursor) };
+}
+
+/// The width and height of every test cursor, whose mask rows are 4 bytes long.
+const CURSOR_SIDE: i32 = 32;
+
+/// A cursor this test made, destroyed on drop.
+pub(crate) struct TestCursor(HCURSOR);
+
+impl TestCursor {
+    /// A cursor with no color bitmap, from its AND and XOR masks of 32 rows of 4 bytes each.
+    pub(crate) fn monochrome(hotspot: [i32; 2], and: &[u8; 128], xor: &[u8; 128]) -> Self {
+        let [x, y] = hotspot;
+        // SAFETY: each mask holds 32 rows of 32 bits, the size the call names, and outlives it.
+        let cursor = unsafe {
+            CreateCursor(
+                None,
+                x,
+                y,
+                CURSOR_SIDE,
+                CURSOR_SIDE,
+                and.as_ptr().cast(),
+                xor.as_ptr().cast(),
+            )
+        }
+        .expect("create the test cursor");
+        Self(cursor)
+    }
+
+    /// A cursor with a 32-bit color bitmap of `color` pixels, each blue, green, red and alpha, and a
+    /// mask of 1 bits.
+    pub(crate) fn color(hotspot: [u32; 2], color: &[[u8; 4]; 1024]) -> Self {
+        let mask = [0xFF_u8; 128];
+        // SAFETY: the mask holds 32 rows of 32 bits and outlives the call.
+        let mask =
+            unsafe { CreateBitmap(CURSOR_SIDE, CURSOR_SIDE, 1, 1, Some(mask.as_ptr().cast())) };
+        // SAFETY: the color holds 32 rows of 32 four-byte pixels and outlives the call.
+        let color =
+            unsafe { CreateBitmap(CURSOR_SIDE, CURSOR_SIDE, 1, 32, Some(color.as_ptr().cast())) };
+        let [x, y] = hotspot;
+        let info = ICONINFO {
+            fIcon: false.into(),
+            xHotspot: x,
+            yHotspot: y,
+            hbmMask: mask,
+            hbmColor: color,
+        };
+        // SAFETY: `info` names two live bitmaps, which the call copies.
+        let icon = unsafe { CreateIconIndirect(&raw const info) }.expect("create the test cursor");
+        for bitmap in [mask, color] {
+            // SAFETY: the bitmap is one this function made, deleted once.
+            assert!(unsafe { DeleteObject(bitmap.into()) }.as_bool(), "delete a test bitmap");
+        }
+        Self(HCURSOR(icon.0))
+    }
+
+    pub(crate) fn handle(&self) -> CursorHandle {
+        CursorHandle::from(self.0)
+    }
+}
+
+impl Drop for TestCursor {
+    fn drop(&mut self) {
+        // SAFETY: the cursor was made by this value and is destroyed once. `DestroyCursor` destroys
+        // a cursor that `CreateCursor` or `CreateIconIndirect` made.
+        unsafe { DestroyCursor(self.0) }.expect("destroy the test cursor");
     }
 }
 

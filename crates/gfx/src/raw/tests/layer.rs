@@ -1,14 +1,14 @@
 //! The layer draw against a WARP device, with the shaders the build script compiled.
 
-use windows::Win32::Graphics::Direct3D::D3D11_PRIMITIVE_TOPOLOGY_LINELIST;
+mod restore;
+
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ,
-    D3D11_MAPPED_SUBRESOURCE, D3D11_SUBRESOURCE_DATA, D3D11_USAGE_STAGING, D3D11_VIEWPORT,
-    ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D,
+    D3D11_MAPPED_SUBRESOURCE, D3D11_SUBRESOURCE_DATA, D3D11_USAGE_STAGING, ID3D11Texture2D,
 };
 
 use super::{BYTES_PER_PIXEL, Gpu, desc, row_len, warp};
-use crate::layer::{LayerDraw, LayerStep, Rect};
+use crate::layer::{Area, LayerDraw, LayerStep, Placement, Rect};
 use crate::raw::texture_desc;
 
 const BLUE: [u8; 4] = [0, 0, 255, 255];
@@ -119,97 +119,6 @@ fn each_rect_gets_the_entire_layer_in_the_layers_orientation() {
     for (pixel, expected) in pixels(&gpu, &target).into_iter().zip(rows.as_flattened()) {
         assert_near(pixel, *expected, "a half");
     }
-}
-
-/// The state the restore test binds before the draw and reads after it.
-#[derive(Debug, PartialEq)]
-struct Bound {
-    viewport: [f32; 4],
-    target: Option<ID3D11RenderTargetView>,
-    resource: Option<ID3D11ShaderResourceView>,
-    topology: i32,
-    blend_factor: [f32; 4],
-    sample_mask: u32,
-}
-
-fn bound(gpu: &Gpu) -> Bound {
-    let context = &gpu.context;
-    let (mut viewport, mut count) = (D3D11_VIEWPORT::default(), 1);
-    let (mut targets, mut resources) = ([None], [None]);
-    let (mut blend_factor, mut sample_mask) = ([0.0; 4], 0);
-    // SAFETY: the count names the one viewport slot, and both live for the call.
-    unsafe { context.RSGetViewports(&raw mut count, Some(&raw mut viewport)) };
-    // SAFETY: the slice lives for the call.
-    unsafe { context.OMGetRenderTargets(Some(&mut targets), None) };
-    // SAFETY: the slice lives for the call.
-    unsafe { context.PSGetShaderResources(0, Some(&mut resources)) };
-    // SAFETY: both out slots live for the call.
-    unsafe { context.OMGetBlendState(None, Some(&mut blend_factor), Some(&raw mut sample_mask)) };
-    // SAFETY: the context is live.
-    let topology = unsafe { context.IAGetPrimitiveTopology() }.0;
-    let [target] = targets;
-    let [resource] = resources;
-    Bound {
-        viewport: [viewport.TopLeftX, viewport.TopLeftY, viewport.Width, viewport.Height],
-        target,
-        resource,
-        topology,
-        blend_factor,
-        sample_mask,
-    }
-}
-
-/// Binds a viewport, a target, a pixel shader resource, a topology and blend values that differ from
-/// the layer draw's, and returns what the context then holds.
-fn bind_other_state(gpu: &Gpu) -> Bound {
-    let (other_target, other_layer) = (filled(gpu, 4, 4, BLUE), filled(gpu, 2, 2, RED));
-    let (mut target_view, mut layer_view) = (None, None);
-    let viewport = D3D11_VIEWPORT {
-        TopLeftX: 1.0,
-        TopLeftY: 2.0,
-        Width: 3.0,
-        Height: 4.0,
-        ..Default::default()
-    };
-    // SAFETY: the texture and the out slot live for the call.
-    unsafe { gpu.device.CreateRenderTargetView(&other_target, None, Some(&raw mut target_view)) }
-        .expect("a target view");
-    // SAFETY: the texture and the out slot live for the call.
-    unsafe { gpu.device.CreateShaderResourceView(&other_layer, None, Some(&raw mut layer_view)) }
-        .expect("a layer view");
-    // SAFETY: the slice lives for the call.
-    unsafe { gpu.context.RSSetViewports(Some(&[viewport])) };
-    // SAFETY: the slice lives for the call.
-    unsafe { gpu.context.OMSetRenderTargets(Some(&[target_view.clone()]), None) };
-    // SAFETY: the slice lives for the call.
-    unsafe { gpu.context.PSSetShaderResources(0, Some(&[layer_view.clone()])) };
-    // SAFETY: the topology is a plain value.
-    unsafe { gpu.context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST) };
-    // SAFETY: the blend factor lives for the call.
-    unsafe { gpu.context.OMSetBlendState(None, Some(&[0.1, 0.2, 0.3, 0.4]), 0x0F) };
-    let state = bound(gpu);
-    assert_eq!(state.target, target_view, "the test bound its target");
-    assert_eq!(state.resource, layer_view, "the test bound its resource");
-    assert_eq!(state.topology, D3D11_PRIMITIVE_TOPOLOGY_LINELIST.0);
-    assert_eq!(state.viewport, [1.0, 2.0, 3.0, 4.0]);
-    state
-}
-
-#[test]
-fn the_draw_leaves_the_context_state_as_it_found_it() {
-    let gpu = warp();
-    let mut draw = LayerDraw::create(&gpu.device).expect("create the layer draw");
-    let (target, layer) = (filled(&gpu, 4, 4, BLUE), filled(&gpu, 2, 2, HALF_RED));
-    let before = bind_other_state(&gpu);
-
-    draw.draw(&gpu.context, &target, &layer, &[Rect { x: 0, y: 0, width: 4, height: 4 }])
-        .expect("the draw");
-    assert_eq!(bound(&gpu), before);
-    draw.draw_copy(&gpu.context, &target, &halves(4, 4)).expect("the copy draw");
-
-    assert_eq!(bound(&gpu), before);
-    let drawn = pixels(&gpu, &target);
-    assert_near(*drawn.first().expect("a pixel"), HALF_RED_OVER_BLUE, "the draw ran");
 }
 
 #[test]
@@ -328,6 +237,52 @@ fn a_copy_draw_into_a_texture_that_cannot_be_a_target_names_the_view_and_changes
 
     assert_eq!(error.step, LayerStep::TargetView);
     assert_eq!(pixels(&gpu, &sample_only), [RED, BLUE, RED, BLUE]);
+}
+
+fn area(x: f32, y: f32, width: f32, height: f32) -> Area {
+    Area { x, y, width, height }
+}
+
+#[test]
+fn a_placed_layer_that_crosses_its_clip_draws_only_inside_the_clip() {
+    let gpu = warp();
+    let draw = LayerDraw::create(&gpu.device).expect("create the layer draw");
+    let target = filled(&gpu, 8, 2, BLUE);
+    let image = draw.image(4, 1, &[RED, GREEN, WHITE, WHITE]).expect("the layer texture");
+    let [left, _] = halves(8, 2);
+    // Columns 2 to 5, which cross the left half's edge at column 4.
+    let crossing = Placement { area: area(2.0, 0.0, 4.0, 2.0), clip: left };
+
+    draw.draw_placed(&gpu.context, &target, &image, &[crossing]).expect("the placed draw");
+
+    let row = [BLUE, BLUE, RED, GREEN, BLUE, BLUE, BLUE, BLUE];
+    assert_eq!(pixels(&gpu, &target), [row, row].as_flattened());
+}
+
+#[test]
+fn a_placed_layer_can_start_left_of_the_target() {
+    let gpu = warp();
+    let draw = LayerDraw::create(&gpu.device).expect("create the layer draw");
+    let target = filled(&gpu, 4, 1, BLUE);
+    let image = draw.image(4, 1, &[RED, GREEN, WHITE, RED]).expect("the layer texture");
+    let whole = Rect { x: 0, y: 0, width: 4, height: 1 };
+    let placed = Placement { area: area(-2.0, 0.0, 4.0, 1.0), clip: whole };
+
+    draw.draw_placed(&gpu.context, &target, &image, &[placed]).expect("the placed draw");
+
+    assert_eq!(pixels(&gpu, &target), [WHITE, RED, BLUE, BLUE]);
+}
+
+#[test]
+fn an_image_needs_one_pixel_per_texel() {
+    let gpu = warp();
+    let draw = LayerDraw::create(&gpu.device).expect("create the layer draw");
+
+    let short = draw.image(2, 2, &[RED; 3]).expect_err("three pixels for four texels");
+    let empty = draw.image(0, 2, &[]).expect_err("no texel");
+
+    assert_eq!(short.step, LayerStep::Image);
+    assert_eq!(empty.step, LayerStep::Image);
 }
 
 #[test]

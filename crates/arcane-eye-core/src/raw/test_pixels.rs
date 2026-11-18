@@ -59,7 +59,7 @@ pub(crate) fn texture_of(test: &TestSwapchain, width: u32, pixels: &[Pixel]) -> 
 pub(crate) fn fill_back_buffer(test: &TestSwapchain, pixels: &[Pixel]) {
     let device = super::device(&test.swapchain).expect("the swapchain's device");
     let context = super::immediate_context(&device).expect("the immediate context");
-    let size = super::back_buffer(&test.swapchain).expect("the back buffer's size");
+    let (size, _) = super::swapchain_desc(&test.swapchain).expect("the swapchain's description");
     let picture = texture_of(test, size.width, pixels);
     let back_buffer = super::back_buffer_texture(&test.swapchain).expect("the back buffer");
     // SAFETY: both textures belong to this device and have the back buffer's size and format.
@@ -70,7 +70,7 @@ pub(crate) fn fill_back_buffer(test: &TestSwapchain, pixels: &[Pixel]) {
 pub(crate) fn back_buffer_pixels(test: &TestSwapchain) -> Vec<Pixel> {
     let device = super::device(&test.swapchain).expect("the swapchain's device");
     let context = super::immediate_context(&device).expect("the immediate context");
-    let size = super::back_buffer(&test.swapchain).expect("the back buffer's size");
+    let (size, _) = super::swapchain_desc(&test.swapchain).expect("the swapchain's description");
     let back_buffer = super::back_buffer_texture(&test.swapchain).expect("the back buffer");
     let mut staging_desc = desc(size.width, size.height);
     staging_desc.Usage = D3D11_USAGE_STAGING;
