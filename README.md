@@ -37,6 +37,8 @@ Output to a 3D display, the immersive headset mode and controller input are not 
 
 The screen shows a stereo pair while the second view is on. The left half of each frame goes to the left eye and the right half to the right eye. The game window keeps the keyboard and the mouse, so it needs the keyboard focus for input. The keys under `[screen]` in Settings set the distance and the width of the screen.
 
+A viewer app with a side by side 3D mode, such as Bigscreen, can show the game in place of this screen. Start `arcane-eye-vr.exe --mode desktop-stereo`, let the game fill the monitor, and set the viewer's 3D mode for that monitor to side by side. The viewer then gives the left half of the monitor to the left eye and the right half to the right eye. This route is untested.
+
 ## Settings
 
 The mod reads two files from its root folder `%LOCALAPPDATA%\arcane-eye-vr\` at start and on each reload request. `settings.toml` holds the player settings and `dev.toml` holds the development flags. Each file holds only the values that differ from the defaults, so a missing file gives the defaults.
