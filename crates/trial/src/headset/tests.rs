@@ -262,16 +262,77 @@ fn a_frame_with_no_two_halves_is_an_error() {
     assert!(matches!(error, HeadsetError::NoHalves { width: 1, height: HEIGHT }), "{error:?}");
 }
 
+/// The black columns at the left edge of the right half of the offset test frame.
+const STRIP: u32 = 3;
+
+/// The right half of the offset test frame: black in its first `STRIP` columns, then the right
+/// picture, as the depth offset moves the right half's picture right.
+fn offset_right_picture(x: u32, y: u32) -> [u8; 3] {
+    x.checked_sub(STRIP).map_or([0; 3], |shifted| right_picture(shifted, y))
+}
+
+/// The test frame with the right half moved right by `STRIP` columns.
+fn offset_frame() -> RgbImage {
+    let at = |x: u32, y| {
+        if x < HALF_WIDTH {
+            left_picture(x, y)
+        } else {
+            offset_right_picture(minus(x, HALF_WIDTH), y)
+        }
+    };
+    image(FRAME_WIDTH, HEIGHT, at)
+}
+
+#[test]
+fn a_right_half_with_black_columns_at_its_left_edge_matches_the_right_eye_in_both_orientations() {
+    let frame = offset_frame();
+    let right_half_box =
+        Region { x: HALF_WIDTH + STRIP, y: 0, width: HALF_WIDTH - STRIP, height: HEIGHT };
+    let right_eye_box = Region { x: RIGHT_BOX.x + STRIP, width: HALF_WIDTH - STRIP, ..RIGHT_BOX };
+    for rotated in [false, true] {
+        let copy = window(left_picture, offset_right_picture, rotated);
+        let comparison = compare(&copy, &frame).expect("a pair");
+        let orientation = if rotated { Orientation::Rotated } else { Orientation::AsCopied };
+        assert_eq!(comparison.orientation, orientation);
+        assert_eq!(comparison.left_half_box, Region::entire(HALF_WIDTH, HEIGHT));
+        assert_eq!(comparison.right_half_box, right_half_box);
+        assert_eq!((comparison.left.left_half, comparison.right.right_half), (0.0, 0.0));
+        if rotated {
+            assert_eq!(comparison.right.bounds.width, right_eye_box.width);
+        } else {
+            assert_eq!(comparison.right.bounds, right_eye_box);
+        }
+        check(&comparison, Limit::new(0.0)).expect("each eye matches its own half exactly");
+    }
+}
+
+#[test]
+fn a_frame_with_one_black_half_fails_with_that_half_named() {
+    let at = |x, y| if x < HALF_WIDTH { left_picture(x, y) } else { [10, 10, 10] };
+    let black_right = image(FRAME_WIDTH, HEIGHT, at);
+    let copy = window(left_picture, right_picture, false);
+    let error = compare(&copy, &black_right).expect_err("a black right half");
+    assert!(matches!(error, HeadsetError::DarkHalf { half: Eye::Right }), "{error:?}");
+    assert_eq!(
+        error.to_string(),
+        "the right half of the frame holds no pixel brighter than 10 of 255, so the frame is \
+         black there"
+    );
+}
+
 #[test]
 fn the_text_names_the_orientation_each_box_and_each_difference() {
     let picture =
         |eye, bounds, left_half, right_half| EyePicture { eye, bounds, left_half, right_half };
     let comparison = Comparison {
         orientation: Orientation::AsCopied,
+        left_half_box: Region { x: 0, y: 0, width: 960, height: 1080 },
+        right_half_box: Region { x: 989, y: 0, width: 931, height: 1080 },
         left: picture(Eye::Left, Region { x: 120, y: 80, width: 840, height: 472 }, 9.2, 13.1),
         right: picture(Eye::Right, Region { x: 1200, y: 80, width: 840, height: 472 }, 15.6, 10.5),
     };
     let expected = "orientation: as-copied\n\
+                    left-half-box: 0,0,960,1080\nright-half-box: 989,0,931,1080\n\
                     left-eye-box: 120,80,840,472\nleft-eye-to-left-half: 9.20\n\
                     left-eye-to-right-half: 13.10\n\
                     right-eye-box: 1200,80,840,472\nright-eye-to-left-half: 15.60\n\

@@ -212,7 +212,7 @@ fn a_passing_comparison_writes_headset_png_and_headset_txt() {
     );
     assert!(folder.join("headset.png").is_file());
     let text = fs::read_to_string(folder.join("headset.txt")).expect("read headset.txt");
-    let expected = "orientation: as-copied\n\
+    let expected = "orientation: as-copied\nleft-half-box: 0,0,1,1\nright-half-box: 1,0,1,1\n\
                     left-eye-box: 1,1,1,1\nleft-eye-to-left-half: 0.00\n\
                     left-eye-to-right-half: 30.00\n\
                     right-eye-box: 4,1,1,1\nright-eye-to-left-half: 30.00\n\

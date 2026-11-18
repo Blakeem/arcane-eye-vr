@@ -5,11 +5,16 @@
 //! its right half. An eye's picture is its half cut to the bounding box of its bright pixels, since
 //! the picture is black around the screen once the launch app's scene shows. A box that reaches an
 //! edge of its half is no screen, since SteamVR draws its own environment across each entire eye
-//! picture until about 1.5 s after an application's session starts. The null headset's head is
-//! rolled by 180 degrees, so the comparison also measures each picture rotated by 180 degrees and
-//! takes the orientation whose eyes match their own halves better. Measured differences were 9.2 to
-//! 10.5 for an eye's own half and 13.1 to 15.6 for the other half, on the title screen with a
-//! stereo pair.
+//! picture until about 1.5 s after an application's session starts. Each half of the frame is cut
+//! to the bounding box of its bright pixels too, since the depth offset leaves black columns at an
+//! edge of a half, and the eye's bounding box leaves those columns out with the black around the
+//! screen. The null headset's head is rolled by 180 degrees, so the comparison also measures each
+//! picture rotated by 180 degrees and takes the orientation whose eyes match their own halves
+//! better. On the title screen with a stereo pair and no depth offset, where a cut half equals the
+//! entire half, measured differences were 9.2 to 10.5 for an eye's own half and 13.1 to 15.6 for
+//! the other half. On the title screen with the default depth offset and cut halves, one copy
+//! measured offline gave 12.56 and 12.80 for an eye's own half and 20.09 and 20.20 for the other
+//! half.
 
 use std::fmt;
 use std::io;
@@ -84,10 +89,15 @@ impl EyePicture {
     }
 }
 
-/// The orientation the comparison took and both eyes' pictures in it.
+/// The orientation the comparison took, the part of each half of the frame it compared, and both
+/// eyes' pictures in it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Comparison {
     pub(crate) orientation: Orientation,
+    /// The bounding box of the bright pixels of the frame's left half, in the frame.
+    pub(crate) left_half_box: Region,
+    /// The bounding box of the bright pixels of the frame's right half, in the frame.
+    pub(crate) right_half_box: Region,
     pub(crate) left: EyePicture,
     pub(crate) right: EyePicture,
 }
@@ -134,6 +144,13 @@ pub(crate) enum HeadsetError {
     NoPicture(#[from] ScreenMissing),
     #[error("a {width}x{height} frame has no two halves to compare the eyes' pictures with")]
     NoHalves { width: u32, height: u32 },
+    /// A half of the frame is named by the eye it belongs to.
+    #[error(
+        "the {half} half of the frame holds no pixel brighter than {bright} of 255, so the frame is \
+         black there",
+        bright = BRIGHT_ABOVE
+    )]
+    DarkHalf { half: Eye },
     #[error(
         "the {eye} eye's picture differs from its own half of the frame by {own:.2}, which is not \
          below its difference from the other half, {other:.2}"
@@ -177,24 +194,28 @@ pub(crate) fn missing_screen(window: &RgbImage) -> Result<Option<ScreenMissing>,
 }
 
 /// Compares each eye's picture in `window`, a copy of the headset window, with each half of
-/// `frame` in both orientations, and returns the orientation whose two own-half differences have
-/// the smaller sum. A tie takes the pictures as copied.
+/// `frame` cut to the bounding box of its bright pixels, in both orientations, and returns the
+/// orientation whose two own-half differences have the smaller sum. A tie takes the pictures as
+/// copied.
 pub(crate) fn compare(window: &RgbImage, frame: &RgbImage) -> Result<Comparison, HeadsetError> {
-    let frame_half = frame.width / 2;
-    if frame_half == 0 || frame.height == 0 {
+    if frame.width / 2 == 0 || frame.height == 0 {
         return Err(HeadsetError::NoHalves { width: frame.width, height: frame.height });
     }
     let frame_samples = Samples::new(frame)?;
-    let left_area = Region::entire(frame_half, frame.height);
-    let left_half = frame_samples.grid(left_area, GRID_COLUMNS, GRID_ROWS)?;
-    let right_half =
-        frame_samples.grid(Region { x: frame_half, ..left_area }, GRID_COLUMNS, GRID_ROWS)?;
+    let half_box = |half| {
+        bright_box(&frame_samples, half_of(frame, half)).ok_or(HeadsetError::DarkHalf { half })
+    };
+    let (left_half_box, right_half_box) = (half_box(Eye::Left)?, half_box(Eye::Right)?);
+    let left_half = frame_samples.grid(left_half_box, GRID_COLUMNS, GRID_ROWS)?;
+    let right_half = frame_samples.grid(right_half_box, GRID_COLUMNS, GRID_ROWS)?;
     let halves = (left_half.as_slice(), right_half.as_slice());
     let window_samples = Samples::new(window)?;
     let left = Cropped::of(window, &window_samples, Eye::Left)?;
     let right = Cropped::of(window, &window_samples, Eye::Right)?;
     let as_copied = Comparison {
         orientation: Orientation::AsCopied,
+        left_half_box,
+        right_half_box,
         left: left.measure(halves)?,
         right: right.measure(halves)?,
     };
@@ -202,6 +223,7 @@ pub(crate) fn compare(window: &RgbImage, frame: &RgbImage) -> Result<Comparison,
         orientation: Orientation::Rotated,
         left: left.rotated().measure(halves)?,
         right: right.rotated().measure(halves)?,
+        ..as_copied
     };
     Ok(if own_sum(&rotated) < own_sum(&as_copied) { rotated } else { as_copied })
 }
@@ -224,8 +246,8 @@ pub(crate) fn check(comparison: &Comparison, limit: Option<Limit>) -> Result<(),
     Ok(())
 }
 
-/// The text of `headset.txt`: the orientation, each eye's bounding box in `headset.png` and each
-/// eye's difference from each half of the frame.
+/// The text of `headset.txt`: the orientation, each half's bounding box in the frame, each eye's
+/// bounding box in `headset.png` and each eye's difference from each half of the frame.
 pub(crate) fn text(comparison: &Comparison) -> String {
     let eye_lines = |picture: &EyePicture| {
         let eye = picture.eye;
@@ -235,8 +257,12 @@ pub(crate) fn text(comparison: &Comparison) -> String {
         )
     };
     let orientation = comparison.orientation.as_str();
+    let (left_box, right_box) = (comparison.left_half_box, comparison.right_half_box);
     let (left, right) = (eye_lines(&comparison.left), eye_lines(&comparison.right));
-    format!("orientation: {orientation}\n{left}{right}")
+    format!(
+        "orientation: {orientation}\nleft-half-box: {left_box}\nright-half-box: {right_box}\n\
+         {left}{right}"
+    )
 }
 
 /// One eye's picture cut from the copy of the headset window.
@@ -278,15 +304,15 @@ fn own_sum(comparison: &Comparison) -> f64 {
     comparison.left.own_and_other().0 + comparison.right.own_and_other().0
 }
 
-/// The half of `window` that holds `eye`'s picture. An odd width leaves the last column out of the
-/// right half.
-fn half_of(window: &RgbImage, eye: Eye) -> Region {
-    let half = window.width / 2;
+/// The half of `image`, a window copy or a frame, that belongs to `eye`. An odd width leaves the
+/// last column out of the right half.
+fn half_of(image: &RgbImage, eye: Eye) -> Region {
+    let half = image.width / 2;
     let x = match eye {
         Eye::Left => 0,
         Eye::Right => half,
     };
-    Region { x, y: 0, width: half, height: window.height }
+    Region { x, y: 0, width: half, height: image.height }
 }
 
 /// The screen in `eye`'s half `area`: the bounding box of its bright pixels, which touches no edge
@@ -305,7 +331,8 @@ fn touches_no_edge(bounds: Region, area: Region) -> bool {
     bounds.x > area.x && bounds.y > area.y && right < area_right && bottom < area_bottom
 }
 
-/// The bounding box of the bright pixels of `area`, or `None` when it holds none.
+/// The bounding box of the bright pixels of `area`, or `None` when it holds none. It cuts both an
+/// eye's picture and a half of the frame, so the two cover the same part of the frame.
 fn bright_box(samples: &Samples<'_>, area: Region) -> Option<Region> {
     let mut bounds: Option<(u32, u32, u32, u32)> = None;
     for y in area.y..area.y.saturating_add(area.height) {
