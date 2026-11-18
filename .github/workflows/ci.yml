@@ -24,6 +24,10 @@ jobs:
       - name: PSScriptAnalyzer
         shell: pwsh
         run: Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force -Scope CurrentUser
+      # The gfx build script compiles shaders/*.slang with the slangc that shaders/slangc.toml pins.
+      - name: Slang compiler
+        shell: pwsh
+        run: ./tools/fetch-slang.ps1
       - name: full gate
         shell: pwsh
         run: ./tools/gate.ps1 -Suite full
