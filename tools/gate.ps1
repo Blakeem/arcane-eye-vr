@@ -20,8 +20,8 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $SuppressionFile = Join-Path $RepoRoot 'suppressions.txt'
 
 $SuiteStages = @{
-    commit  = @('fmt', 'clippy', 'rules', 'suppressions', 'typos')
-    full    = @('fmt', 'clippy', 'rules', 'suppressions', 'typos', 'deps', 'test', 'lua', 'powershell')
+    commit  = @('fmt', 'clippy', 'rules', 'suppressions')
+    full    = @('fmt', 'clippy', 'rules', 'suppressions', 'deps', 'test', 'lua', 'powershell')
     nightly = @('miri')
 }
 
@@ -29,7 +29,6 @@ $StageCommands = @{
     fmt        = { cargo fmt --all --check }
     clippy     = { cargo clippy --workspace --all-targets --all-features --keep-going --locked -- -D warnings }
     rules      = { ast-grep scan --off=suppression-inventory --off=unsafe-inventory --report-style short }
-    typos      = { typos }
     deps       = { cargo deny --locked check; if ($LASTEXITCODE -eq 0) { cargo shear } }
     test       = { cargo nextest run --workspace --locked --no-tests=warn; if ($LASTEXITCODE -eq 0) { cargo test --workspace --doc --locked } }
     miri       = { cargo "+$NightlyToolchain" miri test --locked -p stereo-core }

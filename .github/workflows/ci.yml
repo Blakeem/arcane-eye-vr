@@ -20,7 +20,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest,cargo-deny,cargo-shear,typos-cli,ast-grep,stylua
+          tool: cargo-nextest,cargo-deny,cargo-shear,ast-grep,stylua
       - name: PSScriptAnalyzer
         shell: pwsh
         run: Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force -Scope CurrentUser

@@ -88,12 +88,11 @@ pub const PIPELINE_MAIN_FRAME: Signature = Signature {
 
 /// `CreatePlayerView` (player manager vtable slot 1). It takes a `RenderFrame` in `rdx`, never reads
 /// `rcx`, builds a game render view with Scale (0, 1), adds it to the frame's view list and returns
-/// it. From bg3-vr, with the `mov edx,10h` opcode byte as a wildcard, since the spell check reads its
-/// hex as a word.
+/// it. From bg3-vr.
 pub const VIEW_CREATE_PLAYER: Signature = Signature {
     name: "view_create_player",
     pattern: "48 89 5C 24 08 48 89 74 24 18 57 48 81 EC D0 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 \
-              89 84 24 C0 00 00 00 48 8B F2 E8 ?? ?? ?? ?? 48 8B F8 ?? 10 00 00 00 B9 90 2D 00 00",
+              89 84 24 C0 00 00 00 48 8B F2 E8 ?? ?? ?? ?? 48 8B F8 BA 10 00 00 00 B9 90 2D 00 00",
     offset: 0,
     rip: None,
 };
@@ -227,13 +226,12 @@ pub const SHADOW_STAGE_EXIT: Signature = Signature {
 /// thread once per view per frame with the stage in `rbx`. The match starts at the `movsx` that
 /// loads the view's split-screen index, which the next instruction stores as the stage's slot index.
 /// The site holds `mov rcx,[rbx+2138h]`, `lea rdx,[rbx+20h]` and `test rbx,rbx`, 14 bytes with no
-/// jump, which the pattern holds for SafetyHook's 14-byte fallback jump. The opcode byte of
-/// `mov edx,0FFh` is a wildcard, since the spelling check reads its hex digits as a word. From
-/// bg3-vr's store site and a disassembly.
+/// jump, which the pattern holds for SafetyHook's 14-byte fallback jump. From bg3-vr's store site and
+/// a disassembly.
 pub const OBJECT_STAGE_JOB_START: Signature = Signature {
     name: "object_stage_job_start",
     pattern: "0F BE 90 68 22 00 00 89 91 9C 21 00 00 39 B9 F4 21 00 00 74 43 4C 8B 89 C8 21 00 00 4D \
-              85 C9 74 0D 48 63 81 D0 21 00 00 49 8D 0C 81 EB 03 48 8B CF 49 2B C9 ?? FF 00 00 00 48 \
+              85 C9 74 0D 48 63 81 D0 21 00 00 49 8D 0C 81 EB 03 48 8B CF 49 2B C9 BA FF 00 00 00 48 \
               C1 F9 02 4C 63 C1 49 8B C9 49 C1 E0 02 E8 ?? ?? ?? ?? 89 BB F4 21 00 00 89 BB E4 21 00 \
               00 48 8B 8B 38 21 00 00 48 8D 53 20 48 85 DB",
     offset: 88,

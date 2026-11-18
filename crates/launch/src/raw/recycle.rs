@@ -5,12 +5,15 @@ use std::path::Path;
 use std::ptr;
 
 use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::Shell::{FO_DELETE, SHFILEOPSTRUCTW, SHFileOperationW};
+use windows::Win32::UI::Shell::{
+    FO_DELETE, FOF_ALLOWUNDO, FOF_NO_UI, SHFILEOPSTRUCTW, SHFileOperationW,
+};
 use windows::core::PCWSTR;
 
-/// The file operation flags of `shellapi.h` for a silent move to the Recycle Bin. 0x40 allows the
-/// undo, which sends the folder to the Recycle Bin. 0x614 shows no dialog of any kind.
-const RECYCLE_FLAGS: u16 = 0x40 | 0x614;
+/// `FOF_ALLOWUNDO`, which sends the folder to the Recycle Bin, with `FOF_NO_UI`, which shows no
+/// dialog. The structure holds its flags in 16 bits.
+const RECYCLE_FLAGS: u16 = 0x654;
+const _: () = assert!(RECYCLE_FLAGS as u32 == FOF_ALLOWUNDO.0 | FOF_NO_UI.0);
 
 /// How the shell's move of a folder to the Recycle Bin ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
