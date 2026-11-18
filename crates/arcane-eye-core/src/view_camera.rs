@@ -16,7 +16,7 @@ use game_bindings::render_view::RenderView;
 use game_bindings::signatures::{GET_WORLD_TRANSLATE, RENDER_VIEW_CAMERA_BUILT};
 use game_bindings::state;
 use game_mem::GameAddr;
-use hooks::{MidHook, Registers, RenderThread};
+use hooks::{MidHook, Registers, RenderThread, Runs};
 use stereo_core::eye::Eye;
 use tracing::{info, warn};
 
@@ -29,6 +29,7 @@ use crate::raw;
 hooks::render_mid_hook!(
     camera_built_thunk,
     Feature::ViewCamera,
+    Runs::WhileActive,
     state::core_context::<CoreContext>(),
     on_camera_built
 );

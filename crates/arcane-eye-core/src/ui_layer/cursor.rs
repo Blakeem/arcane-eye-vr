@@ -6,7 +6,8 @@
 //! UI LAYER FRAME, render thread, while the feature runs
 //!   [owner]     the thread of the swapchain's output window, against the calling thread
 //!   [aim]       the pointer in the window's client area and the calling thread's cursor
-//!   [image]     the cursor's bitmaps as pixels and a texture, made again only when its handle changes
+//!   [image]     the cursor's bitmaps as pixels and a texture, made again only when its handle changes,
+//!               through row and pixel buffers reserved once for the largest cursor
 //!   [draw]      the texture with its hotspot at the pointer's place in each half, clipped to the half
 //!   [counter]   one ShowCursor(FALSE) when a frame draws the cursor and hides the Windows cursor.
 //!               One ShowCursor(TRUE) when a frame shows it again, such as a frame with no drawn
@@ -28,7 +29,7 @@ use tracing::Level;
 use windows::Win32::Graphics::Direct3D11::{ID3D11DeviceContext, ID3D11Texture2D};
 
 use self::counter::{Counter, Marked, Owner, WindowsCursor, owner, wanted};
-use self::image::{ConvertError, Image};
+use self::image::{Buffers, ConvertError, Image};
 use self::place::{Spot, Sprite, place, spot};
 use super::LOG_PERIOD;
 use crate::raw::cursor::{
@@ -86,6 +87,7 @@ pub(crate) struct Cursor {
     pointer_log: RateLimit,
     skip_log: RateLimit,
     release_logs: ReleaseLogs,
+    buffers: Buffers,
 }
 
 impl Cursor {
@@ -151,7 +153,7 @@ impl Cursor {
     /// last one.
     fn drawn(&mut self, layer: &LayerDraw, handle: CursorHandle) -> Option<&Drawn> {
         if self.held.as_ref().is_none_or(|held| held.handle != handle) {
-            let drawn = match texture(layer, handle, &mut self.release_logs) {
+            let drawn = match texture(layer, handle, &mut self.release_logs, &mut self.buffers) {
                 Ok(drawn) => Some(drawn),
                 Err(fault) => {
                     self.skip(handle, fault);
@@ -213,24 +215,31 @@ impl Cursor {
     }
 }
 
-/// The texture of the cursor `handle`. A failed release of a GDI object logs through `logs`.
+/// The texture of the cursor `handle`, read through `buffers`. A failed release of a GDI object
+/// logs through `logs`.
 fn texture(
     layer: &LayerDraw,
     handle: CursorHandle,
     logs: &mut ReleaseLogs,
+    buffers: &mut Buffers,
 ) -> Result<Drawn, CursorFault> {
-    let image = read(handle, logs)?;
-    let texture = layer.image(image.width, image.height, &image.pixels)?;
+    let image = read(handle, logs, buffers)?;
+    let texture = layer.image(image.width, image.height, image.pixels)?;
     let sprite = Sprite { width: image.width, height: image.height, hotspot: image.hotspot };
     Ok(Drawn { texture, sprite })
 }
 
-/// The image of the cursor `handle`, from its bitmaps. A failed release of a GDI object logs
-/// through `logs`.
-pub(crate) fn read(handle: CursorHandle, logs: &mut ReleaseLogs) -> Result<Image, CursorFault> {
+/// The image of the cursor `handle`, from its bitmaps, with its rows and pixels in `buffers`. A
+/// failed release of a GDI object logs through `logs`.
+pub(crate) fn read<'buffers>(
+    handle: CursorHandle,
+    logs: &mut ReleaseLogs,
+    buffers: &'buffers mut Buffers,
+) -> Result<Image<'buffers>, CursorFault> {
+    let Buffers { mask, color, pixels } = buffers;
     let mut bitmaps = CursorBitmaps::of(handle, logs)?;
     let shape = image::shape(bitmaps.sizes()?)?;
-    let mask = bitmaps.mask_rows(shape)?;
-    let color = bitmaps.color_rows(shape)?;
-    Ok(image::convert(shape, bitmaps.hotspot(), &mask, color.as_deref())?)
+    let mask = bitmaps.mask_rows(shape, mask)?;
+    let color = bitmaps.color_rows(shape, color)?;
+    Ok(image::convert(shape, bitmaps.hotspot(), mask, color, pixels)?)
 }

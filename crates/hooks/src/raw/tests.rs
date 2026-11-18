@@ -66,8 +66,27 @@ fn record_game_call(context: &TestContext, _thread: &GameThread, registers: &mut
 /// The first argument that makes the game thread handler panic.
 const PANIC_ARGUMENT: usize = 99;
 
-crate::render_mid_hook!(recording_thunk, Feature::PresentHook, context(), record_call);
-crate::render_mid_hook!(panicking_thunk, Feature::PresentHook, context(), record_call_then_panic);
+crate::render_mid_hook!(
+    recording_thunk,
+    Feature::PresentHook,
+    Runs::WhileActive,
+    context(),
+    record_call
+);
+crate::render_mid_hook!(
+    panicking_thunk,
+    Feature::PresentHook,
+    Runs::WhileActive,
+    context(),
+    record_call_then_panic
+);
+crate::render_mid_hook!(
+    render_after_failure_thunk,
+    Feature::PresentHook,
+    Runs::AfterFailureToo,
+    context(),
+    record_call
+);
 crate::game_mid_hook!(game_thunk, Feature::EyeView, Runs::WhileActive, context(), record_game_call);
 crate::game_mid_hook!(
     after_failure_thunk,
@@ -129,6 +148,14 @@ fn mid_hook_runs_its_handler_and_a_caught_panic_latches_the_feature_off() {
     assert_eq!(call(exclusive_or, 6, 3), 5);
     assert_eq!(calls(context), 2, "a failed feature's hook runs no handler");
     drop(panicking);
+
+    // SAFETY: `weighted_sum` is a function of this binary, and the hook sits on its first instruction.
+    let after_failure =
+        unsafe { install_mid_hook(address(weighted_sum), render_after_failure_thunk) }
+            .expect("install");
+    assert_eq!(call(weighted_sum, 4, 1), 13, "the hook leaves the result unchanged");
+    assert_eq!(calls(context), 3, "the render hook's handler runs on a failed feature");
+    drop(after_failure);
 
     game_hook_runs_its_handler_and_a_caught_panic_latches_its_feature_off(context);
 }

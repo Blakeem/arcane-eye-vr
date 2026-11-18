@@ -177,22 +177,29 @@ impl<'log> CursorBitmaps<'log> {
         Ok(Sizes { mask: bitmap_size(self.mask)?, color })
     }
 
-    /// The rows of the mask bitmap of a cursor of `shape`, 1 bit per pixel.
-    pub(crate) fn mask_rows(&mut self, shape: Shape) -> Result<Vec<u8>, ReadFault> {
-        let log = &mut self.logs.screen_dc;
-        dib_rows(self.mask, shape.width, shape.mask_rows(), MASK_BITS, log)
+    /// The rows of the mask bitmap of a cursor of `shape`, 1 bit per pixel, written into `rows` in
+    /// place of what it held.
+    pub(crate) fn mask_rows<'rows>(
+        &mut self,
+        shape: Shape,
+        rows: &'rows mut Vec<u8>,
+    ) -> Result<&'rows [u8], ReadFault> {
+        let dib = Dib { width: shape.width, rows: shape.mask_rows(), bits: MASK_BITS };
+        dib_rows(self.mask, dib, rows, &mut self.logs.screen_dc)?;
+        Ok(rows.as_slice())
     }
 
-    /// The rows of the color bitmap of a cursor of `shape`, 32 bits per pixel, or `None` for a
-    /// cursor with no color bitmap.
-    pub(crate) fn color_rows(&mut self, shape: Shape) -> Result<Option<Vec<u8>>, ReadFault> {
-        let log = &mut self.logs.screen_dc;
-        match (shape.source, self.color) {
-            (Source::Color, Some(color)) => {
-                Ok(Some(dib_rows(color, shape.width, u32::from(shape.height), COLOR_BITS, log)?))
-            }
-            (Source::Color | Source::Mask, _) => Ok(None),
-        }
+    /// The rows of the color bitmap of a cursor of `shape`, 32 bits per pixel, written into `rows`
+    /// in place of what it held, or `None` for a cursor with no color bitmap.
+    pub(crate) fn color_rows<'rows>(
+        &mut self,
+        shape: Shape,
+        rows: &'rows mut Vec<u8>,
+    ) -> Result<Option<&'rows [u8]>, ReadFault> {
+        let (Source::Color, Some(color)) = (shape.source, self.color) else { return Ok(None) };
+        let dib = Dib { width: shape.width, rows: u32::from(shape.height), bits: COLOR_BITS };
+        dib_rows(color, dib, rows, &mut self.logs.screen_dc)?;
+        Ok(Some(rows.as_slice()))
     }
 }
 
@@ -239,21 +246,30 @@ struct DibInfo {
     colors: [RGBQUAD; 2],
 }
 
-/// `rows` top-down rows of `bitmap`, `width` pixels of `bits` bits each. A failed release of the
-/// screen's device context logs through `log`.
-fn dib_rows(
-    bitmap: HBITMAP,
+/// The rows of a DIB: `rows` top-down rows of `width` pixels of `bits` bits each.
+#[derive(Clone, Copy)]
+struct Dib {
     width: u16,
     rows: u32,
     bits: u16,
+}
+
+/// Writes the rows `dib` names of `bitmap` into `bytes`, in place of what it held. A failed release
+/// of the screen's device context logs through `log`.
+fn dib_rows(
+    bitmap: HBITMAP,
+    dib: Dib,
+    bytes: &mut Vec<u8>,
     log: &mut RateLimit,
-) -> Result<Vec<u8>, ReadFault> {
+) -> Result<(), ReadFault> {
+    let Dib { width, rows, bits } = dib;
     let row_size = ReadFault::RowSize { width };
     let stride = dib_stride(usize::from(width), bits).ok_or(row_size)?;
     let len = usize::try_from(rows).ok().and_then(|rows| rows.checked_mul(stride));
     let top_down = i32::try_from(rows).ok().and_then(i32::checked_neg).ok_or(row_size)?;
     let header_size = u32::try_from(size_of::<BITMAPINFOHEADER>()).ok().ok_or(row_size)?;
-    let mut bytes = vec![0_u8; len.ok_or(row_size)?];
+    bytes.clear();
+    bytes.resize(len.ok_or(row_size)?, 0);
     let mut info = DibInfo {
         header: BITMAPINFOHEADER {
             biSize: header_size,
@@ -284,7 +300,7 @@ fn dib_rows(
     if u32::try_from(copied).ok() != Some(rows) {
         return Err(ReadFault::Rows { copied, rows });
     }
-    Ok(bytes)
+    Ok(())
 }
 
 /// The screen's device context, released on drop. A failed release logs through the rate limit.

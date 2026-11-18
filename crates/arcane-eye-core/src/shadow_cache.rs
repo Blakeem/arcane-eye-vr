@@ -23,7 +23,7 @@ use game_bindings::shadow_stage::ShadowStage;
 use game_bindings::signatures::SHADOW_STAGE_EXIT;
 use game_bindings::state;
 use game_mem::{GameAddr, WriteDest};
-use hooks::{MidHook, Registers, RenderThread};
+use hooks::{MidHook, Registers, RenderThread, Runs};
 use settings::dev::SecondView;
 use tracing::{Level, info, warn};
 
@@ -36,6 +36,7 @@ use crate::raw;
 hooks::render_mid_hook!(
     stage_exit_thunk,
     Feature::ShadowCache,
+    Runs::WhileActive,
     state::core_context::<CoreContext>(),
     on_stage_exit
 );

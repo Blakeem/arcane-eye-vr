@@ -365,7 +365,8 @@ impl UiLayer {
     /// Drops the layer draw, whose copy of the back buffer holds video memory, and the cursor's
     /// texture, gives the cursor display counter the game's value back, and gives the UI enable byte
     /// the game's value back when the core still holds it at 0 in the stage the pipeline holds now.
-    fn release(&mut self) {
+    /// The frame handler also runs it after the Present call-site hook failed.
+    pub(crate) fn release(&mut self) {
         self.layer = None;
         self.cursor.release();
         let Some(cleared) = self.cleared.take() else { return };

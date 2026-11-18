@@ -5,21 +5,22 @@
 //! eye camera, the shadow cache and the view camera, runs the frame work with the UI layer before the
 //! engine's `Present` call, reports the first frame through the launch token, reads the game state and runs the eye
 //! view's create. It copies the published player settings once, so a frame uses one set of values.
+//! After the hook's feature failed, the handler runs only [`give_back`].
 
 use std::mem::ManuallyDrop;
 use std::panic::{self, AssertUnwindSafe};
 
-use diag::health::{Feature, Health};
+use diag::health::{Feature, FeatureState, Health};
 use game_bindings::signatures::DX11_PRESENT_CALL;
 use game_bindings::state;
 use game_mem::GameAddr;
-use hooks::{MidHook, Registers, RenderThread};
+use hooks::{MidHook, Registers, RenderThread, Runs};
 use ipc_layout::launch_token::Status;
 use tracing::{info, warn};
 
 use crate::context::CoreContext;
 use crate::eye_camera;
-use crate::eye_view;
+use crate::eye_view::{self, Layout};
 use crate::frame::{self, FrameReport, UiFrame};
 use crate::game_state;
 use crate::install::{GameCode, InstallError};
@@ -28,9 +29,13 @@ use crate::raw::{self, StatusView};
 use crate::shadow_cache;
 use crate::view_camera;
 
+/// The hook runs after `present-hook` failed too, so the handler can run [`give_back`].
+const PRESENT_RUNS: Runs = Runs::AfterFailureToo;
+
 hooks::render_mid_hook!(
     present_call_thunk,
     Feature::PresentHook,
+    PRESENT_RUNS,
     state::core_context::<CoreContext>(),
     on_present_call
 );
@@ -89,6 +94,10 @@ fn report(status: Option<&StatusView>, value: Status) {
 /// passed the eye camera's, the shadow cache's and the view camera's sites before this call, and the
 /// render loop holds no pointer into the view list, so the eye view may join it here.
 fn on_present_call(context: &CoreContext, thread: &RenderThread, registers: &mut Registers) {
+    if let Handler::GiveBack { layout } = handler(context.health.state(Feature::PresentHook)) {
+        give_back(context, thread, layout);
+        return;
+    }
     let layout = eye_view::frame_layout(context, thread);
     let settings = context.settings.get();
     eye_camera::end_frame(context, thread, layout, settings.stereo);
@@ -106,6 +115,38 @@ fn on_present_call(context: &CoreContext, thread: &RenderThread, registers: &mut
     eye_view::on_present_call(context, thread);
 }
 
+/// The handler's work in a frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Handler {
+    /// The frame work of the pair.
+    Frame,
+    /// [`give_back`] in `layout`, after `present-hook` failed.
+    GiveBack { layout: Layout },
+}
+
+/// The handler's work while the hook's own feature is in `present_hook`. The give-back's layout is
+/// `MainOnly`, so in the stereo pair each view renders from the head.
+const fn handler(present_hook: FeatureState) -> Handler {
+    match present_hook {
+        FeatureState::Active => Handler::Frame,
+        FeatureState::Failed | FeatureState::Pending | FeatureState::Unavailable => {
+            Handler::GiveBack { layout: Layout::MainOnly }
+        }
+    }
+}
+
+/// Ends the eye camera's frame in `layout` and stops the UI layer, which gives the UI enable byte and
+/// the cursor display counter the game's values back. The shadow cache, the object slot, the view
+/// camera and the viewer link get no frame. [`frame::on_failed_present_call`] runs both steps.
+fn give_back(context: &CoreContext, thread: &RenderThread, layout: Layout) {
+    let stereo = context.settings.get().stereo;
+    context.frame.with(thread, |state| {
+        frame::on_failed_present_call(state, || {
+            eye_camera::end_frame(context, thread, layout, stereo);
+        });
+    });
+}
+
 /// Runs `work`, a feature's part of the handler, while `feature` is running, inside `catch_unwind`,
 /// so a panic in it latches `feature` off and leaves the Present call-site hook running.
 pub(crate) fn guarded(health: &Health, feature: Feature, work: impl FnOnce()) {
@@ -119,12 +160,24 @@ pub(crate) fn guarded(health: &Health, feature: Feature, work: impl FnOnce()) {
 
 #[cfg(test)]
 mod tests {
-    use super::{failure_status, guarded, install};
+    use super::{Handler, PRESENT_RUNS, failure_status, guarded, handler, install};
+    use crate::eye_view::Layout;
     use crate::install::{GameCode, InstallError, LocateError};
     use diag::health::{Feature, FeatureState, Health};
     use game_bindings::pe::Rva;
-    use hooks::HookError;
+    use hooks::{HookError, Runs};
     use ipc_layout::launch_token::Status;
+
+    #[test]
+    fn the_hook_runs_after_its_feature_failed_so_it_can_give_the_game_back_its_picture() {
+        assert_eq!(PRESENT_RUNS, Runs::AfterFailureToo);
+    }
+
+    #[test]
+    fn an_active_hook_runs_the_frame_work_and_a_failed_hook_gives_back_the_layout_main_only() {
+        assert_eq!(handler(FeatureState::Active), Handler::Frame);
+        assert_eq!(handler(FeatureState::Failed), Handler::GiveBack { layout: Layout::MainOnly });
+    }
 
     #[test]
     fn a_hook_failure_is_a_failed_start_and_a_locate_failure_an_unsupported_build() {

@@ -4,7 +4,7 @@
 //! A mid hook's callback comes only from [`render_mid_hook!`] or [`game_mid_hook!`]. The callback is
 //! `extern "C"`, since SafetyHook's mid hook stub has no unwind data, and it runs the handler inside
 //! `catch_unwind`. A caught panic latches the hook's feature off in the health registry, and the hook
-//! then does nothing, unless its game thread handler gives the game back what the feature changed
+//! then does nothing, unless its handler gives the game back what the feature changed
 //! ([`Runs::AfterFailureToo`]).
 
 use std::marker::PhantomData;
@@ -97,11 +97,11 @@ pub enum HookError {
 pub fn run_render_mid_hook<'context, C: HookContext + 'context>(
     registers: &mut Registers,
     feature: Feature,
+    runs: Runs,
     read_context: impl FnOnce() -> Option<&'context C>,
     handler: fn(&C, &RenderThread, &mut Registers),
 ) {
-    let hook = Hook { feature, runs: Runs::WhileActive };
-    run_mid_hook(registers, hook, read_context, handler, &RenderThread::new());
+    run_mid_hook(registers, Hook { feature, runs }, read_context, handler, &RenderThread::new());
 }
 
 /// The body of a callback that [`game_mid_hook!`] builds. Only that macro calls it.
@@ -157,14 +157,14 @@ fn run_mid_hook<'context, C: HookContext + 'context, T>(
 /// the engine's render thread. Pass the thunk to [`install_mid_hook`].
 ///
 /// Each call evaluates `$context`, an `Option<&C>` where `C: HookContext`, and runs
-/// `$handler(&C, &RenderThread, &mut Registers)` while `$feature` is running in the context's health
-/// registry. A panic in the handler latches `$feature` off. A panic in `$context` ends only that call,
-/// since no health registry is reachable.
+/// `$handler(&C, &RenderThread, &mut Registers)` in the states of `$feature` in the context's health
+/// registry that `$runs`, a [`Runs`], names. A panic in the handler latches `$feature` off. A panic in
+/// `$context` ends only that call, since no health registry is reachable.
 #[macro_export]
 macro_rules! render_mid_hook {
-    ($thunk:ident, $feature:expr, $context:expr, $handler:path $(,)?) => {
+    ($thunk:ident, $feature:expr, $runs:expr, $context:expr, $handler:path $(,)?) => {
         extern "C" fn $thunk(registers: &mut $crate::Registers) {
-            $crate::run_render_mid_hook(registers, $feature, || $context, $handler);
+            $crate::run_render_mid_hook(registers, $feature, $runs, || $context, $handler);
         }
     };
 }
@@ -172,8 +172,7 @@ macro_rules! render_mid_hook {
 /// Defines `extern "C" fn $thunk(&mut Registers)`, a mid hook callback for a hook site that runs on
 /// the engine's game thread. Pass the thunk to [`install_mid_hook`].
 ///
-/// It follows the rules of [`render_mid_hook!`], with `$handler(&C, &GameThread, &mut Registers)`,
-/// except that `$runs`, a [`Runs`], names the states of `$feature` in which the handler runs.
+/// It follows the rules of [`render_mid_hook!`], with `$handler(&C, &GameThread, &mut Registers)`.
 #[macro_export]
 macro_rules! game_mid_hook {
     ($thunk:ident, $feature:expr, $runs:expr, $context:expr, $handler:path $(,)?) => {

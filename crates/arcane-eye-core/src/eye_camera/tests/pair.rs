@@ -142,6 +142,26 @@ fn a_frame_that_is_not_side_by_side_proxies_no_view() {
 }
 
 #[test]
+fn a_main_only_frame_end_after_a_side_by_side_frame_proxies_no_view() {
+    let head = HeadController::new(WORLD_TRANSLATE);
+    let views = Views::on(&head);
+    let mut camera = target_state(Target::StereoPair);
+    camera.end_frame(views.side_by_side());
+    proxied_at(begin(&mut camera, views.main.view()), Eye::Left, History::Cut);
+
+    let next = Views::on(&head);
+
+    camera.end_frame(Layout::MainOnly);
+
+    for view in [&next.main, &next.eye] {
+        assert_eq!(begin(&mut camera, view.view()), Ok(Outcome::Unchanged));
+        assert_eq!(view.pointer_at(VIEW_READ_STATE_CONTROLLER), head.address().get());
+    }
+    camera.end_frame(next.side_by_side());
+    proxied_at(begin(&mut camera, next.eye.view()), Eye::Right, History::Cut);
+}
+
+#[test]
 fn an_eye_view_on_another_controller_is_left_as_it_is() {
     let head = HeadController::new(WORLD_TRANSLATE);
     let views = Views::on(&head);

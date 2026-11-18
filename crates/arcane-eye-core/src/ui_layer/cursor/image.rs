@@ -4,7 +4,8 @@
 //! The rows are top-down DIB rows as `GetDIBits` returns them. A color row holds blue, green, red and
 //! alpha bytes for each pixel. A mask row holds one bit per pixel, the first pixel in the high bit,
 //! padded to a multiple of 4 bytes. A cursor with no color bitmap has a mask twice its height, the
-//! AND mask on top and the XOR mask below it.
+//! AND mask on top and the XOR mask below it. The rows and the pixels go into buffers reserved once
+//! for the largest cursor.
 
 /// The largest width or height of a cursor the core draws.
 const MAX_SIDE: u32 = 256;
@@ -15,6 +16,16 @@ pub(crate) const MASK_BITS: u16 = 1;
 
 /// The bytes of one color pixel.
 const COLOR_BYTES: usize = 4;
+
+/// The pixels of the largest cursor.
+const MAX_PIXELS: usize = MAX_SIDE as usize * MAX_SIDE as usize;
+
+/// The bytes of the largest cursor's mask rows: twice its height, as a cursor with no color bitmap
+/// has, of 1-bit rows padded to a multiple of 4 bytes.
+const MAX_MASK_BYTES: usize = (MAX_SIDE as usize).div_ceil(32) * 4 * 2 * MAX_SIDE as usize;
+
+/// The bytes of the largest cursor's color rows.
+const MAX_COLOR_BYTES: usize = MAX_PIXELS * COLOR_BYTES;
 
 /// One pixel of an image: red, green, blue and alpha, with the color premultiplied by the alpha.
 pub(crate) type Pixel = [u8; 4];
@@ -58,14 +69,33 @@ impl Shape {
 }
 
 /// The cursor's pixels and hotspot.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Image {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Image<'pixels> {
     pub(crate) width: u16,
     pub(crate) height: u16,
     /// The pixel that points, from the image's top left corner: x, then y.
     pub(crate) hotspot: [u16; 2],
     /// `width` times `height` pixels in row order.
+    pub(crate) pixels: &'pixels [Pixel],
+}
+
+/// The rows a cursor read fills and the pixels its conversion fills, each reserved once for the
+/// largest cursor, so a read on the Present call site's path makes no heap allocation.
+#[derive(Debug)]
+pub(crate) struct Buffers {
+    pub(crate) mask: Vec<u8>,
+    pub(crate) color: Vec<u8>,
     pub(crate) pixels: Vec<Pixel>,
+}
+
+impl Default for Buffers {
+    fn default() -> Self {
+        Self {
+            mask: Vec::with_capacity(MAX_MASK_BYTES),
+            color: Vec::with_capacity(MAX_COLOR_BYTES),
+            pixels: Vec::with_capacity(MAX_PIXELS),
+        }
+    }
 }
 
 /// Why a cursor's bitmaps give no image.
@@ -107,38 +137,42 @@ pub(crate) fn shape(sizes: Sizes) -> Result<Shape, ConvertError> {
 }
 
 /// The image of a cursor of `shape` with `hotspot`, from its `mask` rows and, for a color cursor,
-/// its `color` rows.
+/// its `color` rows, with its pixels written into `pixels` in place of what it held.
 ///
 /// A color bitmap with a nonzero alpha value keeps its alpha. One whose alpha values are all 0 is
 /// clear where the mask bit is 1 and the color is black, and opaque elsewhere. A cursor with no
 /// color bitmap is black for AND 0 and XOR 0, white for XOR 1, and clear for AND 1 and XOR 0.
-pub(crate) fn convert(
+pub(crate) fn convert<'pixels>(
     shape: Shape,
     hotspot: [u32; 2],
     mask: &[u8],
     color: Option<&[u8]>,
-) -> Result<Image, ConvertError> {
+    pixels: &'pixels mut Vec<Pixel>,
+) -> Result<Image<'pixels>, ConvertError> {
     let [x, y] = hotspot;
     let (Ok(hot_x), Ok(hot_y)) = (u16::try_from(x), u16::try_from(y)) else {
         return Err(ConvertError::Hotspot { x, y });
     };
     let (width, height) = (usize::from(shape.width), usize::from(shape.height));
     let masks = Mask::new(mask, width, shape.mask_rows())?;
-    let pixels = match (shape.source, color) {
-        (Source::Color, Some(color)) => color_pixels(color, &masks, width, height)?,
-        (Source::Mask, _) => mask_pixels(&masks, width, height),
+    pixels.clear();
+    match (shape.source, color) {
+        (Source::Color, Some(color)) => color_pixels(color, &masks, width, height, pixels)?,
+        (Source::Mask, _) => mask_pixels(&masks, width, height, pixels),
         (Source::Color, None) => return Err(ConvertError::ShortRows),
-    };
+    }
+    let pixels = pixels.as_slice();
     Ok(Image { width: shape.width, height: shape.height, hotspot: [hot_x, hot_y], pixels })
 }
 
-/// The pixels of a color cursor `width` by `height` pixels.
+/// Appends the pixels of a color cursor `width` by `height` pixels to `buffer`.
 fn color_pixels(
     color: &[u8],
     mask: &Mask<'_>,
     width: usize,
     height: usize,
-) -> Result<Vec<Pixel>, ConvertError> {
+    buffer: &mut Vec<Pixel>,
+) -> Result<(), ConvertError> {
     let len = width.checked_mul(height).and_then(|texels| texels.checked_mul(COLOR_BYTES));
     let bytes = len.and_then(|len| color.get(..len)).ok_or(ConvertError::ShortRows)?;
     let (colors, _) = bytes.as_chunks::<COLOR_BYTES>();
@@ -154,18 +188,19 @@ fn color_pixels(
             [red, green, blue, u8::MAX]
         }
     });
-    Ok(pixels.collect())
+    buffer.extend(pixels);
+    Ok(())
 }
 
-/// The pixels of a cursor with no color bitmap, `width` by `height` pixels.
-fn mask_pixels(mask: &Mask<'_>, width: usize, height: usize) -> Vec<Pixel> {
+/// Appends the pixels of a cursor with no color bitmap, `width` by `height` pixels, to `buffer`.
+fn mask_pixels(mask: &Mask<'_>, width: usize, height: usize, buffer: &mut Vec<Pixel>) {
     let pixel =
         |(x, y): (usize, usize)| match (mask.bit(x, y), mask.bit(x, y.saturating_add(height))) {
             (false, false) => BLACK,
             (true, false) => CLEAR,
             (false | true, true) => WHITE,
         };
-    texels(width, height).map(pixel).collect()
+    buffer.extend(texels(width, height).map(pixel));
 }
 
 /// The column and row of each texel of an image `width` by `height` pixels, in row order.

@@ -33,7 +33,7 @@ use game_bindings::render_view::{CameraController, ReadState, RenderView};
 use game_bindings::signatures::{GET_WORLD_TRANSLATE, RENDER_VIEW_BEGIN};
 use game_bindings::state;
 use game_mem::{GameAddr, WriteDest};
-use hooks::{MidHook, Registers, RenderThread};
+use hooks::{MidHook, Registers, RenderThread, Runs};
 use settings::dev::MainViewEye;
 use settings::player::StereoSettings;
 use stereo_core::eye::{self, Eye, PerEye};
@@ -52,6 +52,7 @@ use crate::raw::{self, SharedPages};
 hooks::render_mid_hook!(
     view_begin_thunk,
     Feature::EyeCamera,
+    Runs::WhileActive,
     state::core_context::<CoreContext>(),
     on_view_begin
 );

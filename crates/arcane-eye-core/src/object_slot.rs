@@ -24,7 +24,7 @@ use game_bindings::object_stage::ObjectStage;
 use game_bindings::signatures::OBJECT_STAGE_JOB_START;
 use game_bindings::state;
 use game_mem::{GameAddr, WriteDest};
-use hooks::{MidHook, Registers, RenderThread};
+use hooks::{MidHook, Registers, RenderThread, Runs};
 use settings::dev::SecondView;
 use tracing::{Level, info, warn};
 
@@ -37,6 +37,7 @@ use crate::raw;
 hooks::render_mid_hook!(
     job_start_thunk,
     Feature::ObjectSlot,
+    Runs::WhileActive,
     state::core_context::<CoreContext>(),
     on_job_start
 );

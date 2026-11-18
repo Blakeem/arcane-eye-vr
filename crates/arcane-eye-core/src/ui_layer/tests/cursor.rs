@@ -18,7 +18,7 @@ use crate::raw::test_support::{TestCursor, TestSwapchain, display_count, set_cur
 use crate::raw::{self, BackBuffer};
 use crate::ui_layer::DrawFault;
 use crate::ui_layer::cursor::counter::WindowsCursor;
-use crate::ui_layer::cursor::image::Image;
+use crate::ui_layer::cursor::image::{Buffers, Image};
 use crate::ui_layer::cursor::place::{Pointer, spot};
 use crate::ui_layer::cursor::{Aim, Canvas, Cursor, read};
 use crate::ui_layer::decide::{Draw, halves};
@@ -98,12 +98,14 @@ fn a_monochrome_cursor_reads_as_its_masks_with_its_hotspot() {
     and[0] = 0b0011_1111;
     xor[0] = 0b0101_0000;
     let test_cursor = TestCursor::monochrome([3, 5], &and, &xor);
+    let mut buffers = Buffers::default();
 
-    let image = read(test_cursor.handle(), &mut ReleaseLogs::default()).expect("the image");
+    let image = read(test_cursor.handle(), &mut ReleaseLogs::default(), &mut buffers);
 
     let mut pixels = vec![CLEAR; 32 * 32];
     pixels[..4].copy_from_slice(&[BLACK, WHITE, CLEAR, WHITE]);
-    assert_eq!(image, Image { width: 32, height: 32, hotspot: [3, 5], pixels });
+    let expected = Image { width: 32, height: 32, hotspot: [3, 5], pixels: &pixels };
+    assert_eq!(image.expect("the image"), expected);
 }
 
 #[test]
@@ -113,12 +115,14 @@ fn a_color_cursor_with_alpha_reads_premultiplied_with_its_hotspot() {
     color[0] = [0, 0, 255, 128];
     color[1] = [255, 0, 0, 255];
     let test_cursor = TestCursor::color([7, 9], &color);
+    let mut buffers = Buffers::default();
 
-    let image = read(test_cursor.handle(), &mut ReleaseLogs::default()).expect("the image");
+    let image = read(test_cursor.handle(), &mut ReleaseLogs::default(), &mut buffers);
 
     let mut pixels = vec![CLEAR; 32 * 32];
     pixels[..2].copy_from_slice(&[[128, 0, 0, 128], BLUE]);
-    assert_eq!(image, Image { width: 32, height: 32, hotspot: [7, 9], pixels });
+    let expected = Image { width: 32, height: 32, hotspot: [7, 9], pixels: &pixels };
+    assert_eq!(image.expect("the image"), expected);
 }
 
 #[test]
@@ -294,4 +298,40 @@ fn a_cursor_frame_with_an_unchanged_handle_makes_no_heap_allocation() {
 
     assert_eq!(count, 0, "the frame with the same cursor allocated");
     assert_eq!(back_buffer_pixels(&test)[12 * 64 + 10], BLACK, "the guarded frame drew");
+}
+
+#[test]
+#[cfg_attr(not(debug_assertions), ignore = "the counting allocator exists only in debug builds")]
+fn cursor_frames_whose_handle_changes_make_no_heap_allocation() {
+    let test = TestSwapchain::new(WIDTH, HEIGHT);
+    fill_blue(&test);
+    let layer = layer_draw(&test);
+    let first = TestCursor::monochrome([0, 0], &ALL_BLACK.0, &ALL_BLACK.1);
+    let mut color = [[0_u8; 4]; 1024];
+    // Blue, green, red, alpha: opaque red in the cursor's first two pixels, which each half draws
+    // as one pixel.
+    color[..2].copy_from_slice(&[[0, 0, 255, 255]; 2]);
+    let colored = TestCursor::color([0, 0], &color);
+    let last = TestCursor::monochrome([0, 0], &ALL_BLACK.0, &ALL_BLACK.1);
+    let mut cursor = Cursor::default();
+    draw(&mut cursor, &layer, &test, aim(&first, 10, 10));
+    let device = raw::device(&test.swapchain).expect("the swapchain's device");
+    let context = raw::immediate_context(&device).expect("the immediate context");
+    let back_buffer = raw::back_buffer_texture(&test.swapchain).expect("the back buffer");
+    let rects = halves(WIDTH, HEIGHT).expect("the halves");
+    let canvas = Canvas { context: &context, back_buffer: &back_buffer, halves: &rects };
+
+    let mut guarded_draw = |test_cursor: &TestCursor, x, y| {
+        let guard = arm_alloc_guard().expect("arm the allocation guard");
+        cursor.draw(&layer, &canvas, aim(test_cursor, x, y));
+        guard.count()
+    };
+    let color_count = guarded_draw(&colored, 20, 12);
+    let drawn_color = back_buffer_pixels(&test)[12 * 64 + 10];
+    let mask_count = guarded_draw(&last, 40, 20);
+
+    assert_eq!([color_count, mask_count], [0, 0], "a frame with a new cursor allocated");
+    // Column 20 of 64 puts the left half's cursor at column 10, and column 40 at column 20.
+    assert_eq!(drawn_color, [255, 0, 0, 255], "the color cursor was read and drawn");
+    assert_eq!(back_buffer_pixels(&test)[20 * 64 + 20], BLACK, "the last cursor was drawn");
 }

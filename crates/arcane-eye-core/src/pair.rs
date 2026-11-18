@@ -8,38 +8,42 @@
 //! GAME THREAD    game update entry   the main view's halved width restored (eye view, `squeeze`)
 //!                logic end           the main view across the entire frame and the eye view with no
 //!                                    width, with no create, set up or halving (eye view)
-//! RENDER THREAD  Present call site   the layout MainOnly, so each view renders from the head, no
-//!                                    eye view create, the UI layer stopped with the UI enable byte
-//!                                    and the cursor display counter at the game's values, and one
-//!                                    log line that names the failed feature (frame handler)
+//! RENDER THREAD  Present call site   the layout MainOnly, so in the stereo pair each view renders
+//!                                    from the head, no eye view create, the UI layer stopped with the
+//!                                    UI enable byte and the cursor display counter at the game's
+//!                                    values, and one log line that names the failed feature (frame
+//!                                    handler)
 //! ```
 //!
 //! A feature that failed to install never ran, so the pair runs on without it. A caught panic of the
-//! Present call-site hook itself stops the frame handler, so the render thread's row above never
-//! runs and the pair keeps the side by side layout, the UI enable byte and the cursor display
-//! counter it had.
+//! Present call-site hook itself stops the frame handler's other work. The hook's handler then runs
+//! only `present::give_back` each frame, and the health registry's line names the failed feature.
 
 use diag::health::{Feature, FeatureState, Health};
 
-/// The stereo features. With `second_view` on they make the stereo pair. With it off only the eye
-/// camera installs, and it renders the main view from one eye.
-const PAIR_FEATURES: [Feature; 5] = [
+/// The features whose failure makes the pair flat: the Present call-site hook, which runs the
+/// frame work of the pair, and the stereo features. With `second_view` on the stereo features make
+/// the stereo pair. With it off only the eye camera installs, and it renders the main view from one
+/// eye.
+const PAIR_FEATURES: [Feature; 6] = [
     Feature::EyeView,
     Feature::EyeCamera,
     Feature::ShadowCache,
     Feature::ObjectSlot,
     Feature::UiLayer,
+    Feature::PresentHook,
 ];
 
 /// The tests' own list of the features whose failure makes the pair flat, written apart from
 /// [`PAIR_FEATURES`], so a test checks the code's list against it.
 #[cfg(test)]
-pub(crate) const TEST_PAIR: [Feature; 5] = [
+pub(crate) const TEST_PAIR: [Feature; 6] = [
     Feature::EyeView,
     Feature::EyeCamera,
     Feature::ShadowCache,
     Feature::ObjectSlot,
     Feature::UiLayer,
+    Feature::PresentHook,
 ];
 
 /// The stereo pair's run state.
@@ -76,7 +80,7 @@ mod tests {
     /// A registry with every feature installed.
     fn installed() -> Health {
         let health = Health::new();
-        for feature in [Feature::PresentHook, Feature::ViewCamera, Feature::GameState] {
+        for feature in [Feature::ViewCamera, Feature::GameState] {
             health.install_ok(feature);
         }
         for feature in TEST_PAIR {

@@ -67,6 +67,25 @@ fn a_failure_of_each_pair_feature_gives_the_game_its_values_back_and_changes_no_
 }
 
 #[test]
+fn a_release_gives_the_game_its_ui_enable_byte_and_cursor_display_counter_back_once() {
+    let test = TestSwapchain::new(WIDTH, HEIGHT);
+    let game = Game::new(&test);
+    let health = running();
+    let mut layer = game.layer();
+    let cursor = TestCursor::monochrome([0, 0], &[0; 128], &[0; 128]);
+    let before = display_count();
+    frame(&mut layer, &health, &test.swapchain, SIDE_BY_SIDE);
+    cursor_frame(&mut layer, &test, WindowsCursor::Hidden, Some(aim(&cursor)));
+    assert_eq!((game.ui_enabled(), display_count()), (0, before - 1));
+
+    layer.release();
+    layer.release();
+
+    assert_eq!(game.ui_enabled(), 1, "the game draws its UI again");
+    assert_eq!(display_count(), before, "one counter call for two releases");
+}
+
+#[test]
 fn a_failed_install_of_a_pair_feature_leaves_the_layer_drawing() {
     let test = TestSwapchain::new(WIDTH, HEIGHT);
     let game = Game::new(&test);

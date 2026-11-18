@@ -5,12 +5,14 @@
 //! game source when the dev flag `viewer.source` names one. Before that hand-over the UI layer draws
 //! into the back buffer. It logs once which feature's failure made the stereo pair flat. It times
 //! each call and logs the perf summary line once per window of frames, after the camera lines of the
-//! window's newest main view camera and newest eye view camera.
+//! window's newest main view camera and newest eye view camera. [`on_failed_present_call`] is its
+//! work after `present-hook` failed.
 //!
 //! It keeps no back-buffer reference and no swapchain reference. An extra swapchain reference keeps a
 //! swapchain the game released alive, and DXGI then refuses a new swapchain on the same window.
 
 use std::mem;
+use std::panic::{self, AssertUnwindSafe};
 use std::time::{Duration, Instant};
 
 use diag::health::Health;
@@ -65,6 +67,16 @@ pub(crate) struct FrameState {
     /// The newest main view camera and eye view camera of the current perf window, for its camera
     /// lines.
     cameras: FrameCameras,
+    give_back: GiveBack,
+}
+
+/// Whether the frame handler's give-back after a failure of `present-hook` still runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum GiveBack {
+    #[default]
+    Runs,
+    /// A panic in the give-back stopped it for the session.
+    Stopped,
 }
 
 impl FrameState {
@@ -90,6 +102,7 @@ pub(crate) struct UiFrame<'frame> {
 struct FrameLogs {
     first_present: Once,
     flat: Once,
+    give_back_stopped: Once,
     no_swapchain: RateLimit,
     desc_failed: RateLimit,
     devices_failed: RateLimit,
@@ -130,6 +143,32 @@ pub(crate) fn on_present_call(
     });
     record_interval(state, now);
     report
+}
+
+/// Runs `end_camera`, which ends the eye camera's frame in the layout `MainOnly`, and stops the UI
+/// layer, in each frame after a caught panic latched `present-hook` off. It makes no D3D11 draw. A
+/// panic here stops this path for the session with one log line and leaves the state as the panic
+/// left it.
+pub(crate) fn on_failed_present_call(state: &mut FrameState, end_camera: impl FnOnce()) {
+    if state.give_back == GiveBack::Stopped {
+        return;
+    }
+    let ui_layer = &mut state.ui_layer;
+    let outcome = panic::catch_unwind(AssertUnwindSafe(|| {
+        end_camera();
+        if let Some(layer) = ui_layer {
+            layer.release();
+        }
+    }));
+    if outcome.is_err() {
+        state.give_back = GiveBack::Stopped;
+        once!(
+            state.logs.give_back_stopped,
+            Level::WARN,
+            "giving the game its flat picture back after the Present call-site hook failed \
+             panicked, so the picture, the UI enable byte and the cursor stay as they are"
+        );
+    }
 }
 
 /// Logs, at the first Present call that finds the pair flat, the cause that [`PairState::Flat`]
