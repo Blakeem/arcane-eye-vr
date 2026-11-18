@@ -5,8 +5,8 @@
 //! data stage and of the pages the core
 //! shares with game threads, the launch token's status field, and the D3D11 and DXGI calls of the
 //! frame handler. Its `eye_view` module holds the eye view feature's hook install and game calls, its
-//! `game_texture` module the borrow of a texture that game memory names, and its `cursor` module the
-//! Win32 calls of the drawn cursor.
+//! `game_texture` module the borrow of a texture that game memory names, its `cursor` module the
+//! Win32 calls of the drawn cursor, and its `reload_event` module the settings thread's event calls.
 
 #![expect(
     unsafe_code,
@@ -386,6 +386,7 @@ pub(crate) mod composite_stage;
 pub(crate) mod cursor;
 pub(crate) mod eye_view;
 pub(crate) mod game_texture;
+pub(crate) mod reload_event;
 
 #[cfg(test)]
 pub(crate) mod test_pixels;

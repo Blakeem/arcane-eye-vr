@@ -224,4 +224,26 @@ mod tests {
         assert!(!core_rotated, "the launcher's rotation moved the core log");
         assert_eq!(fallback, dir.join("arcane-eye-vr-launcher.pid7.log"));
     }
+
+    #[test]
+    fn reload_requests_rotate_their_own_files_and_keep_the_launch_log() {
+        let folder = test_dir("rotate-reload");
+        let dir = folder.path();
+        fs::write(dir.join("arcane-eye-vr-launcher.log"), "launch").expect("write");
+        let fallbacks: Vec<_> = (1..=5).map(|id| fallback_path(dir, LogName::Reload, id)).collect();
+        for fallback in &fallbacks {
+            fs::write(fallback, "fallback").expect("write");
+        }
+        for request in 0..6 {
+            fs::write(dir.join("arcane-eye-vr-reload.log"), format!("r{request}")).expect("write");
+            rotate(dir, LogName::Reload).expect("rotate");
+        }
+        prune_fallbacks(dir, LogName::Core).expect("prune");
+        prune_fallbacks(dir, LogName::Launcher).expect("prune");
+        let launch = fs::read_to_string(dir.join("arcane-eye-vr-launcher.log")).expect("read");
+        let newest = fs::read_to_string(dir.join("arcane-eye-vr-reload.1.log")).expect("read");
+        assert_eq!((launch.as_str(), newest.as_str()), ("launch", "r5"));
+        assert!(!dir.join("arcane-eye-vr-reload.5.log").exists(), "a fifth earlier reload log");
+        assert!(fallbacks.iter().all(|path| path.exists()), "another log's prune removed one");
+    }
 }

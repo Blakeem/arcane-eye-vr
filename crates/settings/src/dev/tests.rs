@@ -20,14 +20,14 @@ fn an_empty_text_gives_the_defaults() {
     assert_eq!(parse(""), Ok(DevFlags::default()));
     assert_eq!(parse("[stereo]\n"), Ok(DevFlags::default()));
     assert_eq!(DevFlags::default().stereo.main_view_eye, MainViewEye::Center);
-    assert_eq!(DevFlags::default().stereo.second_view, SecondView::Off);
+    assert_eq!(DevFlags::default().stereo.second_view, SecondView::On);
 }
 
 #[test]
 fn each_eye_parses_from_the_name_it_logs_under() {
     for main_view_eye in [MainViewEye::Center, MainViewEye::Left, MainViewEye::Right] {
         let parsed = eye(&format!("\"{}\"", main_view_eye.as_str()));
-        let stereo = StereoFlags { main_view_eye, second_view: SecondView::Off };
+        let stereo = StereoFlags { main_view_eye, second_view: SecondView::On };
         assert_eq!(parsed, Ok(DevFlags { stereo, ..DevFlags::default() }));
     }
     assert_eq!(MainViewEye::Left.as_str(), "left");
@@ -35,9 +35,9 @@ fn each_eye_parses_from_the_name_it_logs_under() {
 
 #[test]
 fn second_view_parses_from_both_booleans() {
-    let on = StereoFlags { main_view_eye: MainViewEye::Center, second_view: SecondView::On };
-    assert_eq!(second_view("true"), Ok(DevFlags { stereo: on, ..DevFlags::default() }));
-    assert_eq!(second_view("false"), Ok(DevFlags::default()));
+    let off = StereoFlags { main_view_eye: MainViewEye::Center, second_view: SecondView::Off };
+    assert_eq!(second_view("false"), Ok(DevFlags { stereo: off, ..DevFlags::default() }));
+    assert_eq!(second_view("true"), Ok(DevFlags::default()));
     assert!(SecondView::On.as_bool());
     assert!(!SecondView::Off.as_bool());
 }

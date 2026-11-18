@@ -71,13 +71,16 @@ impl LogHandle {
     }
 }
 
-/// Which program a log belongs to. Each one rotates its own files in the shared log folder.
+/// Which program or command a log belongs to. Each one rotates its own files in the shared log folder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogName {
     /// The core DLL's session log, `arcane-eye-vr.log`.
     Core,
     /// The launch app's log, `arcane-eye-vr-launcher.log`.
     Launcher,
+    /// The launch app's settings reload request log, `arcane-eye-vr-reload.log`. Its own rotation
+    /// keeps a run of reload requests from rotating the launch log out of the folder.
+    Reload,
     /// The trial runner's log, `arcane-eye-vr-trial.log`.
     Trial,
 }
@@ -88,6 +91,7 @@ impl LogName {
         match self {
             Self::Core => "arcane-eye-vr",
             Self::Launcher => "arcane-eye-vr-launcher",
+            Self::Reload => "arcane-eye-vr-reload",
             Self::Trial => "arcane-eye-vr-trial",
         }
     }

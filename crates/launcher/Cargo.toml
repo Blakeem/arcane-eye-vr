@@ -1,6 +1,6 @@
 [package]
 name = "launcher"
-description = "The VR launch app. Writes the launch token, starts the game through Steam and shows the game's frames on a screen in the headset."
+description = "The VR launch app. Writes the launch token, starts the game through Steam, shows the game's frames on a screen in the headset, or asks the running game to reload its settings."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true

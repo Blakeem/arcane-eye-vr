@@ -24,8 +24,8 @@ These parts work in tests:
 - The mod loads into the DirectX 11 version of the game and reads each frame.
 - A debug viewer shows that frame in its own window.
 - For trials, the debug viewer can show the game's scene with no interface, or the interface alone. The key `source` under Settings sets it.
-- For trials, the game's view can render from the left or right eye. The keys `main_view_eye` and `ipd_mm` under Settings set it.
-- For trials, the game can draw a second view beside its own view. Every frame is then a stereo pair side by side, flat frames included. Each half holds the entire picture at half its width, the half side by side format of 3D video. Once the second view is ready, the game's view fills the left half from the left eye position and the second view fills the right half from the right eye position. Before that, such as during the start-up video and a level load, the game draws a flat frame, and the mod puts that flat picture into each half. The mod draws the game's interface and mouse cursor into each half, so both eyes see them at the same place. In this mode, the Windows cursor is hidden only while the mod draws its cursor inside the game window. It shows over the window's title bar and borders. When the mod cannot stop the game's own interface draw in a side by side frame, the game's interface covers the entire frame and the Windows cursor shows beside the drawn cursor. When the game presents its frames from a thread that does not own its window, the mod draws no cursor and the Windows cursor stays visible. If the mod cannot start this drawing or a draw of the picture or the interface fails, flat frames stay flat and the game draws its interface across the entire frame. The Windows cursor then shows again. The keys `second_view` and `ipd_mm` under Settings set it, and `main_view_eye` has no effect while `second_view` is on.
+- For trials, the game's view can render from the left or right eye when `second_view` is off. The keys `main_view_eye` and `ipd_mm` under Settings set it.
+- By default, the game draws a second view beside its own view. Every frame is then a stereo pair side by side, flat frames included. Each half holds the entire picture at half its width, the half side by side format of 3D video. Once the second view is ready, the game's view fills the left half from the left eye position and the second view fills the right half from the right eye position. Before that, such as during the start-up video and a level load, the game draws a flat frame, and the mod puts that flat picture into each half. The mod draws the game's interface and mouse cursor into each half, so both eyes see them at the same place. In this mode, the Windows cursor is hidden only while the mod draws its cursor inside the game window. It shows over the window's title bar and borders. When the mod cannot stop the game's own interface draw in a side by side frame, the game's interface covers the entire frame and the Windows cursor shows beside the drawn cursor. When the game presents its frames from a thread that does not own its window, the mod draws no cursor and the Windows cursor stays visible. If the mod cannot start this drawing or a draw of the picture or the interface fails, flat frames stay flat and the game draws its interface across the entire frame. The Windows cursor then shows again. The keys `second_view` and `ipd_mm` under Settings set it.
 
 - The launch app can show the game on a flat screen in a headset. The section Headset screen describes it.
 
@@ -39,7 +39,7 @@ The screen shows a stereo pair while the second view is on. The left half of eac
 
 ## Settings
 
-The mod reads two files from its root folder `%LOCALAPPDATA%\arcane-eye-vr\` at start. `settings.toml` holds the player settings and `dev.toml` holds the development flags. Each file holds only the values that differ from the defaults, so a missing file gives the defaults.
+The mod reads two files from its root folder `%LOCALAPPDATA%\arcane-eye-vr\` at start and on each reload request. `settings.toml` holds the player settings and `dev.toml` holds the development flags. Each file holds only the values that differ from the defaults, so a missing file gives the defaults.
 
 ```toml
 # settings.toml
@@ -56,8 +56,8 @@ width_m = 3.0       # width of the headset screen in meters, 0.5 to 10
 ```toml
 # dev.toml
 [stereo]
-main_view_eye = "center"    # the eye position of the game's view: center, left or right
-second_view = false         # a second view from the right eye in the right half of the frame: true or false
+main_view_eye = "center"    # the eye position of the game's view while second_view is false: center, left or right
+second_view = true          # a second view from the right eye in the right half of the frame: true or false
 
 [viewer]
 source = "back_buffer"      # what the debug viewer shows: back_buffer (the presented frame), scene or ui
@@ -65,7 +65,9 @@ source = "back_buffer"      # what the debug viewer shows: back_buffer (the pres
 
 A file with an invalid value is rejected as an entire file and its defaults apply. The session log in `logs\` names the line and column of the problem. An unknown key in `settings.toml` is logged and skipped, and an unknown key in `dev.toml` rejects the file.
 
-A saved change to `settings.toml` applies within a second while the game runs. An invalid change keeps the settings in use. A change to `dev.toml` applies at the next start. The launch app reads `[screen]` once, when the headset screen starts.
+`second_view = false` turns the stereo pair off, so the game draws its own view across the entire frame.
+
+While the game runs, `arcane-eye-vr.exe --reload-settings` makes the mod read both files again and exits. A saved change to `settings.toml` then applies at once. An invalid change keeps the settings in use. A change to `dev.toml` applies at the next start. The mod reads the files at no other time while the game runs. When no running game accepts the request, the command shows a message that says so. The launch app reads `[screen]` once, when the headset screen starts.
 
 The environment variable `ARCANE_EYE_VR_HOME` sets a different root folder when its value is an absolute path. The game reads it from the environment it inherits. The launch app starts the game through Steam, so the game gets Steam's environment and not the launch app's. A user variable reaches the game when Steam starts after the variable is set. `trial.exe` sets it on the game it starts.
 

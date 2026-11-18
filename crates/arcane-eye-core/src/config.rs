@@ -1,14 +1,14 @@
 //! The settings the core reads at start from the player file and the dev file in the root folder.
 //!
 //! A missing file gives the defaults. A file that cannot be read or is rejected gives the defaults for
-//! that file and one warning that names the file and the cause. The read is the first check of the
-//! files' watch, so the poll thread of `reload.rs` sees every change after it.
+//! that file and one warning that names the file and the cause.
+
+use std::path::Path;
 
 use diag::error_chain;
 use settings::dev::DevFlags;
-use settings::file::{FileError, SETTINGS_FILE};
+use settings::file::{self, FileError, SETTINGS_FILE};
 use settings::player::{Parsed, Settings};
-use settings::watch::Watch;
 use tracing::{info, warn};
 
 /// The values the core read at start, which pick the hooks the core installs.
@@ -18,12 +18,10 @@ pub(crate) struct Config {
     pub(crate) dev: DevFlags,
 }
 
-/// Reads both files of `watch` with its first check, logs each problem, then logs the values in
-/// effect.
-pub(crate) fn load(watch: &mut Watch) -> Config {
-    let changes = watch.check();
-    let settings = player_settings(changes.settings);
-    let dev = dev_flags(changes.dev);
+/// Reads both files in `folder`, logs each problem, then logs the values in effect.
+pub(crate) fn load(folder: &Path) -> Config {
+    let settings = player_settings(file::read_settings(folder));
+    let dev = dev_flags(file::read_dev(folder));
     info!(
         ipd_mm = settings.stereo.ipd_mm.millimeters(),
         main_view_eye = dev.stereo.main_view_eye.as_str(),
@@ -34,33 +32,35 @@ pub(crate) fn load(watch: &mut Watch) -> Config {
     Config { settings, dev }
 }
 
-/// The settings of `read`, the watch's read of the player file. A watch's first check reads every
-/// file, and a check that read none gives the defaults.
-fn player_settings(read: Option<Result<Parsed, FileError>>) -> Settings {
-    match read {
-        Some(Ok(parsed)) => {
-            for key in &parsed.unknown_keys {
-                warn!(file = SETTINGS_FILE, key = %key, "unknown settings key ignored");
-            }
-            parsed.settings
-        }
-        Some(Err(error)) => {
-            warn_defaults(&error);
-            Settings::default()
-        }
-        None => Settings::default(),
+/// Logs each key of the player file that `parsed` skipped.
+pub(crate) fn warn_unknown_keys(parsed: &Parsed) {
+    for key in &parsed.unknown_keys {
+        warn!(file = SETTINGS_FILE, key = %key, "unknown settings key ignored");
     }
 }
 
-/// The flags of `read`, the watch's read of the dev file, with the defaults as for the player file.
-fn dev_flags(read: Option<Result<DevFlags, FileError>>) -> DevFlags {
+/// The settings of `read`, the read of the player file.
+fn player_settings(read: Result<Parsed, FileError>) -> Settings {
     match read {
-        Some(Ok(flags)) => flags,
-        Some(Err(error)) => {
+        Ok(parsed) => {
+            warn_unknown_keys(&parsed);
+            parsed.settings
+        }
+        Err(error) => {
+            warn_defaults(&error);
+            Settings::default()
+        }
+    }
+}
+
+/// The flags of `read`, the read of the dev file, with the defaults as for the player file.
+fn dev_flags(read: Result<DevFlags, FileError>) -> DevFlags {
+    match read {
+        Ok(flags) => flags,
+        Err(error) => {
             warn_defaults(&error);
             DevFlags::default()
         }
-        None => DevFlags::default(),
     }
 }
 
@@ -76,7 +76,6 @@ mod tests {
     use diag::logging::{self, LogName};
     use settings::dev::{DevFlags, MainViewEye, SecondView};
     use settings::player::{IpdMm, Settings};
-    use settings::watch::Watch;
     use tracing::dispatcher;
 
     use super::{Config, load};
@@ -85,7 +84,7 @@ mod tests {
     /// Loads the settings in `root` and returns them with the lines they logged.
     fn load_logged(root: &Path, log_dir: &Path) -> (Config, Vec<String>) {
         let logging = logging::start(log_dir, LogName::Core).expect("start logging");
-        let config = dispatcher::with_default(&logging.dispatch, || load(&mut Watch::new(root)));
+        let config = dispatcher::with_default(&logging.dispatch, || load(root));
         let file_path = logging.handle.file_path().to_path_buf();
         logging.handle.shutdown().expect("the writer ends cleanly");
         let text = fs::read_to_string(file_path).expect("read the session log");
@@ -96,13 +95,14 @@ mod tests {
     }
 
     #[test]
-    fn missing_files_give_the_defaults() {
+    fn missing_files_give_the_defaults_with_the_second_view_on() {
         let dir = test_dir("config-missing");
         let (config, lines) = load_logged(&dir.path().join("home"), &dir.path().join("logs"));
         assert_eq!(config, Config { settings: Settings::default(), dev: DevFlags::default() });
+        assert_eq!(config.dev.stereo.second_view, SecondView::On);
         assert_eq!(
             lines,
-            ["\"settings loaded\" ipd_mm=65.0 main_view_eye=center second_view=false \
+            ["\"settings loaded\" ipd_mm=65.0 main_view_eye=center second_view=true \
               viewer_source=back_buffer"]
         );
     }
@@ -112,17 +112,17 @@ mod tests {
         let dir = test_dir("config-valid");
         let root = dir.path();
         fs::write(root.join("settings.toml"), "[stereo]\nipd_mm = 58.5\nipd = 1\n").expect("write");
-        let dev = "[stereo]\nmain_view_eye = \"left\"\nsecond_view = true\n\
+        let dev = "[stereo]\nmain_view_eye = \"left\"\nsecond_view = false\n\
                    [viewer]\nsource = \"ui\"\n";
         fs::write(root.join("dev.toml"), dev).expect("write");
         let (config, lines) = load_logged(root, &root.join("logs"));
         let ipd_mm = IpdMm::try_from(58.5).expect("in range");
         assert_eq!(config.settings.stereo.ipd_mm, ipd_mm);
         assert_eq!(config.dev.stereo.main_view_eye, MainViewEye::Left);
-        assert_eq!(config.dev.stereo.second_view, SecondView::On);
+        assert_eq!(config.dev.stereo.second_view, SecondView::Off);
         let expected = [
             "\"unknown settings key ignored\" file=settings.toml key=stereo.ipd",
-            "\"settings loaded\" ipd_mm=58.5 main_view_eye=left second_view=true \
+            "\"settings loaded\" ipd_mm=58.5 main_view_eye=left second_view=false \
              viewer_source=ui",
         ];
         assert_eq!(lines, expected);
@@ -147,7 +147,7 @@ mod tests {
             lines,
             [
                 warning,
-                "\"settings loaded\" ipd_mm=58.5 main_view_eye=center second_view=false \
+                "\"settings loaded\" ipd_mm=58.5 main_view_eye=center second_view=true \
                  viewer_source=back_buffer"
                     .to_owned()
             ]

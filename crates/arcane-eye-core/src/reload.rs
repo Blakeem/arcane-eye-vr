@@ -1,33 +1,30 @@
-//! The live reload of the settings files: the published player settings and the poll thread that
-//! replaces them.
+//! The settings reload on request: the published player settings and the thread that replaces them.
 //!
-//! Once per [`POLL_PERIOD`] the thread checks the player file and the dev file through the watch. A
-//! changed player file that parses becomes the published settings, which the Present call-site
-//! handler copies once per frame. A rejected player file keeps the settings before. The dev flags
-//! pick the hooks at start, so a changed dev file only logs that its flags wait for the next start.
-//! The reads, the parsing and the logging all run on the poll thread, never on a game thread.
+//! The thread blocks on the named reload event that the launch app's `--reload-settings` signals,
+//! and touches no file between two requests. Each request reads and parses both files once. A player
+//! file that parses becomes the published settings, which the Present call-site handler copies once
+//! per frame. A rejected player file keeps the settings in use. The dev flags pick the hooks at start,
+//! so dev flags that differ from the flags read at start only log that they wait for the next start.
+//! The reads, the parsing and the logging all run on this thread, never on a game thread.
 
 use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use diag::error_chain;
 use settings::dev::DevFlags;
-use settings::file::SETTINGS_FILE;
+use settings::file;
 use settings::player::Settings;
-use settings::watch::{Changes, Watch};
 use tracing::{info, warn};
 
-/// The time between two checks of the files. A player edits the files outside the game, so a delay
-/// of this length after a save goes unnoticed, and a check costs two metadata reads.
-const POLL_PERIOD: Duration = Duration::from_secs(1);
+use crate::config;
+use crate::raw::reload_event::{self, Event, EventError, Signaled};
 
 const THREAD_NAME: &str = "arcane-eye-settings";
 
-/// The player settings in effect, which the poll thread replaces and hook handlers copy.
+/// The player settings in effect, which the settings thread replaces and hook handlers copy.
 #[derive(Debug)]
 pub(crate) struct Published(ArcSwap<Settings>);
 
@@ -46,78 +43,94 @@ impl Published {
     }
 }
 
-/// The running poll thread. Dropping it ends the thread at its next wake.
+/// The running settings thread. Dropping it signals the stop event, and the thread ends.
 #[derive(Debug)]
 pub(crate) struct Reload {
-    /// The thread ends once this sender drops.
-    _stop: Sender<()>,
+    _stop: Stop,
     _thread: JoinHandle<()>,
 }
 
-/// Starts the poll thread for the files of `watch`, which the core read once at start. `started` are
-/// the dev flags of that read.
+/// The settings thread's stop event, signaled on drop.
+#[derive(Debug)]
+struct Stop(Arc<Event>);
+
+impl Drop for Stop {
+    fn drop(&mut self) {
+        if let Err(error) = self.0.set() {
+            warn!(error = %error, "settings thread stop failed, so it waits until the process ends");
+        }
+    }
+}
+
+/// Why the settings thread did not start.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum StartError {
+    #[error("the settings thread's events were not created")]
+    Event(#[from] EventError),
+    #[error("the settings thread could not start")]
+    Thread(#[from] io::Error),
+}
+
+/// Creates the reload event `event_name` and starts the settings thread for the files in `folder`,
+/// which the core read once at start. `started` are the dev flags of that read.
 ///
 /// # Errors
 ///
-/// Returns the error of a thread that could not start.
+/// Returns [`StartError::Event`] when the reload event already exists or an event cannot be created,
+/// and [`StartError::Thread`] when the thread cannot start.
 pub(crate) fn start(
-    watch: Watch,
+    folder: PathBuf,
+    event_name: &str,
     started: DevFlags,
     published: Arc<Published>,
-) -> io::Result<Reload> {
-    start_with(watch, started, published, POLL_PERIOD)
-}
-
-fn start_with(
-    mut watch: Watch,
-    started: DevFlags,
-    published: Arc<Published>,
-    period: Duration,
-) -> io::Result<Reload> {
-    let (stop, stopped) = mpsc::channel();
+) -> Result<Reload, StartError> {
+    let reload = Event::named(event_name)?;
+    let stop = Arc::new(Event::unnamed()?);
+    let stopped = Arc::clone(&stop);
     let builder = thread::Builder::new().name(THREAD_NAME.to_owned());
-    let thread = builder.spawn(move || {
-        while waits(&stopped, period) {
-            step(&mut watch, started, &published);
-        }
-    })?;
-    Ok(Reload { _stop: stop, _thread: thread })
+    let thread = builder.spawn(move || run(&stopped, &reload, &folder, started, &published))?;
+    Ok(Reload { _stop: Stop(stop), _thread: thread })
 }
 
-/// Waits `period`, and returns whether the stop sender still lives then.
-fn waits(stopped: &Receiver<()>, period: Duration) -> bool {
-    stopped.recv_timeout(period) == Err(RecvTimeoutError::Timeout)
-}
-
-/// Checks the files of `watch` once and applies what changed.
-fn step(watch: &mut Watch, started: DevFlags, published: &Published) {
-    let Changes { settings, dev } = watch.check();
-    match settings {
-        Some(Ok(parsed)) => {
-            for key in &parsed.unknown_keys {
-                warn!(file = SETTINGS_FILE, key = %key, "unknown settings key ignored");
+/// Applies the files in `folder` once per signal of `reload`, until `stop` is signaled or a wait fails.
+fn run(stop: &Event, reload: &Event, folder: &Path, started: DevFlags, published: &Published) {
+    loop {
+        match reload_event::wait(stop, reload) {
+            Ok(Signaled::Reload) => apply(folder, started, published),
+            Ok(Signaled::Stop) => return,
+            Err(error) => {
+                warn!(error = %error, "settings thread wait failed, so no later request reloads");
+                return;
             }
+        }
+    }
+}
+
+/// Reads both files in `folder` once and applies them.
+fn apply(folder: &Path, started: DevFlags, published: &Published) {
+    match file::read_settings(folder) {
+        Ok(parsed) => {
+            config::warn_unknown_keys(&parsed);
             published.set(parsed.settings);
             info!(ipd_mm = parsed.settings.stereo.ipd_mm.millimeters(), "settings reloaded");
         }
-        Some(Err(error)) => warn!(
+        Err(error) => warn!(
             error = %error_chain::chain(&error),
-            "changed settings file gave no values, so the settings before stay"
+            "settings file gave no values, so the settings in use stay"
         ),
-        None => {}
     }
-    match dev {
-        Some(Ok(flags)) if flags == started => {}
-        Some(Ok(flags)) => info!(
+    match file::read_dev(folder) {
+        Ok(flags) if flags == started => {}
+        Ok(flags) => info!(
             main_view_eye = flags.stereo.main_view_eye.as_str(),
             second_view = flags.stereo.second_view.as_bool(),
+            viewer_source = flags.viewer.source.as_str(),
             "dev file changed, and its flags apply at the next start"
         ),
-        Some(Err(error)) => warn!(
+        Err(error) => warn!(
             error = %error_chain::chain(&error),
-            "changed dev file gave no values, and the flags read at start stay"
+            "dev file gave no values, and the flags read at start stay"
         ),
-        None => {}
     }
 }
 

@@ -25,8 +25,8 @@ pub(crate) struct CoreContext {
     pub(crate) _log: LogHandle,
     /// The player settings in effect, which the Present call-site handler copies once per frame.
     pub(crate) settings: Arc<Published>,
-    /// Held so the settings poll thread runs for the life of the context. `None` when the thread
-    /// could not start.
+    /// Held so the settings thread waits for reload requests for the life of the context. `None` when
+    /// the thread could not start.
     pub(crate) _reload: Option<Reload>,
     pub(crate) health: Health,
     /// The launch token, or `None` when the launch app's mapping is gone.

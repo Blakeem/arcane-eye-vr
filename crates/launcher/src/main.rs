@@ -1,11 +1,14 @@
-//! The VR launch app. Writes the launch token, starts the game and shows its frames in the headset.
+//! The VR launch app. Writes the launch token, starts the game and shows its frames in the headset,
+//! or asks the running game to reload its settings.
 //!
 //! `arcane-eye-vr.exe` creates the launch token, opens the game's Steam URL, then polls the token's
 //! status until the game reports the mode's goal status or a failure. The token is removed once the
 //! wait ends. In the mode `screen`, the app skips those steps when a game with the mod already
 //! runs. It then shows the game's frames on a screen in the headset until the game or the OpenXR
-//! session ends. The `launch` crate runs each launch step, and `screen.rs` runs the headset screen.
-//! This crate holds the command line, the player's messages and the message box in `raw.rs`.
+//! session ends. `arcane-eye-vr.exe --reload-settings` instead asks the running game to read the
+//! settings files again, and exits. The `launch` crate runs each launch step and the reload
+//! request, and `screen.rs` runs the headset screen. This crate holds the command line, the
+//! player's messages and the message box in `raw.rs`.
 
 #![windows_subsystem = "windows"]
 
@@ -15,7 +18,6 @@ mod raw;
 mod screen;
 
 use std::env;
-use std::ffi::OsString;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -23,10 +25,10 @@ use diag::logging::{self, LogName, Logging};
 use diag::root::Root;
 use ipc_layout::launch_token::Mode;
 use launch::status::{self, Goal};
-use launch::{checks, steam, token};
+use launch::{checks, reload, steam, token};
 use tracing::{dispatcher, error, info};
 
-use crate::args::LaunchMode;
+use crate::args::{ArgsError, Command, LaunchMode};
 use crate::failure::Failure;
 use crate::screen::GameChoice;
 
@@ -40,41 +42,49 @@ const TIMEOUT: Duration = Duration::from_mins(10);
 const SCREEN_GAME_MODE: Mode = Mode::DesktopStereo;
 
 fn main() -> ExitCode {
-    let (logging, root) = match start_logging() {
+    let parsed = args::parse(env::args_os().skip(1));
+    let (logging, root) = match start_logging(args::log_name(&parsed)) {
         Ok(started) => started,
         Err(failure) => {
             raw::show_error(&failure.to_string());
             return ExitCode::FAILURE;
         }
     };
-    let launched = dispatcher::with_default(&logging.dispatch, || {
-        let launched = launch(env::args_os().skip(1), &root);
-        if let Err(failure) = &launched {
-            error!(error = %failure, "launch failed");
+    let ran = dispatcher::with_default(&logging.dispatch, || {
+        let ran = run(parsed, &root);
+        if let Err(failure) = &ran {
+            error!(error = %failure, "launch app failed");
             raw::show_error(&failure.to_string());
         }
-        launched
+        ran
     });
     // A log write failure has no log left to report to, so the exit code is its only record.
-    match (launched, logging.handle.shutdown()) {
+    match (ran, logging.handle.shutdown()) {
         (Ok(()), Ok(())) => ExitCode::SUCCESS,
         (Err(_), _) | (_, Err(_)) => ExitCode::FAILURE,
     }
 }
 
-/// Starts the launch app's log in the root folder's log folder, and logs a warning there when the root
-/// folder ignored the root folder variable.
-fn start_logging() -> Result<(Logging, Root), Failure> {
+/// Starts the launch app's log `log` in the root folder's log folder, and logs a warning there when
+/// the root folder ignored the root folder variable.
+fn start_logging(log: LogName) -> Result<(Logging, Root), Failure> {
     let root = Root::find()?;
-    let logging = logging::start(&root.log_dir(), LogName::Launcher)?;
+    let logging = logging::start(&root.log_dir(), log)?;
     dispatcher::with_default(&logging.dispatch, || root.warn_ignored());
     Ok((logging, root))
 }
 
-/// Runs the mode that `args` asks for. It returns once the game reports the mode's goal status, or
-/// in the mode `screen` once the headset screen ends.
-fn launch(args: impl IntoIterator<Item = OsString>, root: &Root) -> Result<(), Failure> {
-    let mode = args::parse(args)?;
+/// Runs the command that the command line `parsed` names.
+fn run(parsed: Result<Command, ArgsError>, root: &Root) -> Result<(), Failure> {
+    match parsed? {
+        Command::Launch(mode) => launch(mode, root),
+        Command::ReloadSettings => reload_settings(),
+    }
+}
+
+/// Runs the launch in `mode`. It returns once the game reports the mode's goal status, or in the
+/// mode `screen` once the headset screen ends.
+fn launch(mode: LaunchMode, root: &Root) -> Result<(), Failure> {
     info!(version = env!("CARGO_PKG_VERSION"), mode = mode.as_str(), "launch started");
     match mode {
         LaunchMode::Game(mode) => {
@@ -102,5 +112,13 @@ fn start_game(mode: Mode) -> Result<(), Failure> {
     let mapping = token::create(mode)?;
     steam::start()?;
     status::wait_for_goal(&mapping, Goal::of(mode), POLL_INTERVAL, TIMEOUT)?;
+    Ok(())
+}
+
+/// Asks the running game to read the settings files again. It starts no game and creates no token.
+fn reload_settings() -> Result<(), Failure> {
+    info!(version = env!("CARGO_PKG_VERSION"), "settings reload requested");
+    reload::request()?;
+    info!("settings reload signaled");
     Ok(())
 }

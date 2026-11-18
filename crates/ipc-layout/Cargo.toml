@@ -1,6 +1,6 @@
 [package]
 name = "ipc-layout"
-description = "Contracts shared across processes: the launch token and viewer header byte layouts, the core DLL's init contract, the perf summary, camera and game state log lines and the root folder variable."
+description = "Contracts shared across processes: the launch token and viewer header byte layouts, the core DLL's init contract, the perf summary, camera and game state log lines, the root folder variable and the settings reload event's name."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true

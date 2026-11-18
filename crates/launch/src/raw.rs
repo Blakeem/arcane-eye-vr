@@ -1,7 +1,6 @@
 //! The launch crate's unsafe edge: registry reads, the launch token mapping, the Steam URL, the
-//! window close, the key post and the process wait and end. `raw\desktop.rs` holds the desktop
-//! calls, `raw\cursor.rs` the cursor calls, `raw\recycle.rs` the Recycle Bin call and
-//! `raw\window_copy.rs` the window search and the screen copy.
+//! window close, the key post and the process wait and end. The files under `raw\` hold the desktop,
+//! cursor, Recycle Bin, settings reload event and window copy calls.
 
 #![expect(
     unsafe_code,
@@ -384,6 +383,7 @@ extern "system" fn collect_window(window: HWND, search: LPARAM) -> BOOL {
 pub(crate) mod cursor;
 pub(crate) mod desktop;
 pub(crate) mod recycle;
+pub(crate) mod reload;
 pub(crate) mod window_copy;
 
 #[cfg(test)]

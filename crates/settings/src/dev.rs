@@ -63,14 +63,14 @@ impl ViewerSource {
 }
 
 /// Whether the mod has the engine draw a second render view beside the main view. `dev.toml` writes it
-/// as a boolean.
+/// as a boolean. It is on by default, so every frame is a stereo pair, and `false` turns it off.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[cfg_attr(test, derive(serde::Serialize))]
 #[serde(from = "bool")]
 #[cfg_attr(test, serde(into = "bool"))]
 pub enum SecondView {
-    #[default]
     Off,
+    #[default]
     On,
 }
 
