@@ -2,6 +2,18 @@
 
 Each version of Arcane Eye VR is listed here, newest first.
 
+## Unreleased
+
+These changes are on the main branch. No headset has tested them yet.
+
+- A loading screen fills each eye's picture again, with no strip of the scene at its edge.
+- The mouse cursor sits at the depth of the scene under it, at an unchanged size.
+- The interface comes forward only when the scene under it stays nearer, so a thing that passes the camera does not move it.
+- In `--mode screen`, the menu button of a controller opens a menu that sets the distance and the size of the screen.
+- In `--mode screen`, a controller that points at the screen works as the mouse.
+- Controllers are described by files in `profiles`, for the Steam Frame, the HTC Vive and the Khronos simple controller.
+- `arcane-eye-vr.exe --mode vr` starts a first stage of the immersive mode, where the head looks around from the place of the game's camera.
+
 ## 0.0.1 Beta (2026-11-18)
 
 The first playable version. It was tested only on Windows with SteamVR and a Steam Frame.
