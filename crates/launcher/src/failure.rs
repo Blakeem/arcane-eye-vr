@@ -16,7 +16,7 @@ use launch::steam::OpenUrlError;
 use launch::token::TokenCreateError;
 use viewer_client::HeaderViewError;
 
-use crate::args::ArgsError;
+use crate::args::{ArgsError, LaunchMode};
 use crate::screen::failure::ScreenFailure;
 
 const SECONDS_PER_MINUTE: u64 = 60;
@@ -33,8 +33,14 @@ pub(crate) enum Failure {
          or with --reload-settings while the game runs."
     )]
     Args(#[from] ArgsError),
-    #[error(transparent)]
-    Screen(#[from] ScreenFailure),
+    #[error("{cause} {}", cause.fix(mode.as_str()))]
+    Headset { cause: ScreenFailure, mode: LaunchMode },
+    #[error(
+        "Arcane Eye VR could not open the game's frames ({}). Quit the game, then start Arcane \
+         Eye VR again.",
+        chain(.0)
+    )]
+    Link(#[from] HeaderViewError),
     #[error(
         "No running game with Arcane Eye VR accepts a settings reload, so no settings were \
          reloaded. Start the game with Arcane Eye VR, then start arcane-eye-vr.exe \
@@ -143,12 +149,6 @@ impl From<ReloadError> for Failure {
 impl From<GameRunning> for Failure {
     fn from(_: GameRunning) -> Self {
         Self::GameRunning
-    }
-}
-
-impl From<HeaderViewError> for Failure {
-    fn from(error: HeaderViewError) -> Self {
-        Self::Screen(ScreenFailure::Link(error))
     }
 }
 

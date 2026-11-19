@@ -4,7 +4,7 @@ An unofficial stereo 3D and VR mod for Baldur's Gate 3.
 
 **Version 0.0.1 Beta.** The game is playable in stereo 3D on a flat screen in a headset, with keyboard and mouse. The [changelog](CHANGELOG.md) lists each version.
 
-The goal is to play Baldur's Gate 3 in a headset without changing how the game plays. The immersive headset mode and keyboard keys on the controllers are not built yet.
+The goal is to play Baldur's Gate 3 in a headset without changing how the game plays. Keyboard keys on the controllers are not built yet.
 
 ## Requirements
 
@@ -50,9 +50,20 @@ A controller that points at the screen moves the mouse pointer to the place it p
 - The screen sits in front of the seated position that SteamVR holds.
 - The game renders at the resolution in its video options, and each eye gets half of that width. A higher resolution gives a sharper picture and a lower frame rate.
 
+## Play in the immersive mode
+
+The launch app shows the game around the player. Turn the head to look around from the place of the game's camera.
+
+1. Start SteamVR with the headset connected.
+2. Add a library entry for `arcane-eye-vr.exe` as for the headset screen, and set its Launch Options to `--mode vr`.
+3. Start the entry.
+4. When the Larian launcher opens, choose DirectX 11 and click Play.
+
+The keyboard and the mouse work as in the game. The picture keeps the game's own field of view, so it covers a part of the view. Loading screens and videos show on the flat screen of the headset screen, where the menu and the controller's mouse pointer work. This mode is a first stage.
+
 ## Play in Bigscreen or another viewer app
 
-A viewer app with a side by side 3D mode can show the game from the monitor. This route is untested, and the menu names below come from older versions of Bigscreen. This route needs a mouse, since the launch app reads the controllers only in `--mode screen`.
+A viewer app with a side by side 3D mode can show the game from the monitor. This route is untested, and the menu names below come from older versions of Bigscreen. This route needs a mouse, since the launch app reads the controllers only in `--mode screen` and `--mode vr`.
 
 1. Add a second library entry for `arcane-eye-vr.exe` with the Launch Options `--mode desktop-stereo`.
 2. Start SteamVR and Bigscreen.
@@ -62,7 +73,7 @@ A viewer app with a side by side 3D mode can show the game from the monitor. Thi
 
 Bigscreen then gives the left half of the monitor to the left eye and the right half to the right eye. When Bigscreen shows more than one screen, hide the other monitors on the same page.
 
-Use only one of the two modes at a time. In `--mode screen` the launch app shows its own screen, which a viewer app does not need.
+Use a viewer app or a headset mode of the launch app, never both at a time. In `--mode screen` and `--mode vr` the launch app shows the game in its own headset session, which a viewer app does not need.
 
 ## Settings
 

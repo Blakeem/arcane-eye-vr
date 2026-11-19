@@ -1,5 +1,6 @@
-//! The headset screen against WARP devices with a fixture in the core's place, its viewer link,
-//! its settings read, its choice of a running game and its game watch.
+//! The headset session against WARP devices with a fixture in the core's place, its viewer link
+//! with the frame's tag and the head pose write, its settings read, its choice of a running game
+//! and its game watch.
 
 use std::cell::Cell;
 use std::fs;
@@ -8,7 +9,10 @@ use std::time::{Duration, Instant};
 
 use diag::logging::{self, LogName};
 use gfx::region::RegionDraw;
-use ipc_layout::viewer_header::{AdapterLuid, EyeRect, TextureInfo, ViewerHeader};
+use ipc_layout::viewer_header::pose::{FrameTag, HeadPose};
+use ipc_layout::viewer_header::{
+    AdapterLuid, EyeRect, FRAME_TAG_OFFSETS, TextureInfo, ViewerHeader,
+};
 use launch::registry::{Hive, RegistryError, RegistryValue};
 use settings::player::{ScreenDistanceM, ScreenSettings, ScreenWidthM};
 use stereo_core::eye::{Eye, PerEye};
@@ -17,7 +21,7 @@ use viewer_client::Device;
 use viewer_client::fixture::{
     CoreMapping, CoreTexture, read_pixels, render_target, share, test_name,
 };
-use viewer_client::header::Names;
+use viewer_client::header::{Names, read_header};
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_TYPELESS,
     DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R10G10B10A2_UNORM,
@@ -76,6 +80,19 @@ impl Core {
         let picture = self.link.refresh(&self.device, &self.draw)?;
         Ok(picture.map(Picture::size))
     }
+
+    /// The tag of the frame the link's next refresh returns.
+    fn refreshed_tag(&mut self) -> FrameTag {
+        let picture = self.link.refresh(&self.device, &self.draw).expect("a showable frame");
+        picture.expect("the copied frame").tag()
+    }
+
+    /// Writes `tag` into the header as the core does with each frame.
+    fn write_tag(&self, tag: FrameTag) {
+        for (offset, word) in FRAME_TAG_OFFSETS.into_iter().zip(tag.to_words()) {
+            self.mapping.write_word(offset, word).expect("write the frame tag");
+        }
+    }
 }
 
 /// Each eye's pixels after the screen drew a pair of `format` whose left half is `left` and whose
@@ -104,6 +121,43 @@ fn shown_halves(
 }
 
 const GRAY: [[u8; 4]; 8] = [[128, 128, 128, 255]; 8];
+
+#[test]
+fn the_shown_copy_gives_the_tag_its_frame_was_published_with() {
+    let mut core = core("frame-tag", DXGI_FORMAT_R8G8B8A8_UNORM, &GRAY);
+    let published = FrameTag { head_sequence: 6, fov_y_rad: 0.96, aspect: 1.777_777_8 };
+    core.write_tag(published);
+    assert_eq!(core.refreshed_tag(), published);
+    let next = FrameTag { head_sequence: 8, ..published };
+    core.write_tag(next);
+    assert_eq!(core.refreshed_tag(), published, "no new frame, so the copy keeps its frame's tag");
+    core.mapping.write_header(&ViewerHeader::new(core.info, 1, 2, 2)).expect("a new frame");
+    core.write_tag(next);
+    assert_eq!(core.refreshed_tag(), next, "the new frame's tag");
+}
+
+#[test]
+fn the_head_pose_write_reaches_the_header_with_its_eye_distance() {
+    let mut core = core("head-write", DXGI_FORMAT_R8G8B8A8_UNORM, &GRAY);
+    let pose = HeadPose { position: [0.1, 1.6, -0.2], orientation: [0.0, 0.0, 0.0, 1.0] };
+    let first = core.link.write_head(pose, 0.064).expect("a header of this layout");
+    assert_eq!(first, Some(2));
+    assert_eq!(core.link.write_head(pose, 0.064).expect("a second write"), Some(4));
+    let mut core_view = None;
+    let (_, header) = read_header(&mut core_view, &core.mapping.name).expect("the core's header");
+    let sample = header.head().sample(header.head().sequence()).expect("an ended write");
+    assert_eq!((sample.sequence, sample.pose, sample.eye_distance_m), (4, pose, 0.064));
+}
+
+#[test]
+fn no_header_takes_no_head_pose_and_gives_no_sequence_number() {
+    let mut link = Link::new(Names {
+        mapping: test_name("head-write-no-header"),
+        texture: HSTRING::from(test_name("head-write-no-header-texture")),
+    });
+    let pose = HeadPose { position: [0.0; 3], orientation: [0.0, 0.0, 0.0, 1.0] };
+    assert!(matches!(link.write_head(pose, 0.064), Ok(None)));
+}
 
 #[test]
 fn frames_from_another_adapter_are_unshowable() {

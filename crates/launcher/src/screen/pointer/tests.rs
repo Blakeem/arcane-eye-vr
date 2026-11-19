@@ -136,6 +136,35 @@ fn a_ray_that_meets_the_menu_s_panel_or_misses_the_screen_acts_on_nothing() {
 }
 
 #[test]
+fn with_a_projection_layer_shown_no_mouse_input_is_sent_and_no_laser_shows() {
+    // A frame that shows the projection layer closes the menu and gives the pointer no screen.
+    let projection = Sight { menu: None, panel: PanelAim::Missed, screen: None };
+    let mut run = Run::new();
+    let up = Vector2f { x: 0.0, y: 1.0 };
+    for right in [
+        centered(),
+        HandInput { select: 1.0, scroll: up, ..centered() },
+        HandInput { secondary: ButtonState::Pressed, ..centered() },
+        HandInput { middle: ButtonState::Pressed, ..centered() },
+        centered(),
+    ] {
+        assert_eq!(run.frame(HandInput::default(), right, projection).aimed, None, "no laser");
+    }
+    assert!(run.sent.is_empty(), "{:?}", run.sent);
+}
+
+#[test]
+fn the_left_button_held_on_the_screen_is_released_once_when_a_projection_layer_shows() {
+    let mut run = Run::new();
+    run.hold_left();
+    let projection = Sight { menu: None, panel: PanelAim::Missed, screen: None };
+    let held = HandInput { select: 1.0, ..centered() };
+    run.frame(HandInput::default(), held, projection);
+    run.frame(HandInput::default(), held, projection);
+    assert_eq!(run.count(Action::Release(Button::Left)), 1);
+}
+
+#[test]
 fn the_pointing_hand_is_the_right_hand_then_the_last_to_press_select_and_never_the_menu_hand() {
     let mut run = Run::new();
     assert_eq!(run.right(centered()).changed, None, "the right hand points at the start");

@@ -2,24 +2,16 @@
 //! the viewer link header's pose and no pose, the test pose itself and the eye distance.
 
 use core::f32::consts::TAU;
-use core::ops::RangeInclusive;
 
-use ipc_layout::viewer_header::pose::HeadSample;
+use ipc_layout::viewer_header::pose::{EYE_DISTANCE_M, HeadSample};
 use settings::dev::TestHead;
 use stereo_core::head::HeadPose;
-
-/// The eye distances in meters of a header pose that the eye cameras take. Another value gives the
-/// eye distance of `stereo.ipd_mm`.
-const HEADER_EYE_M: RangeInclusive<f32> = 0.04..=0.09;
 
 /// The period of the sweep test pose in seconds, which turns right, back, left and back.
 const SWEEP_PERIOD_S: f32 = 4.0;
 
-/// The test pose's first sequence number, and the number after the largest even `u32`.
-const FIRST_TEST_SEQUENCE: u32 = 2;
-
-/// The step between the test pose's sequence numbers, which stay even as a header's do.
-const TEST_SEQUENCE_STEP: u32 = 2;
+/// The test pose's first sequence number, and the number after the largest odd `u32`.
+const FIRST_TEST_SEQUENCE: u32 = 1;
 
 /// Where the head pose in use came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,7 +52,7 @@ pub(crate) struct TestPose {
 }
 
 /// The head pose in use: `test` when the test pose is on, else `header`, else no move and no turn
-/// with the sequence number 0. A header pose's eye distance applies within [`HEADER_EYE_M`], and
+/// with the sequence number 0. A header pose's eye distance applies within [`EYE_DISTANCE_M`], and
 /// `ipd_m` applies to every other case.
 pub(crate) fn choose(header: Option<HeadSample>, test: Option<TestPose>, ipd_m: f32) -> HeadInUse {
     if let Some(TestPose { orientation, sequence }) = test {
@@ -73,7 +65,7 @@ pub(crate) fn choose(header: Option<HeadSample>, test: Option<TestPose>, ipd_m: 
     };
     let pose = HeadPose::from_openxr(sample.pose.position, sample.pose.orientation);
     let eye_m =
-        if HEADER_EYE_M.contains(&sample.eye_distance_m) { sample.eye_distance_m } else { ipd_m };
+        if EYE_DISTANCE_M.contains(&sample.eye_distance_m) { sample.eye_distance_m } else { ipd_m };
     HeadInUse { source: PoseSource::Header, sequence: sample.sequence, pose, eye_m }
 }
 
@@ -99,10 +91,12 @@ fn turn_right(degrees: f32) -> [f32; 4] {
     [0.0, -half.sin(), 0.0, half.cos()]
 }
 
-/// The test pose's sequence number after `last`: 2 higher, and 2 again past the `u32` range.
+/// The test pose's sequence number after `last`: the next odd number, and 1 again past the `u32`
+/// range. A header pose's write ends with an even number, so the launch app finds no pose it wrote
+/// for a frame tagged with a test pose.
 pub(crate) const fn next_test_sequence(last: u32) -> u32 {
-    match last.checked_add(TEST_SEQUENCE_STEP) {
-        Some(next) => next,
+    match last.checked_add(1) {
+        Some(next) => next | 1,
         None => FIRST_TEST_SEQUENCE,
     }
 }

@@ -79,10 +79,10 @@ fn pose_at(pose: HeadPose, sequence: u32, half_m: f32) -> Placement {
 }
 
 #[test]
-fn the_yaw_test_pose_turns_20_degrees_right_at_every_call_with_sequence_numbers_2_4_and_6() {
+fn the_yaw_test_pose_turns_20_degrees_right_at_every_call_with_sequence_numbers_1_3_and_5() {
     let mut clock = TestClock::default();
     let start = Instant::now();
-    for (call, sequence) in [(0, 2), (1, 4), (2, 6)] {
+    for (call, sequence) in [(0, 1), (1, 3), (2, 5)] {
         let pose = clock.next(TestHead::Yaw, 20.0, after(start, call)).expect("a test pose");
         assert_near(&pose.orientation, &RIGHT_20, "the orientation");
         assert_eq!(pose.sequence, sequence, "call {call}");
@@ -109,10 +109,11 @@ fn the_test_pose_off_makes_no_pose_and_starts_no_clock() {
 }
 
 #[test]
-fn the_test_sequence_number_wraps_past_the_u32_range_back_to_2() {
-    assert_eq!(next_test_sequence(0), 2);
-    assert_eq!(next_test_sequence(4_294_967_292), 4_294_967_294);
-    assert_eq!(next_test_sequence(4_294_967_294), 2);
+fn the_test_sequence_number_is_odd_and_wraps_past_the_u32_range_back_to_1() {
+    assert_eq!(next_test_sequence(0), 1);
+    assert_eq!(next_test_sequence(1), 3);
+    assert_eq!(next_test_sequence(4_294_967_293), 4_294_967_295);
+    assert_eq!(next_test_sequence(4_294_967_295), 1);
 }
 
 #[test]
@@ -173,7 +174,7 @@ fn in_the_mode_vr_the_test_pose_wins_over_the_header_which_is_not_read() {
     };
     let placement = view.placement(header, call(65.0, EyeScale::FULL, Rays::Rewritten));
     let pose = HeadPose::from_openxr([0.0; 3], RIGHT_20);
-    assert_eq!(placement, pose_at(pose, 2, 0.0325));
+    assert_eq!(placement, pose_at(pose, 1, 0.0325));
     assert!(!read.get(), "the header was read");
     assert_eq!(view.report().map(|report| report.source), Some(PoseSource::Test));
 }

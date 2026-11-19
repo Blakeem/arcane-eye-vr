@@ -3,12 +3,12 @@
 //!
 //! `arcane-eye-vr.exe` creates the launch token, opens the game's Steam URL, then polls the token's
 //! status until the game reports the mode's goal status or a failure. The token is removed once the
-//! wait ends. In the mode `screen`, the app skips those steps when a game with the mod already
-//! runs. It then shows the game's frames on a screen in the headset until the game or the OpenXR
-//! session ends. `arcane-eye-vr.exe --reload-settings` instead asks the running game to read the
-//! settings files again, and exits. The `launch` crate runs each launch step and the reload
-//! request, and `screen.rs` runs the headset screen. This crate holds the command line, the
-//! player's messages and the message box in `raw.rs`.
+//! wait ends. In the modes `screen` and `vr`, the app skips those steps when a game with the mod
+//! already runs. It then shows the game's frames in the headset, on a screen or around the player,
+//! until the game or the OpenXR session ends. `arcane-eye-vr.exe --reload-settings` instead asks
+//! the running game to read the settings files again, and exits. The `launch` crate runs each
+//! launch step and the reload request, and `screen.rs` runs the headset session. This crate holds
+//! the command line, the player's messages and the message box in `raw.rs`.
 
 #![windows_subsystem = "windows"]
 
@@ -30,16 +30,13 @@ use tracing::{dispatcher, error, info};
 
 use crate::args::{ArgsError, Command, LaunchMode};
 use crate::failure::Failure;
-use crate::screen::GameChoice;
+use crate::screen::{GameChoice, View};
 
 /// The time between two reads of the launch token's status.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// The longest wait for the goal status. Steam can hold a launch for an update or a cloud sync.
 const TIMEOUT: Duration = Duration::from_mins(10);
-
-/// The launch token's mode of a game the headset screen shows.
-const SCREEN_GAME_MODE: Mode = Mode::DesktopStereo;
 
 fn main() -> ExitCode {
     let parsed = args::parse(env::args_os().skip(1));
@@ -83,26 +80,45 @@ fn run(parsed: Result<Command, ArgsError>, root: &Root) -> Result<(), Failure> {
 }
 
 /// Runs the launch in `mode`. It returns once the game reports the mode's goal status, or in the
-/// mode `screen` once the headset screen ends.
+/// modes `screen` and `vr` once the headset session ends.
 fn launch(mode: LaunchMode, root: &Root) -> Result<(), Failure> {
     info!(version = env!("CARGO_PKG_VERSION"), mode = mode.as_str(), "launch started");
     match mode {
-        LaunchMode::Game(mode) => {
-            if mode == Mode::Vr {
-                checks::check_runtime()?;
+        LaunchMode::DesktopStereo => start_game(mode.token_mode()),
+        LaunchMode::Screen => headset(View::Screen, root),
+        LaunchMode::Immersive => headset(View::Immersive, root),
+    }
+}
+
+/// The launch mode whose headset session shows the game's frames as `view` says.
+const fn headset_mode(view: View) -> LaunchMode {
+    match view {
+        View::Screen => LaunchMode::Screen,
+        View::Immersive => LaunchMode::Immersive,
+    }
+}
+
+/// Checks the runtime, starts the game in the token mode of the launch mode of `view` unless a
+/// game with the mod runs, and shows its frames in the headset as `view` says until the session
+/// ends. A failure's fix names that launch mode.
+fn headset(view: View, root: &Root) -> Result<(), Failure> {
+    let mode = headset_mode(view);
+    let manifest = checks::check_runtime()?;
+    match screen::find_game()? {
+        GameChoice::Running => {
+            info!("a game with the mod runs, so the headset shows it and no game starts");
+            if view == View::Immersive {
+                info!(
+                    "the running game's launch mode is unknown, and each of its frames with no \
+                     kept head pose shows on the flat screen"
+                );
             }
-            start_game(mode)
         }
-        LaunchMode::Screen => {
-            let manifest = checks::check_runtime()?;
-            match screen::find_game()? {
-                GameChoice::Running => {
-                    info!("a game with the mod runs, so the screen shows it and no game starts");
-                }
-                GameChoice::Start => start_game(SCREEN_GAME_MODE)?,
-            }
-            Ok(screen::run(&manifest, root.path())?)
-        }
+        GameChoice::Start => start_game(mode.token_mode())?,
+    }
+    match screen::run(&manifest, root.path(), view) {
+        Ok(()) => Ok(()),
+        Err(cause) => Err(Failure::Headset { cause, mode }),
     }
 }
 
@@ -121,4 +137,15 @@ fn reload_settings() -> Result<(), Failure> {
     reload::request()?;
     info!("settings reload signaled");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LaunchMode, View, headset_mode};
+
+    #[test]
+    fn each_headset_view_belongs_to_the_launch_mode_that_shows_it() {
+        assert_eq!(headset_mode(View::Screen), LaunchMode::Screen);
+        assert_eq!(headset_mode(View::Immersive), LaunchMode::Immersive);
+    }
 }

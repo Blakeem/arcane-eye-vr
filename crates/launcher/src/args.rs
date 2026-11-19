@@ -1,5 +1,5 @@
-//! The command line: `--mode vr`, the default, `--mode desktop-stereo`, `--mode screen`, or
-//! `--reload-settings`.
+//! The command line: `--mode vr`, the immersive mode and the default, `--mode desktop-stereo`,
+//! `--mode screen`, or `--reload-settings`.
 
 use std::ffi::OsString;
 
@@ -7,7 +7,7 @@ use diag::logging::LogName;
 use ipc_layout::launch_token::Mode;
 
 /// The mode of a launch with no `--mode` argument.
-const DEFAULT_MODE: LaunchMode = LaunchMode::Game(Mode::Vr);
+const DEFAULT_MODE: LaunchMode = LaunchMode::Immersive;
 
 const MODE_FLAG: &str = "--mode";
 
@@ -19,28 +19,38 @@ const SCREEN_NAME: &str = "screen";
 /// What a launch does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LaunchMode {
-    /// Starts the game in the launch token's mode and exits once the game reports the mode's goal.
-    Game(Mode),
+    /// Starts the game in the desktop stereo mode and exits once the game drew its first frame.
+    DesktopStereo,
     /// Starts the game in the desktop stereo mode, or finds it running with the mod, then shows its
     /// frames on a screen in the headset until the game or the OpenXR session ends.
     Screen,
+    /// Starts the game in the launch token's mode `vr`, or finds it running with the mod, then
+    /// shows its frames around the player in the headset until the game or the OpenXR session ends.
+    Immersive,
 }
 
 impl LaunchMode {
+    const ALL: [Self; 3] = [Self::DesktopStereo, Self::Screen, Self::Immersive];
+
     /// The mode's name, as the `--mode` argument spells it.
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
-            Self::Game(mode) => mode.as_str(),
+            Self::DesktopStereo | Self::Immersive => self.token_mode().as_str(),
             Self::Screen => SCREEN_NAME,
+        }
+    }
+
+    /// The launch token's mode of a game this launch starts.
+    pub(crate) const fn token_mode(self) -> Mode {
+        match self {
+            Self::DesktopStereo | Self::Screen => Mode::DesktopStereo,
+            Self::Immersive => Mode::Vr,
         }
     }
 
     /// The mode `name` spells, or `None` for a name no mode has.
     fn named(name: &OsString) -> Option<Self> {
-        if name == SCREEN_NAME {
-            return Some(Self::Screen);
-        }
-        Mode::ALL.into_iter().find(|mode| name == mode.as_str()).map(Self::Game)
+        Self::ALL.into_iter().find(|mode| name == mode.as_str())
     }
 }
 
@@ -123,24 +133,31 @@ mod tests {
     }
 
     #[test]
-    fn no_arguments_mean_vr() {
-        assert_eq!(parse(args(&[])), Ok(Command::Launch(LaunchMode::Game(Mode::Vr))));
+    fn no_arguments_mean_the_immersive_mode() {
+        assert_eq!(parse(args(&[])), Ok(Command::Launch(LaunchMode::Immersive)));
     }
 
     #[test]
     fn mode_flag_selects_each_mode_by_name() {
         let vr = parse(args(&["--mode", "vr"]));
-        assert_eq!(vr, Ok(Command::Launch(LaunchMode::Game(Mode::Vr))));
+        assert_eq!(vr, Ok(Command::Launch(LaunchMode::Immersive)));
         let desktop = parse(args(&["--mode", "desktop-stereo"]));
-        assert_eq!(desktop, Ok(Command::Launch(LaunchMode::Game(Mode::DesktopStereo))));
+        assert_eq!(desktop, Ok(Command::Launch(LaunchMode::DesktopStereo)));
         assert_eq!(parse(args(&["--mode", "screen"])), Ok(Command::Launch(LaunchMode::Screen)));
     }
 
     #[test]
     fn each_mode_s_name_is_the_one_the_flag_takes() {
-        assert_eq!(LaunchMode::Game(Mode::Vr).as_str(), "vr");
-        assert_eq!(LaunchMode::Game(Mode::DesktopStereo).as_str(), "desktop-stereo");
+        assert_eq!(LaunchMode::Immersive.as_str(), "vr");
+        assert_eq!(LaunchMode::DesktopStereo.as_str(), "desktop-stereo");
         assert_eq!(LaunchMode::Screen.as_str(), "screen");
+    }
+
+    #[test]
+    fn the_immersive_mode_starts_the_game_in_the_token_mode_vr_and_the_others_in_desktop_stereo() {
+        assert_eq!(LaunchMode::Immersive.token_mode(), Mode::Vr);
+        assert_eq!(LaunchMode::DesktopStereo.token_mode(), Mode::DesktopStereo);
+        assert_eq!(LaunchMode::Screen.token_mode(), Mode::DesktopStereo);
     }
 
     #[test]

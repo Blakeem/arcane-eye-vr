@@ -37,8 +37,8 @@ use xr::format::{Sampling, SwapchainFormat};
 use xr::panel::Panel;
 use xr::session::Session;
 
-pub(crate) use self::model::Shown;
 use self::model::{Event, Model};
+pub(crate) use self::model::{Pointing, Shown};
 use self::place::PANEL_SIZE;
 pub(crate) use self::place::{Laser, laser};
 pub(crate) use self::save::PlayerFile;
@@ -120,13 +120,13 @@ impl ScreenMenu {
         self.model.hand()
     }
 
-    /// Takes the controllers' `frame` at `now` and returns what the menu shows. A menu that is gone
-    /// shows nothing.
-    pub(crate) fn update(&mut self, frame: &Frame, now: Instant) -> Shown {
+    /// Takes the controllers' `frame` at `now` while they are `pointing`, and returns what the menu
+    /// shows. A menu that is gone shows nothing.
+    pub(crate) fn update(&mut self, frame: &Frame, now: Instant, pointing: Pointing) -> Shown {
         if self.drawing.is_none() {
             return Shown::default();
         }
-        match self.take(frame, now) {
+        match self.take(frame, now, pointing) {
             Ok(shown) => shown,
             Err(error) => {
                 self.fail(&error);
@@ -146,11 +146,17 @@ impl ScreenMenu {
         }
     }
 
-    /// Takes the controllers' `frame` at `now`, logs what the menu did, writes the player file when
-    /// the menu closed with changed values, and returns what the menu shows.
-    fn take(&mut self, frame: &Frame, now: Instant) -> Result<Shown, MenuError> {
+    /// Takes the controllers' `frame` at `now` while they are `pointing`, logs what the menu did,
+    /// writes the player file when the menu closed with changed values, and returns what the menu
+    /// shows.
+    fn take(
+        &mut self,
+        frame: &Frame,
+        now: Instant,
+        pointing: Pointing,
+    ) -> Result<Shown, MenuError> {
         let mut closes = 0_u32;
-        let shown = self.model.update(frame, now, &mut |event| {
+        let shown = self.model.update(frame, now, pointing, &mut |event| {
             closes = closes.saturating_add(u32::from(matches!(event, Event::Closed(_))));
             log(event);
         });

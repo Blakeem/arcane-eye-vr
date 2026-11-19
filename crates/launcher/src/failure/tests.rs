@@ -9,11 +9,15 @@ use launch::registry::{Hive, RegistryError, RegistryValue};
 use launch::reload::ReloadError;
 use launch::status::{Goal, WaitError};
 use launch::token::TokenCreateError;
+use openxr::sys;
 use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
+use viewer_client::HeaderViewError;
+use xr::session::SessionError;
 
-use crate::args::ArgsError;
+use crate::args::{ArgsError, LaunchMode};
+use crate::screen::failure::ScreenFailure;
 
 fn log_error() -> LogError {
     let source = io::Error::new(io::ErrorKind::PermissionDenied, "access denied");
@@ -177,6 +181,33 @@ fn check_errors_become_the_player_s_failures() {
     let not_steamvr = Failure::from(RuntimeError::NotSteamVr { active: active.clone() });
     assert!(matches!(not_steamvr, Failure::NotSteamVr { active: found } if found == active));
     assert!(matches!(Failure::from(GameRunning), Failure::GameRunning));
+}
+
+#[test]
+fn a_headset_failure_names_its_cause_and_the_mode_the_player_started() {
+    let headset = |mode| {
+        let cause = ScreenFailure::from(SessionError::Create(sys::Result::ERROR_RUNTIME_FAILURE));
+        Failure::Headset { cause, mode }.to_string()
+    };
+    let start = "SteamVR could not open a headset session (the runtime created no session: ";
+    let screen = headset(LaunchMode::Screen);
+    assert!(screen.starts_with(start), "{screen}");
+    let screen_fix = "). Restart SteamVR, then start Arcane Eye VR with --mode screen again.";
+    assert!(screen.ends_with(screen_fix), "{screen}");
+    let immersive = headset(LaunchMode::Immersive);
+    let immersive_fix = "). Restart SteamVR, then start Arcane Eye VR with --mode vr again.";
+    assert!(immersive.ends_with(immersive_fix), "{immersive}");
+}
+
+#[test]
+fn an_unopened_viewer_header_names_the_quit_and_the_start() {
+    let failure = Failure::from(HeaderViewError::Map(windows::core::Error::empty()));
+    assert!(matches!(failure, Failure::Link(HeaderViewError::Map(_))), "{failure:?}");
+    let message = failure.to_string();
+    let start =
+        "Arcane Eye VR could not open the game's frames (mapping a view of the viewer header";
+    assert!(message.starts_with(start), "{message}");
+    assert!(message.ends_with("). Quit the game, then start Arcane Eye VR again."), "{message}");
 }
 
 #[test]

@@ -1,19 +1,25 @@
-//! The headset screen: the game's published frames on a flat screen in the headset, the left half
-//! of each frame to the left eye and the right half to the right eye.
+//! The headset session: the game's published frames on a flat screen in the headset, the left half
+//! of each frame to the left eye and the right half to the right eye, or in the immersive mode
+//! around the player at the head pose each frame was rendered with.
 //!
 //! `picture.rs` reads the newest published frame from the viewer link, and `eyes.rs` draws its
-//! halves into the swapchains of the `xr` crate's session. `controls.rs` reads the device profiles
-//! and logs what the controllers do in each frame. `menu.rs` shows the menu that sets the screen's
-//! distance and width, `pointer.rs` sends the game the mouse input of the controller that points at
-//! the screen, and `geometry.rs` holds the vector math of the quads and rays. The screen runs until
-//! Steam reports that the game ended, the runtime ends the session or the game's frames are of a
-//! kind it cannot show. The game window keeps the keyboard, since the screen has no window, and the
+//! halves into the swapchains of the `xr` crate's session. `immersive.rs` writes the head pose into
+//! the viewer link and chooses between the projection layer and the screen quad for each frame, and
+//! `layer.rs` builds that layer. `immersive/decide.rs` places each eye's view. `controls.rs` reads
+//! the device profiles and logs what the controllers do in each frame. `menu.rs` shows the menu
+//! that sets the screen's distance and width, `pointer.rs` sends the game the mouse input of the
+//! controller that points at the screen, and `geometry.rs` holds the vector math of the quads and
+//! rays. The menu and the pointer rest while a projection layer shows. The session runs until Steam
+//! reports that the game ended, the runtime ends the session or the game's frames are of a kind it
+//! cannot show. The game window keeps the keyboard, since the session has no window, and the
 //! pointer's input reaches the game only while the game window is in the foreground.
 
 mod controls;
 mod eyes;
 pub(crate) mod failure;
 mod geometry;
+mod immersive;
+mod layer;
 mod menu;
 mod picture;
 mod pointer;
@@ -26,6 +32,7 @@ use diag::error_chain;
 use diag::once;
 use diag::rate::Once;
 use gfx::region::RegionDraw;
+use ipc_layout::viewer_header::pose::FrameTag;
 use ipc_layout::viewer_header::{self, AdapterLuid};
 use launch::checks;
 use launch::registry::RegistryError;
@@ -35,14 +42,15 @@ use tracing::{Level, info, warn};
 use viewer_client::header::Names;
 use viewer_client::{Device, HeaderView, HeaderViewError, heartbeat};
 use xr::error::XrError;
-use xr::quad;
 use xr::runtime::Runtime;
-use xr::session::{Lifecycle, Session};
+use xr::session::{Lifecycle, Session, Shown};
 use xr::swapchain::Swapchains;
 
 use self::controls::Controllers;
 use self::eyes::{Eyes, EyesError};
 use self::failure::ScreenFailure;
+use self::immersive::Immersive;
+use self::layer::Layer;
 use self::menu::{Gpu, PlayerFile, ScreenMenu};
 use self::picture::{Link, Unshowable};
 use self::pointer::{PanelAim, Pointer, Sight};
@@ -53,12 +61,21 @@ const IDLE_WAIT: Duration = Duration::from_millis(50);
 /// The time between two reads of Steam's report that the game runs.
 const GAME_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
-/// The game the screen shows.
+/// How the session shows the game's frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum View {
+    /// Every frame on the flat screen.
+    Screen,
+    /// Each frame with a kept head pose around the player, every other frame on the flat screen.
+    Immersive,
+}
+
+/// The game the headset session shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GameChoice {
-    /// A game with the mod runs, so the screen shows it and no game starts.
+    /// A game with the mod runs, so the session shows it and no game starts.
     Running,
-    /// The launch app starts the game, then the screen shows it.
+    /// The launch app starts the game, then the session shows it.
     Start,
 }
 
@@ -76,8 +93,8 @@ enum Header {
     Absent,
 }
 
-/// The game the screen shows, from Steam's report and the viewer header's mapping. A failed read
-/// of Steam's report leaves the choice to the mapping.
+/// The game the headset session shows, from Steam's report and the viewer header's mapping. A
+/// failed read of Steam's report leaves the choice to the mapping.
 ///
 /// # Errors
 ///
@@ -133,15 +150,15 @@ fn settings(root: &Path) -> (ScreenSettings, PlayerFile) {
     (screen, file)
 }
 
-/// Shows the game's frames in the headset until the game ends or the runtime ends the session.
-/// `manifest` is the active runtime's manifest, and `root` the root folder that holds the player
-/// file. Before it returns, the screen menu's unsaved changes are written to a player file that
-/// gave its values at the start.
+/// Shows the game's frames in the headset as `view` says until the game ends or the runtime ends
+/// the session. `manifest` is the active runtime's manifest, and `root` the root folder that holds
+/// the player file. Before it returns, the screen menu's unsaved changes are written to a player
+/// file that gave its values at the start.
 ///
 /// # Errors
 ///
 /// Returns the [`ScreenFailure`] of a step before the session runs, and of a session that failed.
-pub(crate) fn run(manifest: &Path, root: &Path) -> Result<(), ScreenFailure> {
+pub(crate) fn run(manifest: &Path, root: &Path, view: View) -> Result<(), ScreenFailure> {
     let (settings, file) = settings(root);
     let names = Names::default();
     if let Err(error) = heartbeat::spawn(names.mapping.clone()) {
@@ -156,8 +173,13 @@ pub(crate) fn run(manifest: &Path, root: &Path) -> Result<(), ScreenFailure> {
     };
     let draw = RegionDraw::create(device.d3d())?;
     let session = Session::open(&headset, device.d3d())?;
+    let immersive = match view {
+        View::Screen => None,
+        View::Immersive => Some(Immersive::new()),
+    };
     let mut screen = Screen {
         eyes: None,
+        immersive,
         menu: ScreenMenu::new(settings, file, root),
         pointer: Pointer::new(),
         link: Link::new(names),
@@ -200,6 +222,8 @@ impl FrameError {
 /// panels go before the session and the device goes last.
 struct Screen {
     eyes: Option<Eyes>,
+    /// `None` in the view [`View::Screen`].
+    immersive: Option<Immersive>,
     menu: ScreenMenu,
     pointer: Pointer,
     link: Link,
@@ -242,42 +266,54 @@ impl Screen {
         }
     }
 
-    /// Waits for the session's next frame, reads the controllers, updates the menu, draws the newest
-    /// published frame into it when the runtime shows the frame, sends the game the pointer's mouse
-    /// input, draws the menu's quads and the laser, and ends the frame with the screen, then the
-    /// menu's panels.
+    /// Waits for the session's next frame, reads the controllers, writes the head pose in the view
+    /// [`View::Immersive`], draws the newest published frame into the swapchains when the runtime
+    /// shows the frame and chooses its layer, updates the menu, sends the game the pointer's mouse
+    /// input, draws the menu's quads and the laser, and ends the frame with the frame's layer, then
+    /// the menu's panels.
     fn frame(&mut self) -> Result<(), FrameError> {
         let timing = self.session.wait_frame()?;
         let controls = self.controllers.read(&self.session, timing)?;
         let now = Instant::now();
-        let Self { eyes, menu, pointer, link, session, draw, device, first_shown, .. } = self;
-        let mut menu_shown = menu.update(&controls, now);
+        let Self {
+            eyes, immersive, menu, pointer, link, session, draw, device, first_shown, ..
+        } = self;
+        if let Some(immersive) = immersive.as_mut() {
+            immersive.write_head(session.locate_head(timing), link)?;
+        }
         let drawn =
             if timing.should_render { show(eyes, link, session, draw, device)? } else { None };
-        let settings = menu.screen();
-        let (distance_m, width_m) = (settings.distance_m.meters(), settings.width_m.meters());
-        let shown = drawn.and_then(|drawn| {
-            quad::screen(distance_m, width_m, drawn.frame).map(|quad| (drawn.swapchains, quad))
-        });
+        let choice = drawn.as_ref().zip(immersive.as_mut()).map(|(drawn, on)| on.choose(drawn.tag));
+        let mut menu_shown = menu.update(&controls, now, layer::pointing(choice.as_ref()));
+        let frame_layer = drawn.and_then(|drawn| Layer::of(drawn.frame, choice, menu.screen()));
+        let shown = drawn.zip(frame_layer).map(|(drawn, on)| on.shown(drawn.swapchains));
         let panel = if menu_shown.points_at_panel() { PanelAim::Met } else { PanelAim::Missed };
-        let sight = Sight { menu: menu.hand(), panel, screen: shown.map(|(_, quad)| quad) };
+        let screen = frame_layer.and_then(Layer::screen_quad);
+        let sight = Sight { menu: menu.hand(), panel, screen };
         if let Some(laser) = pointer.update(&controls, sight, now) {
             menu_shown.laser = Some(laser);
         }
         menu.draw(menu_shown, &Gpu { session, draw, context: device.context() });
-        if let Some((swapchains, _quad)) = shown {
+        if let Some(Shown::Screen { swapchains, .. } | Shown::Projection { swapchains, .. }) = shown
+        {
             let (width, height) = swapchains.size();
             once!(*first_shown, Level::INFO, width, height, "first frame shown in the headset");
         }
         session.end_frame(timing, shown, &menu.panels())?;
+        if let Some(immersive) = immersive.as_mut() {
+            immersive.end_frame();
+        }
         Ok(())
     }
 }
 
-/// The swapchains that hold each eye's half of a published frame, and the entire frame's size.
+/// The swapchains that hold each eye's half of a published frame, the entire frame's size and the
+/// frame's tag.
+#[derive(Clone, Copy)]
 struct Drawn<'eyes> {
     swapchains: &'eyes Swapchains,
     frame: (u32, u32),
+    tag: FrameTag,
 }
 
 /// Draws each eye's half of the newest published frame into its swapchain, or returns `None`
@@ -293,7 +329,8 @@ fn show<'eyes>(
         return Ok(None);
     };
     let swapchains = eyes::show(eyes, session, draw, device.context(), picture)?;
-    Ok(swapchains.map(|swapchains| Drawn { swapchains, frame: picture.size() }))
+    let (frame, tag) = (picture.size(), picture.tag());
+    Ok(swapchains.map(|swapchains| Drawn { swapchains, frame, tag }))
 }
 
 /// The screen's reads of Steam's report that the game runs, at most one per

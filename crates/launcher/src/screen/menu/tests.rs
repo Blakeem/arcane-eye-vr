@@ -15,7 +15,7 @@ use settings::file;
 use settings::player::{ScreenDistanceM, ScreenSettings, ScreenWidthM};
 use xr::input::{ButtonState, HandInput, Input};
 
-use super::model::{Event, Model, Place, Shown, toggled};
+use super::model::{Event, Model, Place, Pointing, Shown, toggled};
 use super::place::PANEL_SIZE;
 use super::save::{PlayerFile, Saver, Saving};
 use super::{MenuError, ScreenMenu, rows};
@@ -44,6 +44,7 @@ struct Run {
     watch: ControllerWatch,
     now: Instant,
     events: Vec<Event>,
+    pointing: Pointing,
 }
 
 /// One frame's hands: the left hand's menu and grip, and the right hand's menu, aim and select.
@@ -64,6 +65,7 @@ impl Run {
             watch: ControllerWatch::default(),
             now,
             events: Vec::new(),
+            pointing: Pointing::Active,
         }
     }
 
@@ -71,7 +73,8 @@ impl Run {
     fn frame(&mut self, hands: Hands, step: Duration) -> Shown {
         let frame = controls(&mut self.watch, hands);
         let events = &mut self.events;
-        let shown = self.model.update(&frame, self.now, &mut |event| events.push(event));
+        let pointing = self.pointing;
+        let shown = self.model.update(&frame, self.now, pointing, &mut |event| events.push(event));
         let shown = shown.expect("two rows");
         self.now = self.now.checked_add(step).expect("a later time");
         shown
@@ -142,6 +145,26 @@ fn each_open_move_and_close_is_one_event_with_its_hand() {
             Event::Closed(Hand::Left),
         ]
     );
+}
+
+#[test]
+fn with_a_projection_layer_shown_a_menu_press_opens_nothing_and_an_open_menu_closes() {
+    let mut run = Run::new(screen(2.5, 3.0));
+    run.pointing = Pointing::Resting;
+    let pressed = Hands { menu: ButtonState::Pressed, grip: Some(GRIP), ..Hands::default() };
+    assert_eq!(run.frame(pressed, Duration::ZERO), Shown::default(), "the press opens nothing");
+    assert_eq!(run.frame(Hands::default(), Duration::ZERO), Shown::default());
+    assert_eq!(run.model.hand(), None);
+    assert!(run.events.is_empty(), "{:?}", run.events);
+    run.pointing = Pointing::Active;
+    run.press_menu();
+    assert_eq!(run.model.hand(), Some(Hand::Left), "the screen quad opens the menu");
+    run.pointing = Pointing::Resting;
+    assert_eq!(
+        run.frame(Hands { grip: Some(GRIP), ..Hands::default() }, Duration::ZERO),
+        Shown::default()
+    );
+    assert_eq!(run.events, [Event::Opened(Hand::Left), Event::Closed(Hand::Left)]);
 }
 
 #[test]
@@ -241,21 +264,27 @@ fn a_closed_menu_after_two_steps_writes_once_and_one_with_no_step_writes_nothing
     assert_eq!(writes.get(), 1, "a closed menu with no step");
 }
 
-/// Takes frames through `menu`, which shows `values`: the menu opens on the left hand, takes one
-/// plus step of the distance and closes.
-fn step_and_close(menu: &mut ScreenMenu, values: ScreenSettings) {
+/// Takes frames through `menu`, which shows `values`: the menu opens on the left hand and takes
+/// one plus step of the distance, then the last frame, taken while the controllers are
+/// `closing`, closes it.
+fn step_and_close_with(menu: &mut ScreenMenu, values: ScreenSettings, closing: Pointing) {
     let (grip, aim) = (Some(GRIP), Some(aim_at(values, Button::Plus)));
     let menu_press = Hands { menu: ButtonState::Pressed, grip, ..Hands::default() };
     let mut watch = ControllerWatch::default();
     let now = Instant::now();
-    for hands in [
-        menu_press,
-        Hands { grip, aim, select: 1.0, ..Hands::default() },
-        Hands { grip, aim, ..Hands::default() },
-        menu_press,
+    for (hands, pointing) in [
+        (menu_press, Pointing::Active),
+        (Hands { grip, aim, select: 1.0, ..Hands::default() }, Pointing::Active),
+        (Hands { grip, aim, ..Hands::default() }, Pointing::Active),
+        (menu_press, closing),
     ] {
-        menu.take(&controls(&mut watch, hands), now).expect("two rows");
+        menu.take(&controls(&mut watch, hands), now, pointing).expect("two rows");
     }
+}
+
+/// Takes frames through `menu` that open the menu, take one step and close it with a press.
+fn step_and_close(menu: &mut ScreenMenu, values: ScreenSettings) {
+    step_and_close_with(menu, values, Pointing::Active);
 }
 
 #[test]
@@ -263,6 +292,16 @@ fn a_close_after_a_step_writes_the_player_file() {
     let dir = test_dir("menu-close");
     let mut menu = ScreenMenu::new(screen(2.5, 3.0), PlayerFile::Read, dir.path());
     step_and_close(&mut menu, screen(2.5, 3.0));
+    let read = file::read_settings(dir.path()).expect("read the player file");
+    assert_eq!(read.settings.screen, screen(2.6, 3.0));
+}
+
+#[test]
+fn a_projection_layer_that_closes_the_menu_after_a_step_writes_the_player_file() {
+    let dir = test_dir("menu-projection-close");
+    let mut menu = ScreenMenu::new(screen(2.5, 3.0), PlayerFile::Read, dir.path());
+    step_and_close_with(&mut menu, screen(2.5, 3.0), Pointing::Resting);
+    assert_eq!(menu.hand(), None, "the projection layer closed the menu");
     let read = file::read_settings(dir.path()).expect("read the player file");
     assert_eq!(read.settings.screen, screen(2.6, 3.0));
 }

@@ -1,5 +1,5 @@
 //! The controllers' action set: its actions, the bindings each device profile suggests, and the
-//! spaces of the hands and the head.
+//! spaces of the hands. The head's VIEW space is the session's.
 //!
 //! Each action exists for the two hands, so a profile's `[left]` and `[right]` tables bind the same
 //! actions. A profile whose bindings the runtime refuses is left out.
@@ -7,11 +7,12 @@
 use device_profile::profile::{ActionName, DeviceProfile, Hand};
 use openxr::{
     Action, ActionInput, ActionSet, ActionState, ActionTy, Binding, D3D11, Haptic, Instance, Path,
-    Posef, ReferenceSpaceType, Space, Time, Vector2f,
+    Posef, Space, Time, Vector2f,
 };
 use tracing::{info, warn};
 
 use crate::error::{XrError, XrStep};
+use crate::head::ViewSpace;
 use crate::input::{self, Focus, HandInput, Input};
 use crate::raw;
 
@@ -91,19 +92,20 @@ impl HandSpaces {
     }
 }
 
-/// What one input read needs: the session, the space the poses are in and the display time.
+/// What one input read needs: the session, the space the poses are in, the head's VIEW space and
+/// the display time.
 #[derive(Clone, Copy)]
 pub(crate) struct ReadAt<'a> {
     pub(crate) session: &'a openxr::Session<D3D11>,
     pub(crate) base: &'a Space,
+    pub(crate) head: &'a ViewSpace,
     pub(crate) time: Time,
 }
 
-/// The attached action set with its actions and spaces.
+/// The attached action set with its actions and the spaces of the hands.
 pub(crate) struct Controls {
     left: HandSpaces,
     right: HandSpaces,
-    view: Space,
     actions: Actions,
     set: ActionSet,
 }
@@ -161,10 +163,8 @@ impl Controls {
         let [left, right] = hands;
         let left = HandSpaces::create(session, &actions, left)?;
         let right = HandSpaces::create(session, &actions, right)?;
-        let view = session.create_reference_space(ReferenceSpaceType::VIEW, Posef::IDENTITY);
-        let view = XrError::check(XrStep::CreateViewSpace, view)?;
         info!(profiles = ?suggested, "the session reads the controllers of these device profiles");
-        Ok(Some(Self { left, right, view, actions, set }))
+        Ok(Some(Self { left, right, actions, set }))
     }
 
     /// Syncs the actions and reads the input at `at`. A session without the input focus gives
@@ -173,7 +173,7 @@ impl Controls {
         if input::synced(raw::sync_actions(at.session, &self.set))? == Focus::Unfocused {
             return Ok(Input::default());
         }
-        let head = XrError::check(XrStep::LocateSpace, self.view.locate(at.base, at.time))?;
+        let head = at.head.locate(at.base, at.time)?;
         Ok(Input {
             left: self.hand(&self.left, at)?,
             right: self.hand(&self.right, at)?,

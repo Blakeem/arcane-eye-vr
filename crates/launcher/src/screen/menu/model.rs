@@ -42,6 +42,14 @@ pub(crate) fn toggled(place: Place, hand: Hand) -> Place {
     }
 }
 
+/// Whether the controllers point at the menu and the screen in a frame. They rest while the frame
+/// shows a projection layer, which has no screen to point at, so the menu stays closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Pointing {
+    Active,
+    Resting,
+}
+
 /// What the menu did in a frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Event {
@@ -143,7 +151,9 @@ impl Model {
 
     /// Takes the controllers' `frame` at `now`, calls `on_event` with each thing the menu did, and
     /// returns what it shows. The pointing hand's point is matched against the layout of the menu
-    /// that shows the screen values before the frame, built only while the menu is open.
+    /// that shows the screen values before the frame, built only while the menu is open. While the
+    /// controllers are `Resting`, the menu closes, a press opens nothing and the menu shows
+    /// nothing.
     ///
     /// # Errors
     ///
@@ -152,8 +162,15 @@ impl Model {
         &mut self,
         frame: &Frame,
         now: Instant,
+        pointing: Pointing,
         on_event: &mut impl FnMut(Event),
     ) -> Result<Shown, TooManyRows> {
+        if pointing == Pointing::Resting {
+            if let Some(hand) = self.close() {
+                on_event(Event::Closed(hand));
+            }
+            return Ok(Shown::default());
+        }
         for hand in Hand::ALL.into_iter().filter(|&hand| frame.buttons(hand).menu_pressed()) {
             self.press_menu(hand, on_event);
         }

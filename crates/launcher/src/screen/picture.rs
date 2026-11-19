@@ -1,20 +1,23 @@
-//! The game's side of the headset screen: the viewer link's header, the shared texture opened at
-//! its generation, and the private copy of the newest published frame that the eye draws read.
+//! The game's side of the headset session: the viewer link's header with the head pose write, the
+//! shared texture opened at its generation, and the private copy of the newest published frame
+//! that the eye draws read, with the frame's tag.
 //!
-//! The copy holds the keyed mutex for one `CopyResource` and waits on it at most as long as
-//! [`Device::copy`] does. A session frame with no new published frame takes no lock and shows the
-//! private copy again.
+//! The copy holds the keyed mutex for one copy of the entire frame and the read of the frame's tag,
+//! and waits on it at most as long as [`Device::copy_region`] does. A session frame with no new
+//! published frame takes no lock and shows the private copy again.
 
 use std::time::Duration;
 
 use diag::rate::RateLimit;
 use diag::warn_every;
 use gfx::region::{RegionDraw, RegionError};
+use ipc_layout::viewer_header::pose::{FrameTag, HeadPose};
 use ipc_layout::viewer_header::{AdapterLuid, TextureInfo};
 use tracing::info;
 use viewer_client::frame::PixelFormat;
-use viewer_client::header::{HeaderReadError, Names, read_header};
-use viewer_client::{Copied, Device, GpuError, HeaderView, SharedTexture};
+use viewer_client::header::{HeaderReadError, Names, read_header, write_head_pose};
+use viewer_client::region::Region;
+use viewer_client::{Device, GpuError, HeaderView, SharedTexture};
 use windows::Win32::Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
 use windows::core::HSTRING;
@@ -65,6 +68,8 @@ pub(crate) struct Picture {
     sampling: Sampling,
     /// The header's frame counter when the copy last took a frame, or `None` before the first.
     copied_frame: Option<u32>,
+    /// The tag of the frame the copy holds, [`FrameTag::NONE`] before the first.
+    tag: FrameTag,
 }
 
 impl Picture {
@@ -88,12 +93,18 @@ impl Picture {
             generation,
             sampling: Sampling::of(format),
             copied_frame: None,
+            tag: FrameTag::NONE,
         })
     }
 
     /// The size of the entire published frame, `(width, height)`.
     pub(crate) const fn size(&self) -> (u32, u32) {
         self.shared.size()
+    }
+
+    /// The tag of the frame the private copy holds, read while the copy held the keyed mutex.
+    pub(crate) const fn tag(&self) -> FrameTag {
+        self.tag
     }
 
     /// A view of the private copy in the published frame's format.
@@ -107,7 +118,8 @@ impl Picture {
     }
 }
 
-/// The screen's view of the viewer link. The heartbeat thread holds its own view of the header.
+/// The session's view of the viewer link, which reads the frames and writes the head pose. The
+/// heartbeat thread holds its own view of the header.
 pub(crate) struct Link {
     picture: Option<Picture>,
     header: Option<HeaderView>,
@@ -147,9 +159,28 @@ impl Link {
         Ok(self.picture.as_ref().filter(|picture| picture.copied_frame.is_some()))
     }
 
+    /// Writes `pose` and `eye_distance_m` as the head pose into the viewer header, and returns the
+    /// sequence number the write ended with, or `None` while no core created the header.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`HeaderReadError`] of a header that cannot be opened or holds another layout.
+    pub(crate) fn write_head(
+        &mut self,
+        pose: HeadPose,
+        eye_distance_m: f32,
+    ) -> Result<Option<u32>, HeaderReadError> {
+        let view = match read_header(&mut self.header, &self.names.mapping) {
+            Ok((view, _header)) => view,
+            Err(HeaderReadError::Missing) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        Ok(Some(write_head_pose(view, pose, eye_distance_m)?))
+    }
+
     fn update(&mut self, device: &Device, draw: &RegionDraw) -> Result<(), LinkError> {
-        let header = match read_header(&mut self.header, &self.names.mapping) {
-            Ok((_view, header)) => header,
+        let (view, header) = match read_header(&mut self.header, &self.names.mapping) {
+            Ok(read) => read,
             Err(HeaderReadError::Missing) => return Ok(()),
             Err(error) => return Err(error.into()),
         };
@@ -171,9 +202,11 @@ impl Link {
         if picture.copied_frame == Some(frame) {
             return Ok(());
         }
-        match device.copy(&picture.shared, &picture.copy) {
-            Ok(Copied::NewFrame) => picture.copied_frame = Some(frame),
-            Ok(Copied::CoreBusy) => {}
+        let (width, height) = picture.shared.size();
+        let entire = Region::entire(width, height);
+        match device.copy_region(&picture.shared, &picture.copy, entire, || view.read_frame_tag()) {
+            Ok(Some(tag)) => (picture.copied_frame, picture.tag) = (Some(frame), tag),
+            Ok(None) => {}
             // An abandoned mutex or a failed copy reopens the shared texture at the next call.
             Err(error) => {
                 self.picture = None;

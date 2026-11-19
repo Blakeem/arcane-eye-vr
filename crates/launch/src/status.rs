@@ -17,11 +17,11 @@ pub enum Goal {
 }
 
 impl Goal {
-    /// The status at which a launch in `mode` is done.
+    /// The status at which a launch in `mode` is done. The launch app runs the session of the mode
+    /// `vr`, so the game reports its first frame in both modes.
     pub const fn of(mode: Mode) -> Self {
         match mode {
-            Mode::DesktopStereo => Self::FirstPresent,
-            Mode::Vr => Self::VrSessionRunning,
+            Mode::DesktopStereo | Mode::Vr => Self::FirstPresent,
         }
     }
 
@@ -94,9 +94,9 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn each_mode_waits_for_its_goal() {
+    fn each_mode_waits_for_the_first_present_status() {
         assert_eq!(Goal::of(Mode::DesktopStereo), Goal::FirstPresent);
-        assert_eq!(Goal::of(Mode::Vr), Goal::VrSessionRunning);
+        assert_eq!(Goal::of(Mode::Vr), Goal::FirstPresent);
         assert_eq!(Goal::FirstPresent.status(), Status::FirstPresent);
         assert_eq!(Goal::VrSessionRunning.status(), Status::VrSessionRunning);
     }

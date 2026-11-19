@@ -1,30 +1,36 @@
-//! The session: its state changes, its frame loop, its controller input and the quad layers it
-//! submits.
+//! The session: its state changes, its frame loop, its controller input, the head's read and the
+//! layers it submits.
 //!
 //! The caller polls the session's events, and while the session runs it waits for each frame,
-//! reads the controllers' input, draws into the swapchains of [`crate::swapchain`] and the panels
-//! of [`crate::panel`], and ends the frame. The session follows the session lifecycle of the
-//! OpenXR specification through the steps of `state.rs`.
+//! reads the controllers' input and the head, draws into the swapchains of [`crate::swapchain`]
+//! and the panels of [`crate::panel`], and ends the frame. The session follows the session
+//! lifecycle of the OpenXR specification through the steps of `state.rs`.
 
 use openxr::{
-    CompositionLayerBase, CompositionLayerQuad, D3D11, EnvironmentBlendMode, Event,
-    EventDataBuffer, Extent2Df, FrameStream, FrameWaiter, Instance, Posef, ReferenceSpaceType,
-    SessionState, Space, Time, ViewConfigurationType, sys,
+    CompositionLayerBase, CompositionLayerProjection, CompositionLayerQuad, D3D11,
+    EnvironmentBlendMode, Event, EventDataBuffer, Extent2Df, FrameStream, FrameWaiter, Instance,
+    Posef, ReferenceSpaceType, SessionState, Space, Time, ViewConfigurationType, sys,
 };
+use stereo_core::eye::PerEye;
 use tracing::{info, warn};
 use windows::Win32::Graphics::Direct3D11::ID3D11Device;
 
 use crate::controls::{Controls, ReadAt};
 use crate::error::{XrError, XrStep};
 use crate::format::{self, SwapchainFormat};
+use crate::head::{self, Head, ViewSpace};
 use crate::input::Input;
 use crate::layers;
 use crate::panel::Panel;
+use crate::projection::{self, EyeView};
 use crate::quad::ScreenQuad;
 use crate::raw;
 use crate::runtime::Headset;
 use crate::state::{self, Step};
 use crate::swapchain::Swapchains;
+
+/// The view configuration the session begins with and locates its views in.
+const VIEW_CONFIGURATION: ViewConfigurationType = ViewConfigurationType::PRIMARY_STEREO;
 
 /// Why no session was opened.
 #[derive(Debug, thiserror::Error)]
@@ -96,13 +102,25 @@ impl Observed {
     }
 }
 
-/// An OpenXR session that draws with one D3D11 device, with its LOCAL reference space and the
-/// controls of its device profiles. Fields drop in declaration order, so the device outlives the
-/// session's handles.
+/// What a frame shows under its panels: each eye's swapchain on the screen quad, or each eye's
+/// swapchain as one view of a projection layer.
+#[derive(Clone, Copy)]
+pub enum Shown<'a> {
+    Screen { swapchains: &'a Swapchains, quad: ScreenQuad },
+    Projection { swapchains: &'a Swapchains, views: PerEye<EyeView> },
+}
+
+/// An OpenXR session that draws with one D3D11 device, with its LOCAL reference space, its VIEW
+/// reference space and the controls of its device profiles. Fields drop in declaration order, so
+/// the device outlives the session's handles.
 pub struct Session {
     /// `None` when the session reads no controller, so every input read gives the idle input. No
-    /// profile was left, the runtime refused every profile, or a setup step failed.
+    /// profile was left, the runtime refused every profile, a setup step failed, or the session has
+    /// no VIEW space.
     controls: Option<Controls>,
+    /// The head's space, which exists with and without the controls. `None` when the runtime
+    /// created none, so the session reads no head and no controller and still shows the screen.
+    view: Option<ViewSpace>,
     space: Space,
     stream: FrameStream<D3D11>,
     waiter: FrameWaiter,
@@ -144,10 +162,25 @@ impl Session {
             Ok(space) => space,
             Err(code) => return Err(SessionError::Space(code)),
         };
+        let view = match ViewSpace::create(&session) {
+            Ok(view) => Some(view),
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "the runtime created no VIEW reference space, so the session reads no head and \
+                     no controller"
+                );
+                None
+            }
+        };
         info!(swapchain_format = format.swapchain().0, "session created");
-        let controls = Controls::open(&headset.instance, &session, &headset.profiles);
+        let controls = match view {
+            Some(_) => Controls::open(&headset.instance, &session, &headset.profiles),
+            None => None,
+        };
         Ok(Self {
             controls,
+            view,
             space,
             stream,
             waiter,
@@ -209,7 +242,7 @@ impl Session {
     fn enter(&mut self, state: SessionState) -> Result<Polled, XrError> {
         match state::step(state) {
             Step::Begin => {
-                let begun = self.handle.begin(ViewConfigurationType::PRIMARY_STEREO);
+                let begun = self.handle.begin(VIEW_CONFIGURATION);
                 XrError::check(XrStep::BeginSession, begun)?;
                 self.lifecycle = Lifecycle::Running;
             }
@@ -238,25 +271,44 @@ impl Session {
     }
 
     /// Syncs the controllers' actions and reads their input and the head's pose at the display
-    /// time of `timing`, in the LOCAL space. A session that reads no controller, or that lacks the
-    /// input focus, gives the idle input.
+    /// time of `timing`, in the LOCAL space. A session that reads no controller or no head, or that
+    /// lacks the input focus, gives the idle input.
     ///
     /// # Errors
     ///
     /// Returns the [`XrError`] of the failed sync, state read or space location.
     pub fn read_input(&self, timing: FrameTiming) -> Result<Input, XrError> {
-        let Some(controls) = &self.controls else {
+        let (Some(controls), Some(head)) = (&self.controls, &self.view) else {
             return Ok(Input::default());
         };
-        let at = ReadAt { session: &self.handle, base: &self.space, time: timing.display_time };
+        let at =
+            ReadAt { session: &self.handle, base: &self.space, head, time: timing.display_time };
         controls.read(at)
     }
 
-    /// Ends the frame of `timing`. `shown` gives each eye a quad layer of `quad` that only that
-    /// eye sees, with the image the caller last released into that eye's swapchain. Each panel
-    /// of `panels` then adds one quad layer both eyes see, in the list's order, so a later layer
-    /// covers an earlier one. A frame with neither holds no layer, so the headset shows the
-    /// runtime's black.
+    /// The head and its eye views at the display time of `timing`, in the LOCAL space, or `None`
+    /// while the runtime marks the head's pose or a view's position invalid, and in a session with
+    /// no VIEW space.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`XrError`] of the failed space or view location.
+    pub fn locate_head(&self, timing: FrameTiming) -> Result<Option<Head>, XrError> {
+        let Some(view_space) = &self.view else {
+            return Ok(None);
+        };
+        let time = timing.display_time;
+        let view = view_space.locate(&self.space, time)?;
+        let located = self.handle.locate_views(VIEW_CONFIGURATION, time, &self.space);
+        let (flags, views) = XrError::check(XrStep::LocateViews, located)?;
+        Ok(head::located(view, flags, &views))
+    }
+
+    /// Ends the frame of `timing`. `shown` gives each eye the image the caller last released into
+    /// that eye's swapchain, as a quad layer of the screen quad that only that eye sees or as that
+    /// eye's view of one projection layer. Each panel of `panels` then adds one quad layer both
+    /// eyes see, in the list's order, so a later layer covers an earlier one. A frame with neither
+    /// holds no layer, so the headset shows the runtime's black.
     ///
     /// # Errors
     ///
@@ -264,14 +316,26 @@ impl Session {
     pub fn end_frame(
         &mut self,
         timing: FrameTiming,
-        shown: Option<(&Swapchains, ScreenQuad)>,
+        shown: Option<Shown<'_>>,
         panels: &[&Panel],
     ) -> Result<(), XrError> {
         let space = &self.space;
+        let (screen, projected) = match shown {
+            Some(Shown::Screen { swapchains, quad }) => (Some((swapchains, quad)), None),
+            Some(Shown::Projection { swapchains, views }) => (None, Some((swapchains, views))),
+            None => (None, None),
+        };
+        let views =
+            projected.map(|(swapchains, views)| projection::layer_views(swapchains, &views));
+        let projection: Option<CompositionLayerProjection<'_, D3D11>> =
+            views.as_ref().map(|views| CompositionLayerProjection::new().space(space).views(views));
         let quads: Vec<CompositionLayerQuad<'_, D3D11>> =
-            layers::order(shown, panels).map(|layer| layers::quad(space, layer)).collect();
-        let bases: Vec<&CompositionLayerBase<'_, D3D11>> =
-            quads.iter().map(|quad| &**quad).collect();
+            layers::order(screen, panels).map(|layer| layers::quad(space, layer)).collect();
+        let bases: Vec<&CompositionLayerBase<'_, D3D11>> = projection
+            .iter()
+            .map(|layer| &**layer)
+            .chain(quads.iter().map(|quad| &**quad))
+            .collect();
         let blend = EnvironmentBlendMode::OPAQUE;
         let ended = self.stream.end(timing.display_time, blend, &bases);
         XrError::check(XrStep::EndFrame, ended)

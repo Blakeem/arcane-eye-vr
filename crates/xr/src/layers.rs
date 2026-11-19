@@ -1,5 +1,6 @@
 //! The quad layers of a frame, in the order the compositor draws them: the screen's two quads, one
-//! per eye, then one quad per panel, each seen by both eyes.
+//! per eye, then one quad per panel, each seen by both eyes. A frame that shows a projection layer
+//! of `projection.rs` holds it first, in place of the screen's quads.
 //!
 //! The compositor draws the layers in list order with no depth test, so a later layer covers an
 //! earlier one.

@@ -26,6 +26,7 @@ pub enum XrStep {
     SyncActions,
     ReadAction,
     LocateSpace,
+    LocateViews,
     ReadInteractionProfile,
 }
 
@@ -53,6 +54,7 @@ impl XrStep {
             Self::SyncActions => "syncing the actions",
             Self::ReadAction => "reading an action's state",
             Self::LocateSpace => "locating a space",
+            Self::LocateViews => "locating the eye views",
             Self::ReadInteractionProfile => "reading a hand's interaction profile",
         }
     }

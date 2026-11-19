@@ -5,8 +5,13 @@
 //! number before and after the pose read a pose that no write changed during the read.
 
 use core::iter;
+use core::ops::RangeInclusive;
 
 use super::{HEAD_SEQUENCE_OFFSET, WORD_SIZE};
+
+/// The eye distances in meters that the core takes from a head pose. The viewing side writes a
+/// distance within them, and the core uses the player's eye distance in place of one outside them.
+pub const EYE_DISTANCE_M: RangeInclusive<f32> = 0.04..=0.09;
 
 /// A head pose in OpenXR's LOCAL space, which is right-handed with +Y up. A view looks along its -Z
 /// axis.
@@ -20,7 +25,8 @@ pub struct HeadPose {
 }
 
 impl HeadPose {
-    fn is_finite(&self) -> bool {
+    /// Whether every value of the position and the orientation is finite.
+    pub fn is_finite(&self) -> bool {
         self.position.iter().chain(&self.orientation).all(|value| value.is_finite())
     }
 }
