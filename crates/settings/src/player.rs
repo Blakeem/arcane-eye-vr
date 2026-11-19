@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::rejection::Rejection;
 
 /// The only valid value of the top-level key `version`.
-const FORMAT_VERSION: i64 = 1;
+pub(crate) const FORMAT_VERSION: i64 = 1;
 
 /// The player's settings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize)]

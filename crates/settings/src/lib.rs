@@ -1,12 +1,14 @@
 //! Settings and dev flag types with their parser, validator and schema.
 //!
 //! `player.rs` parses the player file `settings.toml` into `Settings`, and `dev.rs` parses the dev file
-//! `dev.toml` into `DevFlags`. `file.rs` reads both from the folder its caller names. The crate makes
-//! no Windows call and reads no environment variable.
+//! `dev.toml` into `DevFlags`. `file.rs` reads both from the folder its caller names, and writes the
+//! table `[screen]` into the player file with the text that `edit.rs` makes. The crate makes no
+//! Windows call and reads no environment variable.
 
 #![forbid(unsafe_code)]
 
 pub mod dev;
+pub mod edit;
 pub mod file;
 pub mod flags;
 pub mod player;

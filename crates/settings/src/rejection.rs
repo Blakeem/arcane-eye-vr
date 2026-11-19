@@ -2,8 +2,9 @@
 
 use std::error::Error;
 use std::fmt;
+use std::ops::Range;
 
-const BYTE_ORDER_MARK: char = '\u{feff}';
+pub(crate) const BYTE_ORDER_MARK: char = '\u{feff}';
 
 /// A line and a column of a settings file, each counted from 1. The column counts characters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,8 +23,18 @@ pub struct Rejection {
 impl Rejection {
     /// The rejection of `text` that the TOML `error` describes.
     pub(crate) fn from_toml(text: &str, error: &toml::de::Error) -> Self {
-        let at = error.span().map(|span| position(text, span.start));
-        Self { reason: error.message().to_owned(), at }
+        Self::at_span(text, error.message(), error.span())
+    }
+
+    /// The rejection of `text` that the TOML editor's parse `error` describes.
+    pub(crate) fn from_toml_edit(text: &str, error: &toml_edit::TomlError) -> Self {
+        Self::at_span(text, error.message(), error.span())
+    }
+
+    /// The rejection for `reason` at the start of the byte range `span` of `text`.
+    fn at_span(text: &str, reason: &str, span: Option<Range<usize>>) -> Self {
+        let at = span.map(|span| position(text, span.start));
+        Self { reason: reason.to_owned(), at }
     }
 }
 
