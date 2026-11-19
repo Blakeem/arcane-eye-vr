@@ -8,6 +8,7 @@ use std::num::NonZeroU32;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use ipc_layout::viewer_header::pose::FrameTag;
 use ipc_layout::viewer_header::{AdapterLuid, ViewerHeader};
 use tracing::warn;
 use windows::Win32::Graphics::Dxgi::Common::{
@@ -69,12 +70,13 @@ pub struct Frame {
     pub bytes: Vec<u8>,
 }
 
-/// The kept pixels of one region of a published frame, and the frame's present number.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The kept pixels of one region of a published frame, and the frame's present number and tag.
+#[derive(Clone, Debug, PartialEq)]
 pub struct RegionFrame {
     /// The count of frames the core's publisher handled up to this frame, published or not, continued
     /// from the header an earlier core left.
     pub present: u32,
+    pub tag: FrameTag,
     pub pixels: Frame,
 }
 
@@ -132,9 +134,10 @@ impl FrameReader {
     }
 
     /// Waits up to `timeout` for a new frame, as [`Self::read`] does, and returns its present
-    /// number and every `step`-th pixel of every `step`-th row of `region`, starting at the region's
-    /// top left pixel. Only the region is copied out of the shared texture. The present number is
-    /// read while this process holds the keyed mutex, so it numbers the copied pixels.
+    /// number, its tag and every `step`-th pixel of every `step`-th row of `region`, starting at the
+    /// region's top left pixel. Only the region is copied out of the shared texture. The present
+    /// number and the tag are read while this process holds the keyed mutex, so they belong to the
+    /// copied pixels.
     ///
     /// # Errors
     ///
@@ -251,8 +254,8 @@ fn entire_frame(device: &Device, opened: &Opened) -> Result<Option<Frame>, ReadE
     Ok(Some(Frame { width, height, format: opened.format, bytes }))
 }
 
-/// The kept pixels of `region` of the shared texture of `opened` and the present number `view`
-/// holds while the copy holds the keyed mutex, or `None` when the core held it past the wait.
+/// The kept pixels of `region` of the shared texture of `opened` and the present number and tag
+/// `view` holds while the copy holds the keyed mutex, or `None` when the core held it past the wait.
 fn region_frame(
     device: &Device,
     opened: &mut Opened,
@@ -273,15 +276,15 @@ fn region_frame(
         }
     };
     let staging = opened.region.insert(staging);
-    let copied =
-        device.copy_region(&opened.shared, staging.texture(), region, || view.read_present())?;
-    let Some(present) = copied else {
+    let while_held = || (view.read_present(), view.read_frame_tag());
+    let copied = device.copy_region(&opened.shared, staging.texture(), region, while_held)?;
+    let Some((present, tag)) = copied else {
         return Ok(None);
     };
     let bytes = device.read_back(staging, step)?;
     let (kept_width, kept_height) = region.kept_size(step);
     let pixels = Frame { width: kept_width, height: kept_height, format: opened.format, bytes };
-    Ok(Some(RegionFrame { present, pixels }))
+    Ok(Some(RegionFrame { present, tag, pixels }))
 }
 
 /// What one look at the header found.

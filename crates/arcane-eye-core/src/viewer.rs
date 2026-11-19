@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use diag::rate::{Once, RateLimit};
 use diag::{error_every, once, warn_every};
-use gfx::publish::{Outcome, Publisher, ViewNames};
+use gfx::publish::{Outcome, Present, Publisher, ViewNames};
+use ipc_layout::viewer_header::pose::FrameTag;
 use tracing::Level;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 
@@ -98,7 +99,8 @@ impl ViewerLink {
             }
             None => raw::back_buffer_texture(swapchain),
         };
-        let outcome = publisher.on_frame(Instant::now(), device, context, source);
+        let present = Present { now: Instant::now(), tag: FrameTag::NONE };
+        let outcome = publisher.on_frame(present, device, context, source);
         match outcome {
             Ok(Outcome::Published) => {
                 once!(logs.first_publish, Level::INFO, "the debug viewer receives frames");
@@ -118,3 +120,6 @@ impl ViewerLink {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

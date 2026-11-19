@@ -1,5 +1,7 @@
-//! The names of the viewer link and the header read that every reader of the link shares.
+//! The names of the viewer link, the header read that every reader of the link shares and the
+//! head pose write.
 
+use ipc_layout::viewer_header::pose::HeadPose;
 use ipc_layout::viewer_header::{self, HeaderError, ViewerHeader};
 use windows::core::HSTRING;
 
@@ -53,4 +55,25 @@ pub fn read_header<'slot>(
     };
     let header = ViewerHeader::decode(&view.read_words())?;
     Ok((view, header))
+}
+
+/// Writes `pose` and `eye_distance_m`, the distance between the two eyes in meters, as the head pose
+/// into the header of `view` and returns the sequence number the write ended with. The write sets an
+/// odd sequence number, then the pose and the eye distance, then the next even number, so the core
+/// never takes a pose this write changed during its read. One thread of the process writes the head
+/// pose.
+///
+/// # Errors
+///
+/// Returns [`HeaderError`] when the header holds another magic value or layout version, which may
+/// hold another field at the head pose's offsets. The header is then left as it is.
+pub fn write_head_pose(
+    view: &HeaderView,
+    pose: HeadPose,
+    eye_distance_m: f32,
+) -> Result<u32, HeaderError> {
+    let header = ViewerHeader::decode(&view.read_words())?;
+    let (sequence, writes) = header.head().writes(pose, eye_distance_m);
+    view.write_words(writes);
+    Ok(sequence)
 }

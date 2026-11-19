@@ -3,13 +3,17 @@
 //! On each frame the publisher reads the viewer's heartbeat from the viewer header. It holds a shared
 //! texture and copies into it only while the heartbeat advanced within [`STALE_AFTER`], so with no
 //! viewer the frame costs one read of the header. It counts every frame it handles, so the present
-//! number of each published frame shows the frames it did not publish.
+//! number of each published frame shows the frames it did not publish. It writes each published
+//! frame's tag beside the present number. [`Publisher::head_pose`] reads the head pose the viewer
+//! writes.
 
+use std::iter;
 use std::time::Instant;
 
+use ipc_layout::viewer_header::pose::{FrameTag, HeadSample};
 use ipc_layout::viewer_header::{
-    self, Acquire, EyeRect, FRAME_OFFSET, PRESENT_OFFSET, STALE_AFTER, TextureInfo, ViewerHeader,
-    WIDTH_OFFSET,
+    self, Acquire, EyeRect, FRAME_OFFSET, FRAME_TAG_OFFSETS, PRESENT_OFFSET, STALE_AFTER,
+    TextureInfo, ViewerHeader, WIDTH_OFFSET,
 };
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D};
 use windows::core::{HRESULT, HSTRING};
@@ -90,6 +94,13 @@ pub enum SetupError {
     Map(#[source] windows::core::Error),
 }
 
+/// One present that [`Publisher::on_frame`] handles: when it was read and the tag of its frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Present {
+    pub now: Instant,
+    pub tag: FrameTag,
+}
+
 /// The viewer's heartbeat as the publisher last read it.
 #[derive(Clone, Copy, Debug)]
 struct Heartbeat {
@@ -157,6 +168,8 @@ pub struct Publisher {
     presents: u32,
     /// The present number of the last published frame.
     published_present: u32,
+    /// The tag of the last published frame.
+    published_tag: FrameTag,
 }
 
 impl Publisher {
@@ -174,7 +187,8 @@ impl Publisher {
                 // The earlier texture is gone. Only its width changes, as in a drop.
                 let texture = TextureInfo { width: 0, ..earlier.texture() };
                 let (generation, frame) = (earlier.generation(), earlier.frame());
-                let start = ViewerHeader::new(texture, generation, frame, earlier.present());
+                let start = ViewerHeader::new(texture, generation, frame, earlier.present())
+                    .with_frame_tag(earlier.frame_tag());
                 (start, earlier.heartbeat())
             }
             Err(_new_mapping) => (ViewerHeader::new(TextureInfo::default(), 0, 0, 0), 0),
@@ -189,11 +203,13 @@ impl Publisher {
             frame: start.frame(),
             presents: start.present(),
             published_present: start.present(),
+            published_tag: start.frame_tag(),
         })
     }
 
-    /// Publishes one frame read at `now`. `source` yields the back buffer and runs only while a viewer
-    /// runs. `context` is the immediate context of `device`, and the back buffer belongs to `device`.
+    /// Publishes the frame of `present` with its tag. `source` yields the back buffer and runs only
+    /// while a viewer runs. `context` is the immediate context of `device`, and the back buffer
+    /// belongs to `device`.
     ///
     /// Every call counts as one present, also one that publishes nothing. The back buffer reference
     /// drops before this returns. The keyed mutex is never held on return.
@@ -203,11 +219,12 @@ impl Publisher {
     /// Returns the [`PublishError`] of the failed step. The next frame tries again.
     pub fn on_frame(
         &mut self,
-        now: Instant,
+        present: Present,
         device: &ID3D11Device,
         context: &ID3D11DeviceContext,
         source: impl FnOnce() -> Result<ID3D11Texture2D, HRESULT>,
     ) -> Result<Outcome, PublishError> {
+        let Present { now, tag } = present;
         self.presents = self.presents.wrapping_add(1);
         if !self.viewer_runs(now) {
             self.drop_shared();
@@ -226,10 +243,13 @@ impl Publisher {
         match after_acquire(Acquire::from_code(shared.acquire().0))? {
             AfterAcquire::Copy => {
                 shared.copy_from(context, &source, &desc);
-                // Under the keyed mutex, so a reader that holds it reads the copied frame's number.
-                self.header.write_words([(PRESENT_OFFSET, self.presents)]);
+                // Under the keyed mutex, so a reader that holds it reads the copied frame's number
+                // and tag.
+                let tag_words = FRAME_TAG_OFFSETS.into_iter().zip(tag.to_words());
+                self.header
+                    .write_words(iter::once((PRESENT_OFFSET, self.presents)).chain(tag_words));
                 let released = shared.release();
-                self.finish_copy(released)
+                self.finish_copy(released, tag)
             }
             AfterAcquire::Skip => Ok(Outcome::ViewerBusy),
             AfterAcquire::Recreate => {
@@ -239,11 +259,12 @@ impl Publisher {
         }
     }
 
-    /// Counts the copied frame in the header, or drops the shared texture when `released` holds the
-    /// failed release of its keyed mutex, so the next frame recreates it.
+    /// Counts the copied frame of the tag `tag` in the header, or drops the shared texture when
+    /// `released` holds the failed release of its keyed mutex, so the next frame recreates it.
     pub(crate) fn finish_copy(
         &mut self,
         released: Result<(), HRESULT>,
+        tag: FrameTag,
     ) -> Result<Outcome, PublishError> {
         if let Err(code) = released {
             self.drop_shared();
@@ -251,8 +272,22 @@ impl Publisher {
         }
         self.frame = self.frame.wrapping_add(1);
         self.published_present = self.presents;
+        self.published_tag = tag;
         self.header.write_words([(FRAME_OFFSET, self.frame)]);
         Ok(Outcome::Published)
+    }
+
+    /// The head pose the viewer wrote last, with its sequence number and eye distance, or `None`
+    /// while the viewer wrote none, a write runs, a value of the pose or the eye distance is not
+    /// finite, or the header holds another layout.
+    pub fn head_pose(&self) -> Option<HeadSample> {
+        // The sequence number is read before the pose's words and again after them, so a write that
+        // ran during the read changes it.
+        let (first, again) = (self.header.read_words(), self.header.read_words());
+        match (ViewerHeader::decode(&first), ViewerHeader::decode(&again)) {
+            (Ok(first), Ok(again)) => first.head().sample(again.head().sequence()),
+            (Err(_overwritten), _) | (_, Err(_overwritten)) => None,
+        }
     }
 
     fn viewer_runs(&mut self, now: Instant) -> bool {
@@ -296,8 +331,11 @@ impl Publisher {
             format: key.format.0.cast_unsigned(),
             eyes: [EyeRect::full(key.width, key.height); 2],
         };
+        // The last published frame's present number and tag stay, so a viewer that holds the old
+        // texture's keyed mutex reads the number and tag of the frame it copies.
         let header =
-            ViewerHeader::new(texture, self.generation, self.frame, self.published_present);
+            ViewerHeader::new(texture, self.generation, self.frame, self.published_present)
+                .with_frame_tag(self.published_tag);
         self.header.write_words(header.core_words());
         self.shared = Shared::Ready(shared);
         Ok(())

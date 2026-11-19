@@ -4,6 +4,7 @@ use std::cell::Cell;
 use std::process;
 use std::time::{Duration, Instant};
 
+use ipc_layout::viewer_header::pose::FrameTag;
 use ipc_layout::viewer_header::{
     EyeRect, HEARTBEAT_OFFSET, MUTEX_KEY, SHARED_ACCESS, ViewerHeader,
 };
@@ -20,13 +21,14 @@ use windows::Win32::Graphics::Dxgi::IDXGIKeyedMutex;
 use windows::core::{HSTRING, Interface as _};
 
 use super::{HeaderView, adapter_luid, texture_desc};
-use crate::publish::{Outcome, Publisher, ViewNames};
+use crate::publish::{Outcome, Present, Publisher, ViewNames};
 
 mod canvas;
 mod failures;
 mod layer;
 mod nearest;
 mod pointer;
+mod tag;
 
 const BYTES_PER_PIXEL: usize = 4;
 
@@ -182,14 +184,28 @@ fn after(start: Instant, millis: u64) -> Instant {
     start.checked_add(Duration::from_millis(millis)).expect("a test time")
 }
 
+/// The present at `now` of a frame with no tag.
+fn untagged(now: Instant) -> Present {
+    Present { now, tag: FrameTag::NONE }
+}
+
 fn publish(
     publisher: &mut Publisher,
     gpu: &Gpu,
     now: Instant,
     source: &ID3D11Texture2D,
 ) -> Outcome {
+    publish_tagged(publisher, gpu, untagged(now), source)
+}
+
+fn publish_tagged(
+    publisher: &mut Publisher,
+    gpu: &Gpu,
+    present: Present,
+    source: &ID3D11Texture2D,
+) -> Outcome {
     publisher
-        .on_frame(now, &gpu.device, &gpu.context, || Ok(source.clone()))
+        .on_frame(present, &gpu.device, &gpu.context, || Ok(source.clone()))
         .expect("the frame publishes without error")
 }
 
@@ -226,7 +242,7 @@ fn no_texture_exists_and_no_copy_runs_while_the_heartbeat_does_not_advance() {
     let start = Instant::now();
     let taken = Cell::new(0_u32);
     let mut frame = |now| {
-        publisher.on_frame(now, &core.device, &core.context, || {
+        publisher.on_frame(untagged(now), &core.device, &core.context, || {
             taken.set(taken.get().wrapping_add(1));
             Ok(source.clone())
         })

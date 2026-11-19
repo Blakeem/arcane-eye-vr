@@ -4,11 +4,12 @@
 use std::time::Instant;
 
 use ipc_layout::viewer_header::STALE_AFTER;
+use ipc_layout::viewer_header::pose::FrameTag;
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::Graphics::Direct3D11::D3D11_BIND_SHADER_RESOURCE;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32G32B32_FLOAT;
 
-use super::{Viewer, after, desc, names, pattern, publish, warp};
+use super::{Viewer, after, desc, names, pattern, publish, untagged, warp};
 use crate::publish::{Outcome, PublishError, Publisher, SetupError, Step, ViewNames};
 
 #[test]
@@ -19,7 +20,7 @@ fn a_failed_back_buffer_read_and_an_unshareable_format_name_the_failed_step() {
     let mut viewer = Viewer::new(&names);
     let start = Instant::now();
     viewer.beat();
-    let failed = publisher.on_frame(start, &core.device, &core.context, || Err(E_FAIL));
+    let failed = publisher.on_frame(untagged(start), &core.device, &core.context, || Err(E_FAIL));
     let source_error = failed.expect_err("the back buffer read failed");
     assert_eq!(source_error, PublishError { step: Step::Source, code: E_FAIL });
     let message = source_error.to_string();
@@ -34,8 +35,8 @@ fn a_failed_back_buffer_read_and_an_unshareable_format_name_the_failed_step() {
     let source = source.expect("the float texture");
     let (shareable, _bytes) = pattern(&core, 4, 4);
     assert_eq!(publish(&mut publisher, &core, after(start, 8), &shareable), Outcome::Published);
-    let first =
-        publisher.on_frame(after(start, 16), &core.device, &core.context, || Ok(source.clone()));
+    let first = publisher
+        .on_frame(untagged(after(start, 16)), &core.device, &core.context, || Ok(source.clone()));
     let share_error = first.expect_err("a format the keyed mutex cannot share");
     let step = share_error.step;
     assert!(matches!(step, Step::CreateTexture | Step::ShareTexture), "{share_error}");
@@ -47,7 +48,8 @@ fn a_failed_back_buffer_read_and_an_unshareable_format_name_the_failed_step() {
     assert_eq!(publish(&mut publisher, &core, stale, &source), Outcome::NoViewer);
     viewer.beat();
     let restarted = after(stale, 16);
-    let retried = publisher.on_frame(restarted, &core.device, &core.context, || Ok(source.clone()));
+    let retried =
+        publisher.on_frame(untagged(restarted), &core.device, &core.context, || Ok(source.clone()));
     let retry_error = retried.expect_err("a restarted viewer gets a new try");
     assert_eq!(retry_error.step, step, "{retry_error}");
 }
@@ -62,7 +64,7 @@ fn a_failed_release_drops_the_texture_and_the_next_frame_recreates_it() {
     let start = Instant::now();
     viewer.beat();
     assert_eq!(publish(&mut publisher, &core, start, &source), Outcome::Published);
-    let failed = publisher.finish_copy(Err(E_FAIL)).expect_err("a failed release");
+    let failed = publisher.finish_copy(Err(E_FAIL), FrameTag::NONE).expect_err("a failed release");
     assert_eq!(failed, PublishError { step: Step::Release, code: E_FAIL });
     let message = failed.to_string();
     assert!(message.starts_with("releasing the keyed mutex failed with "), "{message}");

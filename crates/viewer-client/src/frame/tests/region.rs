@@ -3,7 +3,10 @@
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use ipc_layout::viewer_header::{FRAME_OFFSET, PRESENT_OFFSET, TextureInfo, ViewerHeader};
+use ipc_layout::viewer_header::pose::FrameTag;
+use ipc_layout::viewer_header::{
+    FRAME_OFFSET, FRAME_TAG_OFFSETS, PRESENT_OFFSET, TextureInfo, ViewerHeader,
+};
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
 
 use super::{OPEN_FRAME, READ_WAIT, names, publish};
@@ -30,7 +33,7 @@ fn step(step: u32) -> NonZeroU32 {
 }
 
 #[test]
-fn a_region_read_yields_exactly_the_kept_pixels_of_the_region_and_the_present_number() {
+fn a_region_read_yields_exactly_the_kept_pixels_of_the_region_and_the_present_number_and_tag() {
     let core = publish("region", WIDTH, DXGI_FORMAT_R8G8B8A8_UNORM, &pattern());
     let mut reader = FrameReader::new(names("region"));
     let at_origin = Region { x: 0, y: 0, width: 2, height: 2 };
@@ -49,10 +52,16 @@ fn a_region_read_yields_exactly_the_kept_pixels_of_the_region_and_the_present_nu
     for (number, (region, kept, size, pixels)) in (1_u32..).zip(cases) {
         let present = 100_u32.saturating_add(number);
         core.mapping.write_word(PRESENT_OFFSET, present).expect("write the present number");
+        let tag =
+            FrameTag { head_sequence: number.saturating_mul(2), fov_y_rad: 0.96, aspect: 1.5 };
+        for (offset, word) in FRAME_TAG_OFFSETS.into_iter().zip(tag.to_words()) {
+            core.mapping.write_word(offset, word).expect("write the frame tag");
+        }
         let frame = OPEN_FRAME.saturating_add(number);
         core.mapping.write_word(FRAME_OFFSET, frame).expect("advance the frame counter");
         let read = reader.read_region(READ_WAIT, region, step(kept)).expect("the new frame");
         assert_eq!(read.present, present, "{region} step {kept}");
+        assert_eq!(read.tag, tag, "{region} step {kept}");
         let read = read.pixels;
         assert_eq!((read.width, read.height, read.format), (size.0, size.1, PixelFormat::Rgba8));
         let expected: Vec<u8> = pixels.into_iter().flat_map(|(x, y)| pixel(x, y)).collect();

@@ -1,11 +1,17 @@
 //! The viewer header: the 128-byte block the core shares with the debug viewer.
 //!
-//! The core creates the mapping [`MAPPING_NAME`] and writes every field but the heartbeat. The viewer
-//! writes only the heartbeat, at [`HEARTBEAT_OFFSET`]. Every field is one 32-bit little-endian word, so
-//! each process writes a field with one aligned store, which the other process never reads torn.
+//! The core creates the mapping [`MAPPING_NAME`] and writes every field but the viewer's. The viewer
+//! writes only the heartbeat, at [`HEARTBEAT_OFFSET`], and the head pose, from [`HEAD_SEQUENCE_OFFSET`]
+//! up to [`FRAME_HEAD_SEQUENCE_OFFSET`]. Every field is one 32-bit little-endian word, so each process
+//! writes a field with one aligned store, which the other process never reads torn.
+
+pub mod pose;
 
 use core::mem::offset_of;
+use core::ops::Range;
 use core::time::Duration;
+
+use pose::{FRAME_TAG_WORDS, FrameTag, HEAD_SLOT_WORDS, HeadSlot};
 
 /// How long after the heartbeat's last advance the core still treats the viewer as running. The
 /// viewer must advance the heartbeat more often than this.
@@ -63,7 +69,7 @@ impl Acquire {
 pub const MAGIC: u32 = u32::from_le_bytes(*b"B3SV");
 
 /// The layout version this crate reads and writes. Any change to the layout increments it.
-pub const LAYOUT_VERSION: u32 = 2;
+pub const LAYOUT_VERSION: u32 = 3;
 
 /// The size of the header, and of its mapping, in bytes.
 pub const SIZE: usize = 128;
@@ -83,7 +89,7 @@ pub const GENERATION_OFFSET: usize = offset_of!(ViewerHeader, generation);
 /// The byte offset of the frame counter, which the core increments for each published frame.
 pub const FRAME_OFFSET: usize = offset_of!(ViewerHeader, frame);
 
-/// The byte offset of the heartbeat counter, the one field the viewer writes.
+/// The byte offset of the heartbeat counter, which the viewer writes.
 pub const HEARTBEAT_OFFSET: usize = offset_of!(ViewerHeader, heartbeat);
 
 /// The byte offset of the present number: the count of frames the core's publisher handled up to the
@@ -92,7 +98,38 @@ pub const HEARTBEAT_OFFSET: usize = offset_of!(ViewerHeader, heartbeat);
 /// number of the frame it copies.
 pub const PRESENT_OFFSET: usize = offset_of!(ViewerHeader, present);
 
-const RESERVED_WORDS: usize = 13;
+/// The byte offset of the head pose's sequence number, the first of the words the viewer writes for
+/// a head pose.
+pub const HEAD_SEQUENCE_OFFSET: usize = offset_of!(ViewerHeader, head.sequence);
+
+/// The byte offset of the head position's x, y and z.
+pub const HEAD_POSITION_OFFSET: usize = offset_of!(ViewerHeader, head.pose.position);
+
+/// The byte offset of the head orientation's x, y, z and w.
+pub const HEAD_ORIENTATION_OFFSET: usize = offset_of!(ViewerHeader, head.pose.orientation);
+
+/// The byte offset of the eye distance in meters that the viewer writes with the head pose.
+pub const EYE_DISTANCE_OFFSET: usize = offset_of!(ViewerHeader, head.eye_distance_m);
+
+/// The byte offset of the frame tag's head sequence, the first of the tag's three words. The core
+/// writes the tag while it holds the keyed mutex, as the present number, so a reader that holds the
+/// keyed mutex reads the tag of the frame it copies.
+pub const FRAME_HEAD_SEQUENCE_OFFSET: usize = offset_of!(ViewerHeader, frame_tag.head_sequence);
+
+/// The byte offset of the frame tag's vertical field of view in radians.
+pub const FRAME_FOV_Y_OFFSET: usize = offset_of!(ViewerHeader, frame_tag.fov_y_rad);
+
+/// The byte offset of the frame tag's aspect.
+pub const FRAME_ASPECT_OFFSET: usize = offset_of!(ViewerHeader, frame_tag.aspect);
+
+/// The byte offsets of the words of [`FrameTag::to_words`], in the same order.
+pub const FRAME_TAG_OFFSETS: [usize; FRAME_TAG_WORDS] =
+    [FRAME_HEAD_SEQUENCE_OFFSET, FRAME_FOV_Y_OFFSET, FRAME_ASPECT_OFFSET];
+
+/// The byte offsets of the words the viewer writes for a head pose.
+const HEAD_WORDS: Range<usize> = HEAD_SEQUENCE_OFFSET..FRAME_HEAD_SEQUENCE_OFFSET;
+
+const RESERVED_WORDS: usize = 1;
 
 /// The locally unique id of the adapter that owns the shared texture, as DXGI reports it.
 #[repr(C)]
@@ -136,7 +173,7 @@ pub struct TextureInfo {
 
 /// The viewer header's fields, in layout order.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ViewerHeader {
     magic: u32,
     layout_version: u32,
@@ -145,6 +182,8 @@ pub struct ViewerHeader {
     frame: u32,
     heartbeat: u32,
     present: u32,
+    head: HeadSlot,
+    frame_tag: FrameTag,
     reserved: [u32; RESERVED_WORDS],
 }
 
@@ -166,10 +205,20 @@ const _: () = assert!(offset_of!(ViewerHeader, generation) == 60);
 const _: () = assert!(offset_of!(ViewerHeader, frame) == 64);
 const _: () = assert!(offset_of!(ViewerHeader, heartbeat) == 68);
 const _: () = assert!(offset_of!(ViewerHeader, present) == 72);
-const _: () = assert!(offset_of!(ViewerHeader, reserved) == 76);
+const _: () = assert!(HEAD_SEQUENCE_OFFSET == 76);
+const _: () = assert!(HEAD_POSITION_OFFSET == 80);
+const _: () = assert!(HEAD_ORIENTATION_OFFSET == 92);
+const _: () = assert!(EYE_DISTANCE_OFFSET == 108);
+const _: () = assert!(FRAME_HEAD_SEQUENCE_OFFSET == 112);
+const _: () = assert!(FRAME_FOV_Y_OFFSET == 116);
+const _: () = assert!(FRAME_ASPECT_OFFSET == 120);
+const _: () = assert!(offset_of!(ViewerHeader, reserved) == 124);
+const _: () = assert!(size_of::<HeadSlot>() == HEAD_SLOT_WORDS * WORD_SIZE);
+const _: () = assert!(size_of::<FrameTag>() == FRAME_TAG_WORDS * WORD_SIZE);
 
 impl ViewerHeader {
-    /// A header as the core writes it, with the heartbeat at 0.
+    /// A header as the core writes it, with the heartbeat and the head pose's sequence number at 0,
+    /// which means no pose, and the frame tag [`FrameTag::NONE`].
     pub const fn new(texture: TextureInfo, generation: u32, frame: u32, present: u32) -> Self {
         Self {
             magic: MAGIC,
@@ -179,8 +228,16 @@ impl ViewerHeader {
             frame,
             heartbeat: 0,
             present,
+            head: HeadSlot::EMPTY,
+            frame_tag: FrameTag::NONE,
             reserved: [0; RESERVED_WORDS],
         }
+    }
+
+    /// The header with the frame tag `frame_tag`.
+    #[must_use]
+    pub const fn with_frame_tag(self, frame_tag: FrameTag) -> Self {
+        Self { frame_tag, ..self }
     }
 
     /// The header's words in layout order.
@@ -208,8 +265,11 @@ impl ViewerHeader {
             self.heartbeat,
             self.present,
         ];
+        let tail = self.head.to_words().into_iter().chain(self.frame_tag.to_words());
         let mut words = [0; WORDS];
-        for (word, field) in words.iter_mut().zip(fields.into_iter().chain(self.reserved)) {
+        for (word, field) in
+            words.iter_mut().zip(fields.into_iter().chain(tail).chain(self.reserved))
+        {
             *word = field;
         }
         words
@@ -242,7 +302,7 @@ impl ViewerHeader {
             frame,
             heartbeat,
             present,
-            reserved @ ..,
+            tail @ ..,
         ] = *words;
         if magic != MAGIC {
             return Err(HeaderError::Magic { found: magic });
@@ -254,20 +314,37 @@ impl ViewerHeader {
         let right = EyeRect { x: right_x, y: right_y, width: right_width, height: right_height };
         let adapter_luid = AdapterLuid { low: luid_low, high: luid_high.cast_signed() };
         let texture = TextureInfo { adapter_luid, width, height, format, eyes: [left, right] };
-        Ok(Self { magic, layout_version, texture, generation, frame, heartbeat, present, reserved })
+        let [h0, h1, h2, h3, h4, h5, h6, h7, h8, t0, t1, t2, reserved] = tail;
+        let head = HeadSlot::from_words([h0, h1, h2, h3, h4, h5, h6, h7, h8]);
+        let frame_tag = FrameTag::from_words([t0, t1, t2]);
+        Ok(Self {
+            magic,
+            layout_version,
+            texture,
+            generation,
+            frame,
+            heartbeat,
+            present,
+            head,
+            frame_tag,
+            reserved: [reserved],
+        })
+    }
+
+    /// Each word of the header as its byte offset and value, in ascending offset order.
+    fn words(&self) -> impl Iterator<Item = (usize, u32)> + use<> {
+        (0..SIZE).step_by(WORD_SIZE).zip(self.encode())
     }
 
     /// Each word the core writes, as its byte offset and value, in ascending offset order. The
-    /// heartbeat is left out, since the viewer owns it. The texture fields come before the
-    /// generation, so a viewer that reads the generation before the texture fields reads that
-    /// generation's texture or a later one. The adapter LUID comes before the width, so a viewer that
-    /// reads a nonzero width before the LUID reads the LUID of that texture or a later one. A later
-    /// texture comes with a new generation on the next read.
+    /// heartbeat and the head pose are left out, since the viewer owns them. The texture fields come
+    /// before the generation, so a viewer that reads the generation before the texture fields reads
+    /// that generation's texture or a later one. The adapter LUID comes before the width, so a viewer
+    /// that reads a nonzero width before the LUID reads the LUID of that texture or a later one. A
+    /// later texture comes with a new generation on the next read.
     pub fn core_words(&self) -> impl Iterator<Item = (usize, u32)> {
-        (0..SIZE)
-            .step_by(WORD_SIZE)
-            .zip(self.encode())
-            .filter(|(offset, _word)| *offset != HEARTBEAT_OFFSET)
+        self.words()
+            .filter(|(offset, _word)| *offset != HEARTBEAT_OFFSET && !HEAD_WORDS.contains(offset))
     }
 
     pub const fn texture(&self) -> TextureInfo {
@@ -288,6 +365,15 @@ impl ViewerHeader {
 
     pub const fn present(&self) -> u32 {
         self.present
+    }
+
+    /// The head pose's words, which the viewer writes.
+    pub const fn head(&self) -> HeadSlot {
+        self.head
+    }
+
+    pub const fn frame_tag(&self) -> FrameTag {
+        self.frame_tag
     }
 }
 

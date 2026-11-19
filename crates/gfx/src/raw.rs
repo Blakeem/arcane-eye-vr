@@ -91,7 +91,9 @@ impl HeaderView {
         Ok(Self { address: view.Value.expose_provenance(), _mapping: mapping })
     }
 
-    /// Copies the header's words. Each read is volatile, since the viewer writes the heartbeat.
+    /// Copies the header's words in ascending offset order, so the head pose's sequence number is
+    /// read before the pose. Each read is volatile, since the viewer writes the heartbeat and the
+    /// head pose.
     pub(crate) fn read_words(&self) -> [u32; WORDS] {
         let base = ptr::with_exposed_provenance::<u32>(self.address);
         let mut words = [0; WORDS];

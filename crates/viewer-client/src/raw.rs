@@ -15,7 +15,10 @@ mod gpu;
 
 use std::ptr;
 
-use ipc_layout::viewer_header::{HEARTBEAT_OFFSET, PRESENT_OFFSET, SIZE, WORDS};
+use ipc_layout::viewer_header::pose::FrameTag;
+use ipc_layout::viewer_header::{
+    FRAME_TAG_OFFSETS, HEARTBEAT_OFFSET, PRESENT_OFFSET, SIZE, WORD_SIZE, WORDS,
+};
 use windows::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND};
 use windows::Win32::System::Memory::{
     FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, OpenFileMappingW,
@@ -90,11 +93,35 @@ impl HeaderView {
         unsafe { ptr::read_volatile(field) }
     }
 
-    /// Writes the heartbeat, the one field the viewer owns.
+    /// Reads the frame tag. Each read is volatile, since the core writes the tag.
+    pub fn read_frame_tag(&self) -> FrameTag {
+        FrameTag::from_words(FRAME_TAG_OFFSETS.map(|offset| {
+            let field = self.address.Value.wrapping_byte_add(offset).cast::<u32>().cast_const();
+            // SAFETY: each tag offset is a 4-aligned word inside the page-aligned view of the header.
+            unsafe { ptr::read_volatile(field) }
+        }))
+    }
+
+    /// Writes the heartbeat, which the heartbeat thread owns.
     pub fn write_heartbeat(&self, heartbeat: u32) {
         let field = self.address.Value.wrapping_byte_add(HEARTBEAT_OFFSET).cast::<u32>();
         // SAFETY: the heartbeat is a 4-aligned word inside the page-aligned view of the header.
         unsafe { ptr::write_volatile(field, heartbeat) };
+    }
+
+    /// Writes each word at its byte offset, in the order given. Each write is volatile, since the
+    /// core reads the header, so the core sees the writes in this order. An offset that names no word
+    /// of the header is skipped.
+    pub(crate) fn write_words(&self, words: impl IntoIterator<Item = (usize, u32)>) {
+        for (offset, word) in words {
+            if offset >= SIZE || !offset.is_multiple_of(WORD_SIZE) {
+                continue;
+            }
+            let field = self.address.Value.wrapping_byte_add(offset).cast::<u32>();
+            // SAFETY: `offset` is a multiple of 4 below `SIZE`, and the page-aligned view spans the
+            // header's `SIZE` bytes, so the word is in bounds and aligned.
+            unsafe { ptr::write_volatile(field, word) };
+        }
     }
 }
 
