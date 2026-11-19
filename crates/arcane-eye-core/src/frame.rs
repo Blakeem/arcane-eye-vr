@@ -111,9 +111,9 @@ impl FrameState {
         now: Instant,
     ) -> Placement {
         let eye_scale = self.ui_layer.as_mut().map_or(EyeScale::FULL, UiLayer::hand_eye_scale);
-        let viewer = &self.viewer;
+        let viewer = &mut self.viewer;
         let call = PresentCall { stereo, eye_scale, rays, now };
-        self.vr.placement(|| viewer.head_pose(), call)
+        self.vr.placement(|| viewer.head_pose(now), call)
     }
 }
 
@@ -310,7 +310,9 @@ fn on_frame(
         if let Some(layer) = &mut state.ui_layer {
             let target = Target { swapchain, devices, size: back_buffer, window };
             let stereo = state.vr.depth_stereo(input.stereo);
-            let depth = DepthInput { stereo, camera: input.camera, now, mode: state.vr.mode() };
+            let eye_m = state.vr.depth_eye_m(input.stereo);
+            let (camera, mode) = (input.camera, state.vr.mode());
+            let depth = DepthInput { stereo, eye_m, camera, now, mode };
             layer.on_frame(input.health, input.next, &depth, &target);
         }
         let tag = state.vr.tag(input.head_sequence, input.camera);

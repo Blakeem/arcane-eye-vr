@@ -1,12 +1,13 @@
 //! The frame handler in the launch mode `vr`: the head pose it hands the eye cameras, the tag of
 //! each published frame, the `vr view` line and the frame path's allocations.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use diag::health::Health;
 use game_bindings::camera::Camera;
 use game_bindings::state::arm_alloc_guard;
 use ipc_layout::launch_token::Mode;
+use ipc_layout::viewer_header::STALE_AFTER;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose as XrPose};
 use settings::dev::{Horizon, VrFlags};
 use settings::player::StereoSettings;
@@ -100,6 +101,7 @@ fn the_head_pose_the_viewer_wrote_places_the_next_frames_eyes() {
     frame_of(&mut state, &test, 0, None);
     let mut slot = None;
     let names = test_view_names("vr-header-pose");
+    TestViewer::open(&names).beat();
     let (view, _header) = read_header(&mut slot, &names.mapping).expect("the header");
     assert_eq!(write_head_pose(view, HEADSET, 0.064), Ok(2));
     let placement = state.hand_placement(stereo, Rays::Rewritten, Instant::now());
@@ -110,6 +112,30 @@ fn the_head_pose_the_viewer_wrote_places_the_next_frames_eyes() {
         horizon: Horizon::Level,
     };
     assert_eq!(placement, expected);
+}
+
+#[test]
+fn a_header_pose_no_longer_places_the_eyes_once_the_viewer_stops_beating() {
+    let test = TestSwapchain::new(16, 8);
+    let mut state = state_in(Mode::Vr, "vr-header-pose-stale");
+    let stereo = StereoSettings::default();
+    frame_of(&mut state, &test, 0, None);
+    let names = test_view_names("vr-header-pose-stale");
+    TestViewer::open(&names).beat();
+    let mut slot = None;
+    let (view, _header) = read_header(&mut slot, &names.mapping).expect("the header");
+    assert_eq!(write_head_pose(view, HEADSET, 0.064), Ok(2));
+    let beat_at = Instant::now();
+    let beating = state.hand_placement(stereo, Rays::Rewritten, beat_at);
+    assert_eq!(beating.sequence(), 2, "the pose of a viewer that beats");
+    let stalled_at = beat_at
+        .checked_add(STALE_AFTER)
+        .and_then(|limit| limit.checked_add(Duration::from_millis(100)))
+        .expect("a test time past the heartbeat's limit");
+    let stalled = state.hand_placement(stereo, Rays::Rewritten, stalled_at);
+    assert_eq!(stalled.sequence(), 0, "the pose a viewer that stopped beating left");
+    let report = state.vr.report().expect("a vr view report");
+    assert_eq!(report.source, PoseSource::None);
 }
 
 #[test]

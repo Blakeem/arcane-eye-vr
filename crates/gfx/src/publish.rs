@@ -5,7 +5,7 @@
 //! viewer the frame costs one read of the header. It counts every frame it handles, so the present
 //! number of each published frame shows the frames it did not publish. It writes each published
 //! frame's tag beside the present number. [`Publisher::head_pose`] reads the head pose the viewer
-//! writes.
+//! writes while the same heartbeat rule finds the viewer running.
 
 use std::iter;
 use std::time::Instant;
@@ -277,10 +277,15 @@ impl Publisher {
         Ok(Outcome::Published)
     }
 
-    /// The head pose the viewer wrote last, with its sequence number and eye distance, or `None`
-    /// while the viewer wrote none, a write runs, a value of the pose or the eye distance is not
-    /// finite, or the header holds another layout.
-    pub fn head_pose(&self) -> Option<HeadSample> {
+    /// The head pose the viewer wrote last, with its sequence number and eye distance, read at
+    /// `now`, or `None` while the heartbeat did not advance within [`STALE_AFTER`], the viewer wrote
+    /// none, a write runs, a value of the pose or the eye distance is not finite, or the header holds
+    /// another layout.
+    pub fn head_pose(&mut self, now: Instant) -> Option<HeadSample> {
+        // A viewer that exited or hangs leaves its last pose in the header.
+        if !self.viewer_runs(now) {
+            return None;
+        }
         // The sequence number is read before the pose's words and again after them, so a write that
         // ran during the read changes it.
         let (first, again) = (self.header.read_words(), self.header.read_words());

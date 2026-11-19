@@ -5,10 +5,11 @@
 //!
 //! ```text
 //! PRESENT CALL SITE in the mode vr
-//!   [pose]       the test pose of `vr.test_head`, else the viewer link header's head pose, else no
-//!                move and no turn with the sequence number 0, in `head`
+//!   [pose]       the test pose of `vr.test_head`, else the viewer link header's head pose while the
+//!                viewing side's heartbeat runs, else no move and no turn with the sequence number 0,
+//!                in `head`
 //!   [eyes]       the header's eye distance from 0.04 to 0.09 m with a header pose, else
-//!                `stereo.ipd_mm`, at the eye scale 1
+//!                `stereo.ipd_mm`, at the eye scale 1, which the UI depth also computes with
 //!   [placement]  the pose in the anchor of `vr.horizon`, for the next frame's proxies, or the head
 //!                controller's right axis while the view camera does not rewrite the corner rays
 //!   [tag]        the sequence number the presented frame's main view proxy was filled with, and its
@@ -170,6 +171,16 @@ impl VrView {
         match self.mode {
             Mode::DesktopStereo => stereo,
             Mode::Vr => StereoSettings { depth_offset_percent: DepthOffsetPercent::NONE, ..stereo },
+        }
+    }
+
+    /// The full eye distance in meters the UI depth computes with: the one of the player's `stereo`
+    /// settings in the mode `desktop-stereo`, and the head pose's in use in the mode `vr`, which may
+    /// be the header's.
+    pub(crate) fn depth_eye_m(&self, stereo: StereoSettings) -> f32 {
+        match (self.mode, self.newest) {
+            (Mode::Vr, Some(head)) => head.eye_m,
+            (Mode::DesktopStereo, _) | (Mode::Vr, None) => stereo.ipd_mm.meters(),
         }
     }
 

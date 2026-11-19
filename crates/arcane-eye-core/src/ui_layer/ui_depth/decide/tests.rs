@@ -31,11 +31,24 @@ fn dialogue() -> View {
 
 /// The measured dialogue's view in the launch mode `mode`.
 fn dialogue_in(mode: Mode) -> View {
-    let stereo = StereoSettings {
+    let stereo = dialogue_stereo();
+    View::of(&DIALOGUE, stereo, stereo.ipd_mm.meters(), mode)
+}
+
+/// The measured dialogue's view in the launch mode `vr` at the eye distance `eye_m`, with no depth
+/// offset, as `VrView::depth_stereo` gives the UI depth in that mode.
+fn dialogue_vr(eye_m: f32) -> View {
+    let stereo =
+        StereoSettings { depth_offset_percent: DepthOffsetPercent::NONE, ..dialogue_stereo() };
+    View::of(&DIALOGUE, stereo, eye_m, Mode::Vr)
+}
+
+/// The measured dialogue's eye distance of 65 mm and depth offset of 1.5 percent.
+fn dialogue_stereo() -> StereoSettings {
+    StereoSettings {
         ipd_mm: IpdMm::try_from(65.0).expect("an eye distance in range"),
         depth_offset_percent: DepthOffsetPercent::try_from(1.5).expect("an offset in range"),
-    };
-    View::of(&DIALOGUE, stereo, mode)
+    }
 }
 
 fn at(meters: f32) -> Nearest {
@@ -74,6 +87,18 @@ fn in_the_mode_vr_a_scene_nearer_than_the_limit_holds_the_limit_and_the_full_eye
     assert_eq!(target.eye_scale, EyeScale::FULL);
     assert_eq!(dialogue_in(Mode::Vr).eye_distance, EyeDistance::Fixed);
     assert_eq!(dialogue().eye_distance, EyeDistance::Shrinks);
+}
+
+#[test]
+fn in_the_mode_vr_a_header_eye_distance_other_than_ipd_mm_sets_the_ui_disparity_target() {
+    let header = targets(at(2.0), dialogue_vr(0.050));
+    let ipd = targets(at(2.0), dialogue_vr(0.065));
+
+    // The dialogue's lens of 2.343 crosses 0.02929 at 50 mm and 2.0 m, and the 0.25 percent margin
+    // goes on. At 65 mm it crosses 0.03807, and with the margin the target passes the limit.
+    assert_between(header.disparity, 0.0317, 0.0319, "the UI disparity at 50 mm");
+    assert_between(ipd.disparity, 0.04, 0.04, "the UI disparity at 65 mm");
+    assert_eq!(header.eye_scale, EyeScale::FULL);
 }
 
 #[test]

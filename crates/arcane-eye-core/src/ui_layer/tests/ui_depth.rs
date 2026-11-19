@@ -111,7 +111,8 @@ pub(super) fn input(start: Instant, frame: u32) -> DepthInput {
     let since = Duration::from_millis(16).checked_mul(frame).expect("a test duration");
     let stereo = StereoSettings { depth_offset_percent: depth(5.0), ..StereoSettings::default() };
     let now = start.checked_add(since).expect("a test time");
-    DepthInput { stereo, camera: Some(CAMERA), now, mode: Mode::DesktopStereo }
+    let eye_m = stereo.ipd_mm.meters();
+    DepthInput { stereo, eye_m, camera: Some(CAMERA), now, mode: Mode::DesktopStereo }
 }
 
 /// Runs side by side frames from the frame `first` on until the UI depth's report meets `done`,

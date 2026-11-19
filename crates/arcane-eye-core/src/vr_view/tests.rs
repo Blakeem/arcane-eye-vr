@@ -251,6 +251,22 @@ fn the_depth_offset_counts_as_0_only_in_the_mode_vr() {
 }
 
 #[test]
+fn the_ui_depth_takes_the_header_eye_distance_in_the_mode_vr_and_the_settings_one_otherwise() {
+    let present = || call(58.5, EyeScale::FULL, Rays::Rewritten);
+    let mut vr = VrView::new(Mode::Vr, VrFlags::default());
+    let before = vr.depth_eye_m(stereo(58.5));
+    vr.placement(|| Some(header(8, 0.070)), present());
+    let with_header = vr.depth_eye_m(stereo(58.5));
+    vr.placement(|| None, present());
+    let without_header = vr.depth_eye_m(stereo(58.5));
+    let mut desktop = VrView::new(Mode::DesktopStereo, VrFlags::default());
+    desktop.placement(|| Some(header(8, 0.070)), present());
+    let in_desktop = desktop.depth_eye_m(stereo(58.5));
+    let found = [before, with_header, without_header, in_desktop];
+    assert_near(&found, &[0.0585, 0.070, 0.0585, 0.0585], "before, with, without, desktop");
+}
+
+#[test]
 fn the_tag_holds_the_head_sequence_and_the_main_view_lens_only_in_the_mode_vr() {
     let vr = VrView::new(Mode::Vr, VrFlags::default());
     let tagged = FrameTag { head_sequence: 8, fov_y_rad: 0.96, aspect: 0.889 };

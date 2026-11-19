@@ -63,6 +63,9 @@ pub(crate) struct DepthInput {
     /// The player settings in effect, whose depth offset also moves the right half. The depth
     /// offset is 0 in the launch mode `vr`.
     pub(crate) stereo: StereoSettings,
+    /// The full eye distance in meters: `stereo.ipd_mm` in the launch mode `desktop-stereo`, and the
+    /// eye distance of the head pose in use in the mode `vr`.
+    pub(crate) eye_m: f32,
     /// The main view's camera of the frame, or `None` when the view camera feature read none.
     pub(crate) camera: Option<Camera>,
     /// The time of this Present call.
@@ -233,7 +236,7 @@ impl UiDepth {
         scene: &'frame Scene,
     ) -> Option<Start<'frame>> {
         let place = drawn.pointer?;
-        let view = View::of(&scene.camera, input.stereo, input.mode);
+        let view = View::of(&scene.camera, input.stereo, input.eye_m, input.mode);
         let probe = probe(place, view, self.rendered, scene.camera.far)?;
         Some(Start { ui: drawn.ui, distances: &scene.distances, probe })
     }
@@ -295,7 +298,7 @@ impl UiDepth {
             let elapsed = self
                 .stepped
                 .map_or(Duration::ZERO, |stepped| input.now.saturating_duration_since(stepped));
-            let view = View::of(&scene.camera, input.stereo, input.mode);
+            let view = View::of(&scene.camera, input.stereo, input.eye_m, input.mode);
             self.in_use = after(self.in_use, found, view, elapsed);
             self.stepped = Some(input.now);
             self.newest = Some(found);

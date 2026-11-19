@@ -66,24 +66,44 @@ fn a_new_core_keeps_the_tag_of_the_frame_the_earlier_core_published() {
 #[test]
 fn the_publisher_reads_the_pose_the_viewer_wrote_and_none_during_a_write() {
     let names = names("head-pose");
-    let publisher = Publisher::create(&names).expect("create the header");
-    let viewer = Viewer::new(&names);
-    assert_eq!(publisher.head_pose(), None, "no pose written yet");
+    let mut publisher = Publisher::create(&names).expect("create the header");
+    let mut viewer = Viewer::new(&names);
+    let start = Instant::now();
+    viewer.beat();
+    assert_eq!(publisher.head_pose(start), None, "no pose written yet");
     assert_eq!(write_pose(&viewer, POSE), 2, "the first write");
     let expected = HeadSample { sequence: 2, pose: POSE, eye_distance_m: 0.064 };
-    assert_eq!(publisher.head_pose(), Some(expected));
+    assert_eq!(publisher.head_pose(start), Some(expected));
     viewer.header.write_words([(HEAD_SEQUENCE_OFFSET, 3)]);
-    assert_eq!(publisher.head_pose(), None, "a write runs");
+    assert_eq!(publisher.head_pose(start), None, "a write runs");
+}
+
+#[test]
+fn the_publisher_reads_no_pose_while_the_heartbeat_does_not_advance() {
+    let names = names("head-pose-stale");
+    let mut publisher = Publisher::create(&names).expect("create the header");
+    let mut viewer = Viewer::new(&names);
+    let start = Instant::now();
+    assert_eq!(write_pose(&viewer, POSE), 2);
+    let mut sequence_at = |at| publisher.head_pose(at).map(|sample| sample.sequence);
+    assert_eq!(sequence_at(start), None, "a pose with no heartbeat");
+    viewer.beat();
+    assert_eq!(sequence_at(after(start, 10)), Some(2), "a beat");
+    assert_eq!(sequence_at(after(start, 1010)), Some(2), "one second after the beat");
+    assert_eq!(sequence_at(after(start, 1011)), None, "the heartbeat stalled");
+    viewer.beat();
+    assert_eq!(sequence_at(after(start, 5000)), Some(2), "a viewer that came back");
 }
 
 #[test]
 fn a_new_core_leaves_the_pose_a_viewer_wrote() {
     let names = names("head-pose-next-core");
     let first = Publisher::create(&names).expect("create the header");
-    let viewer = Viewer::new(&names);
+    let mut viewer = Viewer::new(&names);
     assert_eq!(write_pose(&viewer, POSE), 2);
     drop(first);
-    let second = Publisher::create(&names).expect("open the header the viewer kept");
-    let read = second.head_pose().map(|sample| (sample.sequence, sample.pose));
+    let mut second = Publisher::create(&names).expect("open the header the viewer kept");
+    viewer.beat();
+    let read = second.head_pose(Instant::now()).map(|sample| (sample.sequence, sample.pose));
     assert_eq!(read, Some((2, POSE)));
 }

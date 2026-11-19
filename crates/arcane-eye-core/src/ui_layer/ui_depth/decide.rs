@@ -80,6 +80,7 @@ impl EyeDistance {
 pub(crate) struct View {
     /// `1 / (aspect * tan(fov_y / 2))`.
     pub(crate) lens: f32,
+    /// The full eye distance in meters.
     pub(crate) eye_m: f32,
     /// The depth offset as a share.
     pub(crate) offset: f32,
@@ -87,12 +88,12 @@ pub(crate) struct View {
 }
 
 impl View {
-    /// The view of the main view's `camera` and the player's `stereo` settings in the launch mode
-    /// `mode`.
-    pub(crate) fn of(camera: &Camera, stereo: StereoSettings, mode: Mode) -> Self {
+    /// The view of the main view's `camera`, the depth offset of the player's `stereo` settings and
+    /// the full eye distance `eye_m` in the launch mode `mode`.
+    pub(crate) fn of(camera: &Camera, stereo: StereoSettings, eye_m: f32, mode: Mode) -> Self {
         Self {
             lens: (camera.aspect * (camera.fov_y_rad / 2.0).tan()).recip(),
-            eye_m: stereo.ipd_mm.meters(),
+            eye_m,
             offset: offset(stereo),
             eye_distance: EyeDistance::of(mode),
         }

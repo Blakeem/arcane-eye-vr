@@ -30,8 +30,10 @@ pub(crate) fn target_parts(test: &TestSwapchain) -> (BackBuffer, Devices, Window
 
 /// The UI depth's input of a frame with the default settings and no camera, which starts no read.
 pub(crate) fn no_camera() -> DepthInput {
+    let stereo = StereoSettings::default();
     DepthInput {
-        stereo: StereoSettings::default(),
+        stereo,
+        eye_m: stereo.ipd_mm.meters(),
         camera: None,
         now: Instant::now(),
         mode: Mode::DesktopStereo,

@@ -53,13 +53,15 @@ fn a_published_tag_is_read_with_the_frame_it_belongs_to() {
 #[test]
 fn a_head_pose_the_reading_side_wrote_is_read_by_the_publisher() {
     let names = test_view_names("link-head-pose");
-    let publisher = Publisher::create(&names).expect("create the header");
+    let mut publisher = Publisher::create(&names).expect("create the header");
+    TestViewer::open(&names).beat();
     let mut slot = None;
     let (view, _header) = read_header(&mut slot, &names.mapping).expect("open the header");
-    assert_eq!(publisher.head_pose(), None, "no pose written yet");
+    let now = Instant::now();
+    assert_eq!(publisher.head_pose(now), None, "no pose written yet");
     let turned = [0.0, -0.173_648_18, 0.0, 0.984_807_7];
     let pose = HeadPose { position: [0.1, 1.6, -0.3], orientation: turned };
     assert_eq!(write_head_pose(view, pose, 0.064), Ok(2));
     let expected = HeadSample { sequence: 2, pose, eye_distance_m: 0.064 };
-    assert_eq!(publisher.head_pose(), Some(expected));
+    assert_eq!(publisher.head_pose(now), Some(expected));
 }
