@@ -126,7 +126,7 @@ fn dev_flags_that_differ_from_the_start_change_no_setting_and_wait_for_the_next_
     let expected = [
         "\"settings reloaded\" ipd_mm=65.0 depth_offset_percent=1.5",
         "\"dev file changed, and its flags apply at the next start\" main_view_eye=center \
-         second_view=false viewer_source=back_buffer",
+         second_view=false ui_forward_wait_ms=400 viewer_source=back_buffer",
     ];
     assert_eq!(lines, expected);
     assert_eq!(DevFlags::default().stereo.second_view, SecondView::On);
@@ -160,8 +160,22 @@ fn a_changed_vr_table_logs_its_own_line_in_the_mode_vr_only() {
     fs::write(root.join("dev.toml"), "[stereo]\nsecond_view = false\n").expect("write");
     let stereo = apply_logged_in(Mode::Vr, root, &published, "reload-dev-vr-log-3");
     let changed = "\"dev file changed, and its flags apply at the next start\" main_view_eye=center \
-                   second_view=false viewer_source=back_buffer";
+                   second_view=false ui_forward_wait_ms=400 viewer_source=back_buffer";
     assert_eq!(stereo, [reloaded, changed], "an unchanged [vr] table logs no vr line");
+}
+
+#[test]
+fn a_changed_ui_table_logs_the_dev_file_line_with_its_forward_wait() {
+    let dir = test_dir("reload-dev-ui");
+    let root = dir.path();
+    let published = Published::new(Settings::default());
+    fs::write(root.join("dev.toml"), "[ui]\nforward_wait_ms = 0\n").expect("write");
+
+    let lines = apply_logged(root, &published, "reload-dev-ui-log");
+
+    let changed = "\"dev file changed, and its flags apply at the next start\" main_view_eye=center \
+                   second_view=true ui_forward_wait_ms=0 viewer_source=back_buffer";
+    assert_eq!(lines, ["\"settings reloaded\" ipd_mm=65.0 depth_offset_percent=1.5", changed]);
 }
 
 #[test]

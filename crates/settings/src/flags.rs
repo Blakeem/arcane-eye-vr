@@ -25,7 +25,7 @@ pub struct Flag {
 }
 
 /// Every dev flag.
-pub const FLAGS: [Flag; 6] = [
+pub const FLAGS: [Flag; 7] = [
     Flag {
         name: "stereo.main_view_eye",
         question: "Which eye position does the game's single render view use, for trials that run \
@@ -37,6 +37,13 @@ pub const FLAGS: [Flag; 6] = [
         name: "stereo.second_view",
         question: "Does the engine draw a second render view beside the main view, each in one half of \
                    the frame?",
+        added: Version { major: 0, minor: 0, patch: 1 },
+        expires: Version { major: 0, minor: 3, patch: 0 },
+    },
+    Flag {
+        name: "ui.forward_wait_ms",
+        question: "How many milliseconds must the scene under the UI stay nearer before the UI \
+                   comes forward, so that a thing that passes the camera leaves the UI in place?",
         added: Version { major: 0, minor: 0, patch: 1 },
         expires: Version { major: 0, minor: 3, patch: 0 },
     },
@@ -119,6 +126,16 @@ mod tests {
             ("vr.test_yaw_deg", added, expires),
         ];
         assert_eq!(vr, expected);
+    }
+
+    #[test]
+    fn the_ui_flag_was_added_in_0_0_1_and_expires_in_0_3_0() {
+        let ui: Vec<(&str, Version, Version)> = FLAGS
+            .iter()
+            .filter(|flag| flag.name.starts_with("ui."))
+            .map(|flag| (flag.name, flag.added, flag.expires))
+            .collect();
+        assert_eq!(ui, vec![("ui.forward_wait_ms", version(0, 0, 1), version(0, 3, 0))]);
     }
 
     #[test]

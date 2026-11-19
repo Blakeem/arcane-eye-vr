@@ -1,8 +1,10 @@
 //! The dev file parser against texts written by hand.
 
+use std::time::Duration;
+
 use super::{
-    DevFlags, Horizon, MainViewEye, SecondView, StereoFlags, TestHead, TestYawDeg, ViewerFlags,
-    ViewerSource, VrFlags, parse,
+    DevFlags, ForwardWaitMs, Horizon, MainViewEye, SecondView, StereoFlags, TestHead, TestYawDeg,
+    ViewerFlags, ViewerSource, VrFlags, parse,
 };
 use crate::rejection::{Position, Rejection};
 
@@ -100,7 +102,7 @@ fn an_unknown_key_rejects_the_file() {
         ))
     );
     let top_level = parse("version = 1\n");
-    let reason = "unknown field `version`, expected one of `stereo`, `viewer`, `vr`";
+    let reason = "unknown field `version`, expected one of `stereo`, `ui`, `viewer`, `vr`";
     assert_eq!(top_level, Err(rejection(reason, 1, 1)));
 }
 
@@ -139,4 +141,33 @@ fn an_unknown_horizon_or_a_test_yaw_past_180_degrees_rejects_the_file() {
     assert_eq!(parse("[vr]\nhorizon = \"up\"\n"), Err(rejection(reason, 2, 11)));
     let range = "test_yaw_deg must be from -180 to 180 degrees, got 200";
     assert_eq!(parse("[vr]\ntest_yaw_deg = 200\n"), Err(rejection(range, 2, 16)));
+}
+
+fn forward_wait(value: &str) -> Result<DevFlags, Rejection> {
+    parse(&format!("[ui]\nforward_wait_ms = {value}\n"))
+}
+
+#[test]
+fn the_forward_wait_defaults_to_400_ms_and_parses_from_0_to_2000() {
+    let default = DevFlags::default().ui.forward_wait_ms;
+    assert_eq!((default.millis(), default.duration()), (400, Duration::from_millis(400)));
+    assert_eq!(parse("[ui]\n"), Ok(DevFlags::default()));
+    for millis in [0, 2000] {
+        let parsed = forward_wait(&millis.to_string());
+        assert_eq!(parsed.map(|flags| flags.ui.forward_wait_ms.millis()), Ok(millis));
+    }
+    assert_eq!(
+        ForwardWaitMs::try_from(2000).map(ForwardWaitMs::duration),
+        Ok(Duration::from_secs(2))
+    );
+}
+
+#[test]
+fn a_forward_wait_past_2000_or_below_0_rejects_the_file() {
+    let past = "forward_wait_ms must be from 0 to 2000 milliseconds, got 2001";
+    assert_eq!(forward_wait("2001"), Err(rejection(past, 2, 19)));
+    let below = "forward_wait_ms must be from 0 to 2000 milliseconds, got -1";
+    assert_eq!(forward_wait("-1"), Err(rejection(below, 2, 19)));
+    let float = "invalid type: floating point `400.0`, expected i64";
+    assert_eq!(forward_wait("400.0"), Err(rejection(float, 2, 19)));
 }

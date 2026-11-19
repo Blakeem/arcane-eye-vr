@@ -1,7 +1,7 @@
 //! The UI depth: in a side by side frame whose UI the core draws, the UI comes in front of the
-//! scene under it when that scene is nearer than the screen surface, past a limit the eye distance
-//! shrinks instead outside the launch mode `vr`, and the cursor sits at the depth of what is under
-//! the pointer.
+//! scene under it once that scene has stayed nearer than the screen surface for the wait time of
+//! the dev flag `ui.forward_wait_ms`, past a limit the eye distance shrinks instead outside the
+//! launch mode `vr`, and the cursor sits at the depth of what is under the pointer.
 //!
 //! ```text
 //! UI LAYER FRAME whose draw is Ui or MoveThenUi, render thread, before the UI draw
@@ -9,8 +9,9 @@
 //!   [result]    the newest nearest read the GPU finished, the nearest distance in meters or a UI
 //!               that hides the scene
 //!   [targets]   the UI disparity and the eye scale that distance asks for, in `decide`
-//!   [follow]    the values in use moved toward the targets, or set to no UI disparity and the
-//!               full eye distance at once while the UI hides the scene, in `decide`
+//!   [follow]    the values in use moved toward the targets, nearer ones only once they held for
+//!               the wait time, or set to no UI disparity and the full eye distance at once while
+//!               the UI hides the scene, in `decide`
 //!   [start]     this frame's read of the distance texture under the UI texture, times the far plane
 //!   [columns]   the UI disparity in use as columns per half, by which the UI layer draws the UI
 //!               crossed
@@ -22,8 +23,9 @@
 //!               the frame after it
 //! ```
 //!
-//! A frame with no camera or with a missing or unusable distance texture starts no read and keeps
-//! the values in use and the cursor's newest result. A frame whose draw is neither `Ui` nor
+//! A frame with no camera or with a missing or unusable distance texture starts no read, keeps the
+//! values in use and the cursor's newest result, and empties the wait, so a nearer target waits
+//! the entire wait time after the frame. A frame whose draw is neither `Ui` nor
 //! `MoveThenUi`, a flat pair and a stopped UI layer set the UI disparity in use to 0 and the eye
 //! scale in use to 1 and forget the newest results and the reads that wait for the GPU. A failed
 //! create, draw or map of a read stops that read for the session and leaves the other read, the UI
@@ -50,7 +52,7 @@ use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 pub(crate) use self::cursor_depth::CursorReport;
 use self::cursor_depth::{CursorDepth, Start};
 pub(crate) use self::decide::Over;
-use self::decide::{Depth, View, after, offset, probe};
+use self::decide::{Following, View, after, offset, probe};
 use super::LOG_PERIOD;
 pub(crate) use super::decide::Moves;
 use super::decide::ui_columns;
@@ -154,7 +156,9 @@ pub(crate) struct UiDepth {
     /// The read of the device that the last read frame had.
     read: Option<NearestRead>,
     run: Run,
-    in_use: Depth,
+    following: Following,
+    /// The time a nearer target holds before the values in use take it.
+    forward_wait: Duration,
     /// The UI disparity in use as columns per half of the last frame that drew it.
     columns: u16,
     /// The time of the last step of the values in use, from which the next step's rates run.
@@ -171,13 +175,15 @@ pub(crate) struct UiDepth {
 }
 
 impl UiDepth {
-    /// The UI depth of the pipeline that the global `pipeline` holds.
-    pub(crate) const fn new(pipeline: GameAddr) -> Self {
+    /// The UI depth of the pipeline that the global `pipeline` holds, whose values in use take a
+    /// nearer target once it held for `forward_wait`.
+    pub(crate) const fn new(pipeline: GameAddr, forward_wait: Duration) -> Self {
         Self {
             distances: GameSource::new(TextureKey::DISTANCE, pipeline),
             read: None,
             run: Run::Running,
-            in_use: Depth::FLAT,
+            following: Following::FLAT,
+            forward_wait,
             columns: 0,
             stepped: None,
             newest: None,
@@ -192,12 +198,12 @@ impl UiDepth {
     /// Hands the eye scale in use to the eye cameras at a Present call. They render the next frame
     /// at it, so the pointer read of that frame's Present call probes at it.
     pub(crate) fn hand_eye_scale(&mut self) -> EyeScale {
-        self.rendered = mem::replace(&mut self.handed, self.in_use.eye_scale);
+        self.rendered = mem::replace(&mut self.handed, self.following.in_use.eye_scale);
         self.handed
     }
 
     pub(crate) const fn report(&self) -> DepthReport {
-        let eye_scale = self.in_use.eye_scale;
+        let eye_scale = self.following.in_use.eye_scale;
         DepthReport { nearest: self.newest, columns: self.columns, eye_scale }
     }
 
@@ -215,12 +221,16 @@ impl UiDepth {
         drawn: &DrawnUi<'_>,
     ) -> Columns {
         let scene = self.scene(input, drawn);
-        if let (Run::Running, Some(scene)) = (self.run, &scene)
-            && let Err(error) = self.measure(devices, drawn.ui, input, scene)
-        {
-            self.stop(error);
+        if let (Run::Running, Some(scene)) = (self.run, &scene) {
+            if let Err(error) = self.measure(devices, drawn.ui, input, scene) {
+                self.stop(error);
+            }
+        } else {
+            // The next result measured the scene from before this frame, so the frames between
+            // would count toward the wait unseen.
+            self.following = self.following.without_wait();
         }
-        self.columns = ui_columns(self.in_use.disparity, drawn.half_width);
+        self.columns = ui_columns(self.following.in_use.disparity, drawn.half_width);
         let start = scene.as_ref().and_then(|scene| self.cursor_start(input, drawn, scene));
         self.cursor.read(devices, start);
         let cursor = self.cursor.moves(self.columns, offset(input.stereo), drawn.half_width);
@@ -241,9 +251,9 @@ impl UiDepth {
         Some(Start { ui: drawn.ui, distances: &scene.distances, probe })
     }
 
-    /// Sets the UI disparity in use to 0 and the eye scale in use to 1, in a frame whose UI is not
-    /// drawn into a side by side frame. Forgets the newest results and the reads that wait for the
-    /// GPU, since they measured a scene from before the reset.
+    /// Sets the UI disparity in use to 0 and the eye scale in use to 1 and empties the wait, in a
+    /// frame whose UI is not drawn into a side by side frame. Forgets the newest results and the
+    /// reads that wait for the GPU, since they measured a scene from before the reset.
     pub(crate) fn reset(&mut self) {
         self.forget();
         self.cursor.reset();
@@ -256,10 +266,10 @@ impl UiDepth {
         self.cursor.release();
     }
 
-    /// Sets the values in use of the nearest read to [`Depth::FLAT`], and forgets its newest
-    /// result and its reads that wait for the GPU.
+    /// Sets the values in use of the nearest read to [`Following::FLAT`], with no wait, and
+    /// forgets its newest result and its reads that wait for the GPU.
     fn forget(&mut self) {
-        self.in_use = Depth::FLAT;
+        self.following = Following::FLAT;
         self.columns = 0;
         self.stepped = None;
         self.newest = None;
@@ -299,7 +309,7 @@ impl UiDepth {
                 .stepped
                 .map_or(Duration::ZERO, |stepped| input.now.saturating_duration_since(stepped));
             let view = View::of(&scene.camera, input.stereo, input.eye_m, input.mode);
-            self.in_use = after(self.in_use, found, view, elapsed);
+            self.following = after(self.following, found, view, elapsed, self.forward_wait);
             self.stepped = Some(input.now);
             self.newest = Some(found);
         }

@@ -124,7 +124,7 @@ pub(crate) fn install(health: &Health, code: &GameCode, config: Config) -> Optio
         info!(second_view = false, "ui layer not installed");
         return None;
     }
-    match locate(health, code) {
+    match locate(health, code, config) {
         Ok(layer) => {
             health.install_ok(Feature::UiLayer);
             info!(vtable = format_args!("{:#x}", layer.vtable.get()), "ui layer installed");
@@ -138,17 +138,18 @@ pub(crate) fn install(health: &Health, code: &GameCode, config: Config) -> Optio
     }
 }
 
-fn locate(health: &Health, code: &GameCode) -> Result<UiLayer, UiLayerError> {
+fn locate(health: &Health, code: &GameCode, config: Config) -> Result<UiLayer, UiLayerError> {
     if !health.is_running(Feature::PresentHook) {
         return Err(UiLayerError::NoFrameEnd);
     }
-    Ok(UiLayer::new(code.locate(&G_PIPELINE)?, code.locate(&VT_COMPOSITE_STAGE)?))
+    let forward_wait = config.dev.ui.forward_wait_ms.duration();
+    Ok(UiLayer::new(code.locate(&G_PIPELINE)?, code.locate(&VT_COMPOSITE_STAGE)?, forward_wait))
 }
 
 impl UiLayer {
-    /// A UI layer that reads the pipeline from the global `pipeline` and finds the composite stage by
-    /// `vtable`.
-    pub(crate) fn new(pipeline: GameAddr, vtable: GameAddr) -> Self {
+    /// A UI layer that reads the pipeline from the global `pipeline`, finds the composite stage by
+    /// `vtable` and brings the UI forward once a nearer scene held for `forward_wait`.
+    pub(crate) fn new(pipeline: GameAddr, vtable: GameAddr, forward_wait: Duration) -> Self {
         Self {
             pipeline,
             vtable,
@@ -157,7 +158,7 @@ impl UiLayer {
             next: Layout::MainOnly,
             cleared: None,
             cursor: Cursor::default(),
-            depth: UiDepth::new(pipeline),
+            depth: UiDepth::new(pipeline, forward_wait),
             stage_log: RateLimit::default(),
             write_log: RateLimit::default(),
             cursor_log: RateLimit::default(),

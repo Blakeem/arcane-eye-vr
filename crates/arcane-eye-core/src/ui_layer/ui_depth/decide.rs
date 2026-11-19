@@ -1,6 +1,6 @@
 //! The UI depth's decisions: the UI disparity and the eye scale that a nearest distance asks for,
-//! the values in use that follow them or that a UI that hides the scene sets, and the pointer read's
-//! probe and the cursor's moves that its result gives.
+//! the values in use that follow them after the wait for a nearer target or that a UI that hides
+//! the scene sets, and the pointer read's probe and the cursor's moves that its result gives.
 //!
 //! Disparities are shares of a half's width. A scene point `z` meters away has the crossed disparity
 //! `lens * eye_m / (2 * z)` between the two halves at the eye distance `eye_m`, where `lens` is the
@@ -52,6 +52,52 @@ pub(crate) struct Depth {
 impl Depth {
     /// The UI on the screen surface and the eyes at the full distance.
     pub(crate) const FLAT: Self = Self { disparity: 0.0, eye_scale: EyeScale::FULL };
+
+    /// Whether `self` has a larger UI disparity or a smaller eye scale than `other`.
+    fn is_nearer_than(self, other: Self) -> bool {
+        self.disparity > other.disparity || self.eye_scale < other.eye_scale
+    }
+
+    /// The larger UI disparity and the smaller eye scale of `self` and `other`.
+    fn nearer(self, other: Self) -> Self {
+        let eye_scale =
+            if other.eye_scale < self.eye_scale { other.eye_scale } else { self.eye_scale };
+        Self { disparity: self.disparity.max(other.disparity), eye_scale }
+    }
+
+    /// The smaller UI disparity and the larger eye scale of `self` and `other`.
+    fn farther(self, other: Self) -> Self {
+        let eye_scale =
+            if other.eye_scale > self.eye_scale { other.eye_scale } else { self.eye_scale };
+        Self { disparity: self.disparity.min(other.disparity), eye_scale }
+    }
+}
+
+/// The steps that brought a target nearer than the values in use, one after another.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Wait {
+    /// The time from the first of the steps to the last.
+    ran: Duration,
+    /// The smallest target UI disparity and the largest target eye scale of the steps.
+    kept: Depth,
+}
+
+/// The values in use and the wait of the nearer targets that the values in use have not taken yet.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Following {
+    pub(crate) in_use: Depth,
+    /// `None` while no nearer target waits.
+    wait: Option<Wait>,
+}
+
+impl Following {
+    /// [`Depth::FLAT`] in use and no wait.
+    pub(crate) const FLAT: Self = Self { in_use: Depth::FLAT, wait: None };
+
+    /// The values in use of `self` with no wait.
+    pub(crate) const fn without_wait(self) -> Self {
+        Self { in_use: self.in_use, wait: None }
+    }
 }
 
 /// Whether the eye distance shrinks past the UI disparity's limit.
@@ -105,15 +151,51 @@ pub(crate) fn offset(stereo: StereoSettings) -> f32 {
     stereo.depth_offset_percent.percent() / PERCENT
 }
 
-/// The values in use after a frame whose newest result is `found`, `elapsed` after the last step
-/// in `view`. A UI that hides the scene sets [`Depth::FLAT`] at once, with no hold and no rate,
-/// since a UI moved inward would leave a strip of the scene at the outer edge of each half. Every
-/// other result is followed as [`follow`] follows its [`targets`].
-pub(crate) fn after(in_use: Depth, found: Nearest, view: View, elapsed: Duration) -> Depth {
+/// The values in use and the wait after a frame whose newest result is `found`, `elapsed` after
+/// the last step in `view`, with the wait time `forward_wait`. A UI that hides the scene sets
+/// [`Following::FLAT`] at once, with no hold, no rate and no wait, since a UI moved inward would
+/// leave a strip of the scene at the outer edge of each half. Every other result's [`targets`] go
+/// to [`follow_or_wait`].
+pub(crate) fn after(
+    following: Following,
+    found: Nearest,
+    view: View,
+    elapsed: Duration,
+    forward_wait: Duration,
+) -> Following {
     if found == Nearest::Hidden {
-        return Depth::FLAT;
+        return Following::FLAT;
     }
-    follow(in_use, targets(found, view), elapsed)
+    follow_or_wait(following, targets(found, view), elapsed, forward_wait)
+}
+
+/// The values in use and the wait after a step that brought `target`, `elapsed` after the last
+/// step, with the wait time `forward_wait`. A target nearer than the values in use runs the wait,
+/// and the values in use come forward only once the wait has run for `forward_wait`, and then only
+/// as far as its farthest target, so a thing that passes close to the camera leaves the UI in
+/// place. A target that is not nearer empties the wait. The UI disparity's hold and fall and the
+/// eye scale's rise act in every step, as [`follow`] moves them.
+fn follow_or_wait(
+    following: Following,
+    target: Depth,
+    elapsed: Duration,
+    forward_wait: Duration,
+) -> Following {
+    let in_use = following.in_use;
+    if !target.is_nearer_than(in_use) {
+        return Following { in_use: follow(in_use, target, elapsed), wait: None };
+    }
+    let wait = match following.wait {
+        None => Wait { ran: Duration::ZERO, kept: target },
+        Some(wait) => {
+            Wait { ran: wait.ran.saturating_add(elapsed), kept: wait.kept.farther(target) }
+        }
+    };
+    let held = follow(in_use, target.farther(in_use), elapsed);
+    if wait.ran < forward_wait {
+        return Following { in_use: held, wait: Some(wait) };
+    }
+    Following { in_use: held.nearer(wait.kept), wait: None }
 }
 
 /// The targets that `nearest` asks for in `view`. A UI over no scene or over a hidden scene, a
@@ -143,8 +225,8 @@ pub(crate) fn targets(nearest: Nearest, view: View) -> Depth {
     Depth { disparity: LIMIT, eye_scale }
 }
 
-/// The values in use after a frame that brought `target`, `elapsed` after the last step. A rise of
-/// the UI disparity and a fall of the eye scale take effect at once. The eye cameras render at the
+/// The values in use moved toward `target` in a step `elapsed` after the last step. A rise of the
+/// UI disparity and a fall of the eye scale take effect at once. The eye cameras render at the
 /// eye scale from the second frame after, so in the two frames between, a scene nearer than the
 /// limit can sit in front of the UI. The other ways move at most at their rate, and the UI
 /// disparity holds while its target lies within [`HOLD`] below it.

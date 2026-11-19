@@ -1,6 +1,8 @@
 //! The UI depth in the UI layer's frames: a test game whose texture table names a UI texture and a
 //! distance texture, read back from a WARP back buffer.
 
+mod wait;
+
 use std::time::{Duration, Instant};
 
 use diag::health::{Feature, Health};
@@ -50,7 +52,8 @@ pub(super) const FAR_M: f32 = 10_000.0;
 /// A scene 0.5 m away as a share of the far plane, near enough for the largest UI disparity.
 pub(super) const NEAR_SHARE: f32 = 0.5 / FAR_M;
 
-/// The frames a test runs at most until the first read's result arrives.
+/// The frames a test runs at most while it waits for a read's result or for the UI depth's report
+/// to meet its condition, such as the UI coming forward after the forward wait.
 pub(super) const MAX_FRAMES: usize = 200;
 
 /// The measured dialogue's lens.
@@ -132,7 +135,7 @@ fn frames_until(
         }
         flush(test);
     }
-    panic!("no such read result in {MAX_FRAMES} frames");
+    panic!("no report of the UI depth met the condition in {MAX_FRAMES} frames");
 }
 
 /// Runs side by side frames until the UI depth draws the UI moved, and returns the frame that drew
@@ -192,6 +195,7 @@ fn a_near_scene_moves_the_ui_and_the_cursor_one_column_inward_in_each_half() {
     assert_eq!(report.columns, 1);
     assert!(report.eye_scale < EyeScale::FULL, "{report:?}");
     assert_eq!(centimeters(report), Some(50.0));
+    assert!(frames >= 25, "the UI came forward at frame {frames}, before 400 ms of 16 ms frames");
     let pixels = back_buffer_pixels(&test);
     assert_eq!(at(&pixels, 2, [10, 11]), [GREEN, RED], "the left half's UI moves right");
     assert_eq!(at(&pixels, 2, [41, 42]), [RED, GREEN], "the right half's UI moves left");

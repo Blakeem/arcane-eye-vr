@@ -17,7 +17,7 @@ use game_bindings::render_view::RenderView;
 use game_bindings::state::arm_alloc_guard;
 use game_bindings::texture_table::TextureKey;
 use game_mem::GameAddr;
-use settings::dev::{DevFlags, MainViewEye, SecondView, StereoFlags};
+use settings::dev::{DevFlags, ForwardWaitMs, MainViewEye, SecondView, StereoFlags};
 use settings::player::DepthOffsetPercent;
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
@@ -92,7 +92,8 @@ impl Game {
     }
 
     fn layer(&self) -> UiLayer {
-        UiLayer::new(self.world.global.address(), GameAddr::new(VTABLE))
+        let forward_wait = ForwardWaitMs::default().duration();
+        UiLayer::new(self.world.global.address(), GameAddr::new(VTABLE), forward_wait)
     }
 
     fn ui_enabled(&self) -> u8 {

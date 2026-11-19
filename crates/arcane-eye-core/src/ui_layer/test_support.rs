@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use game_mem::GameAddr;
 use ipc_layout::launch_token::Mode;
+use settings::dev::ForwardWaitMs;
 use settings::player::StereoSettings;
 
 use super::cursor::Aim;
@@ -68,7 +69,7 @@ pub(crate) fn cursor_frame(
 
 /// A layer whose frames draw only the cursor, and that has drawn none.
 pub(crate) fn idle_layer() -> UiLayer {
-    UiLayer::new(UNREAD, UNREAD)
+    UiLayer::new(UNREAD, UNREAD, ForwardWaitMs::default().duration())
 }
 
 /// A layer whose frames draw only the cursor, after one such frame of `aim` into `test`'s back

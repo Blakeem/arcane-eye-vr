@@ -135,14 +135,15 @@ fn apply(folder: &Path, started: Config, published: &Published) {
 }
 
 /// Logs the dev file's `flags` that differ from the flags read at start in `started`: one line for the
-/// `[stereo]` and `[viewer]` tables and one for the `[vr]` table. The mode `desktop-stereo` never reads
-/// the `[vr]` table, so it logs no `[vr]` change.
+/// `[stereo]`, `[ui]` and `[viewer]` tables and one for the `[vr]` table. The mode `desktop-stereo`
+/// never reads the `[vr]` table, so it logs no `[vr]` change.
 fn info_changed_dev(started: Config, flags: DevFlags) {
     let with_started_vr = DevFlags { vr: started.dev.vr, ..flags };
     if with_started_vr != started.dev {
         info!(
             main_view_eye = flags.stereo.main_view_eye.as_str(),
             second_view = flags.stereo.second_view.as_bool(),
+            ui_forward_wait_ms = flags.ui.forward_wait_ms.millis(),
             viewer_source = flags.viewer.source.as_str(),
             "dev file changed, and its flags apply at the next start"
         );

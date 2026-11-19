@@ -40,6 +40,7 @@ pub(crate) fn load(folder: &Path, mode: Mode) -> Config {
         depth_offset_percent = settings.stereo.depth_offset_percent.percent(),
         main_view_eye = dev.stereo.main_view_eye.as_str(),
         second_view = dev.stereo.second_view.as_bool(),
+        ui_forward_wait_ms = dev.ui.forward_wait_ms.millis(),
         viewer_source = dev.viewer.source.as_str(),
         "settings loaded"
     );
@@ -126,7 +127,7 @@ mod tests {
         assert_eq!(
             lines,
             ["\"settings loaded\" ipd_mm=65.0 depth_offset_percent=1.5 main_view_eye=center \
-              second_view=true viewer_source=back_buffer"]
+              second_view=true ui_forward_wait_ms=400 viewer_source=back_buffer"]
         );
     }
 
@@ -137,6 +138,7 @@ mod tests {
         let player = "[stereo]\nipd_mm = 58.5\ndepth_offset_percent = 3\nipd = 1\n";
         fs::write(root.join("settings.toml"), player).expect("write");
         let dev = "[stereo]\nmain_view_eye = \"left\"\nsecond_view = false\n\
+                   [ui]\nforward_wait_ms = 250\n\
                    [viewer]\nsource = \"ui\"\n\
                    [vr]\nhorizon = \"camera\"\ntest_head = \"yaw\"\ntest_yaw_deg = -45\n";
         fs::write(root.join("dev.toml"), dev).expect("write");
@@ -147,10 +149,11 @@ mod tests {
         assert_eq!(config.settings.stereo.depth_offset_percent, depth_offset);
         assert_eq!(config.dev.stereo.main_view_eye, MainViewEye::Left);
         assert_eq!(config.dev.stereo.second_view, SecondView::Off);
+        assert_eq!(config.dev.ui.forward_wait_ms.millis(), 250);
         let expected = [
             "\"unknown settings key ignored\" file=settings.toml key=stereo.ipd",
             "\"settings loaded\" ipd_mm=58.5 depth_offset_percent=3.0 main_view_eye=left \
-             second_view=false viewer_source=ui",
+             second_view=false ui_forward_wait_ms=250 viewer_source=ui",
         ];
         assert_eq!(lines, expected, "the mode desktop-stereo logs no [vr] flag");
     }
@@ -165,7 +168,7 @@ mod tests {
         assert_eq!(config.mode, Mode::Vr);
         let expected = [
             "\"settings loaded\" ipd_mm=65.0 depth_offset_percent=1.5 main_view_eye=center \
-             second_view=true viewer_source=back_buffer",
+             second_view=true ui_forward_wait_ms=400 viewer_source=back_buffer",
             "\"vr flags\" horizon=camera test_head=yaw test_yaw_deg=-45.0",
         ];
         assert_eq!(messages(&text), expected);
@@ -191,7 +194,8 @@ mod tests {
             [
                 warning,
                 "\"settings loaded\" ipd_mm=58.5 depth_offset_percent=1.5 \
-                 main_view_eye=center second_view=true viewer_source=back_buffer"
+                 main_view_eye=center second_view=true ui_forward_wait_ms=400 \
+                 viewer_source=back_buffer"
                     .to_owned()
             ]
         );

@@ -1,6 +1,8 @@
 //! The targets of measured and constructed scenes, the values in use that follow them, and the
 //! pointer read's probe and the cursor's moves.
 
+mod wait;
+
 use std::time::Duration;
 
 use game_bindings::camera::Camera;
@@ -10,7 +12,9 @@ use ipc_layout::launch_token::Mode;
 use settings::player::{DepthOffsetPercent, IpdMm, StereoSettings};
 use stereo_core::eye::EyeScale;
 
-use super::{Depth, EyeDistance, Over, View, after, cursor_moves, follow, probe, targets};
+use super::{
+    Depth, EyeDistance, Following, Over, View, after, cursor_moves, follow, probe, targets,
+};
 use crate::ui_layer::decide::{Moves, ui_columns};
 
 /// The main view's camera in the measured dialogue close-up.
@@ -26,13 +30,8 @@ const DIALOGUE: Camera = Camera {
 /// The measured dialogue's eye distance of 65 mm and depth offset of 1.5 percent, in the launch mode
 /// `desktop-stereo`.
 fn dialogue() -> View {
-    dialogue_in(Mode::DesktopStereo)
-}
-
-/// The measured dialogue's view in the launch mode `mode`.
-fn dialogue_in(mode: Mode) -> View {
     let stereo = dialogue_stereo();
-    View::of(&DIALOGUE, stereo, stereo.ipd_mm.meters(), mode)
+    View::of(&DIALOGUE, stereo, stereo.ipd_mm.meters(), Mode::DesktopStereo)
 }
 
 /// The measured dialogue's view in the launch mode `vr` at the eye distance `eye_m`, with no depth
@@ -59,6 +58,14 @@ fn depth(disparity: f32, eye_scale: f32) -> Depth {
     Depth { disparity, eye_scale: EyeScale::clamped(eye_scale) }
 }
 
+/// The values `in_use` with no wait.
+fn following(in_use: Depth) -> Following {
+    Following { in_use, wait: None }
+}
+
+/// The default wait time of the dev flag `ui.forward_wait_ms`.
+const FORWARD_WAIT: Duration = Duration::from_millis(400);
+
 fn assert_between(value: f32, low: f32, high: f32, what: &str) {
     assert!((low..=high).contains(&value), "{what}: {value} is not from {low} to {high}");
 }
@@ -81,11 +88,11 @@ fn a_scene_nearer_than_the_limit_holds_the_limit_and_shrinks_the_eye_distance() 
 
 #[test]
 fn in_the_mode_vr_a_scene_nearer_than_the_limit_holds_the_limit_and_the_full_eye_distance() {
-    let target = targets(at(1.0), dialogue_in(Mode::Vr));
+    let target = targets(at(1.0), dialogue_vr(0.065));
 
     assert_between(target.disparity, 0.04, 0.04, "the UI disparity");
     assert_eq!(target.eye_scale, EyeScale::FULL);
-    assert_eq!(dialogue_in(Mode::Vr).eye_distance, EyeDistance::Fixed);
+    assert_eq!(dialogue_vr(0.065).eye_distance, EyeDistance::Fixed);
     assert_eq!(dialogue().eye_distance, EyeDistance::Shrinks);
 }
 
@@ -176,30 +183,32 @@ fn the_eye_scale_rises_by_at_most_0_5_per_second_up_to_its_target() {
 
 #[test]
 fn a_ui_that_hides_the_scene_sets_no_ui_disparity_and_the_full_eye_distance_in_one_step() {
-    let in_use = depth(0.03, 0.7);
+    let in_use = following(depth(0.03, 0.7));
 
-    let stepped = after(in_use, Nearest::Hidden, dialogue(), Duration::ZERO);
+    let stepped = after(in_use, Nearest::Hidden, dialogue(), Duration::ZERO, FORWARD_WAIT);
 
-    assert_eq!(stepped, depth(0.0, 1.0));
+    assert_eq!(stepped.in_use, depth(0.0, 1.0));
 }
 
 #[test]
-fn a_result_after_a_hidden_scene_is_followed_with_the_rise_at_once() {
-    let flat = after(depth(0.03, 0.7), Nearest::Hidden, dialogue(), Duration::ZERO);
+fn with_no_wait_time_a_result_after_a_hidden_scene_is_followed_with_the_rise_at_once() {
+    let in_use = following(depth(0.03, 0.7));
+    let flat = after(in_use, Nearest::Hidden, dialogue(), Duration::ZERO, Duration::ZERO);
 
-    let stepped = after(flat, at(1.0), dialogue(), Duration::ZERO);
+    let stepped = after(flat, at(1.0), dialogue(), Duration::ZERO, Duration::ZERO);
 
-    assert_between(stepped.disparity, 0.04, 0.04, "the UI disparity");
-    assert_between(stepped.eye_scale.share(), 0.688, 0.691, "the eye scale");
+    assert_between(stepped.in_use.disparity, 0.04, 0.04, "the UI disparity");
+    assert_between(stepped.in_use.eye_scale.share(), 0.688, 0.691, "the eye scale");
 }
 
 #[test]
 fn a_scene_behind_the_screen_surface_lowers_the_ui_disparity_in_use_at_the_falling_rate() {
-    let in_use = depth(0.03, 1.0);
+    let in_use = following(depth(0.03, 1.0));
 
-    let stepped = after(in_use, at(8.0), dialogue(), Duration::from_secs(1));
+    let stepped = after(in_use, at(8.0), dialogue(), Duration::from_secs(1), FORWARD_WAIT);
 
-    assert_between(stepped.disparity, 0.019_99, 0.020_01, "a fall of 0.01 in one second");
+    let disparity = stepped.in_use.disparity;
+    assert_between(disparity, 0.019_99, 0.020_01, "a fall of 0.01 in one second");
 }
 
 /// The depth offset of 1.5 percent as a share.

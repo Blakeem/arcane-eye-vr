@@ -4,6 +4,8 @@
 //! flag has an entry in `flags.rs`. An unknown key rejects the file, so a removed or expired flag is
 //! noticed.
 
+use std::time::Duration;
+
 use serde::Deserialize;
 
 use crate::rejection::Rejection;
@@ -14,6 +16,7 @@ use crate::rejection::Rejection;
 #[serde(default, deny_unknown_fields)]
 pub struct DevFlags {
     pub stereo: StereoFlags,
+    pub ui: UiFlags,
     pub viewer: ViewerFlags,
     pub vr: VrFlags,
 }
@@ -28,6 +31,68 @@ pub struct StereoFlags {
     /// The dev flag `stereo.second_view`. Its entry in [`crate::flags::FLAGS`] states its question.
     pub second_view: SecondView,
 }
+
+/// The table `[ui]`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[cfg_attr(test, derive(serde::Serialize))]
+#[serde(default, deny_unknown_fields)]
+pub struct UiFlags {
+    /// The dev flag `ui.forward_wait_ms`. Its entry in [`crate::flags::FLAGS`] states its question.
+    pub forward_wait_ms: ForwardWaitMs,
+}
+
+/// The time in milliseconds the scene under the UI stays nearer before the UI comes forward, from
+/// [`ForwardWaitMs::MIN`] to [`ForwardWaitMs::MAX`] inclusive. 0 brings the UI forward at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[cfg_attr(test, derive(serde::Serialize))]
+#[serde(try_from = "i64")]
+#[cfg_attr(test, serde(into = "i64"))]
+pub struct ForwardWaitMs(u16);
+
+impl ForwardWaitMs {
+    pub const MIN: u16 = 0;
+    pub const MAX: u16 = 2000;
+
+    pub const fn millis(self) -> u16 {
+        self.0
+    }
+
+    pub fn duration(self) -> Duration {
+        Duration::from_millis(u64::from(self.0))
+    }
+}
+
+impl Default for ForwardWaitMs {
+    fn default() -> Self {
+        Self(400)
+    }
+}
+
+impl TryFrom<i64> for ForwardWaitMs {
+    type Error = ForwardWaitRangeError;
+
+    fn try_from(millis: i64) -> Result<Self, ForwardWaitRangeError> {
+        match u16::try_from(millis) {
+            Ok(millis) if (Self::MIN..=Self::MAX).contains(&millis) => Ok(Self(millis)),
+            _ => Err(ForwardWaitRangeError(millis)),
+        }
+    }
+}
+
+impl From<ForwardWaitMs> for i64 {
+    fn from(wait: ForwardWaitMs) -> Self {
+        Self::from(wait.millis())
+    }
+}
+
+/// A forward wait outside the range of [`ForwardWaitMs`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "forward_wait_ms must be from {min} to {max} milliseconds, got {0}",
+    min = ForwardWaitMs::MIN,
+    max = ForwardWaitMs::MAX
+)]
+pub struct ForwardWaitRangeError(pub i64);
 
 /// The table `[viewer]`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]

@@ -91,7 +91,7 @@ width_m = 3.0       # width of the headset screen in meters, 0.5 to 10
 ## What to expect
 
 - The game's interface sits on the screen surface and the scene sits behind it.
-- When the scene under the interface is nearer than the surface, such as in a dialogue close-up, the interface comes forward to stay in front of it. Past a limit, the distance between the eyes shrinks so that the scene stays behind the interface.
+- When the scene under the interface stays nearer than the surface for a short time, such as in a dialogue close-up, the interface comes forward to stay in front of it. A thing that passes the camera quickly does not move the interface. Past a limit, the distance between the eyes shrinks so that the scene stays behind the interface.
 - The mouse cursor sits on the interface over an interface element, and at the depth of the scene under it elsewhere.
 - Videos and loading screens show as one flat picture.
 - When a part of the mod fails, the game shows its normal picture for the rest of the session.
