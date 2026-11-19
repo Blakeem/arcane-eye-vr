@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "arcane-eye-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "arc-swap",
  "diag",
@@ -61,7 +61,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "crashd"
-version = "0.1.0"
+version = "0.0.1"
 
 [[package]]
 name = "crc32fast"
@@ -74,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "diag"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "ipc-layout",
  "test-support",
@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "game-bindings"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "diag",
  "game-mem",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "game-mem"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "shim",
  "thiserror",
@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "gfx"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "ipc-layout",
  "thiserror",
@@ -155,7 +155,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "hooks"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "diag",
  "game-bindings",
@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "ipc-layout"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "thiserror",
 ]
@@ -189,7 +189,7 @@ checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
 
 [[package]]
 name = "launch"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "ipc-layout",
  "test-support",
@@ -200,7 +200,7 @@ dependencies = [
 
 [[package]]
 name = "launcher"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "diag",
  "gfx",
@@ -276,7 +276,7 @@ dependencies = [
 
 [[package]]
 name = "overlay"
-version = "0.1.0"
+version = "0.0.1"
 
 [[package]]
 name = "pin-project-lite"
@@ -308,7 +308,7 @@ dependencies = [
 
 [[package]]
 name = "proxy"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "ipc-layout",
  "test-support",
@@ -395,7 +395,7 @@ dependencies = [
 
 [[package]]
 name = "settings"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "serde",
  "serde_ignored",
@@ -406,7 +406,7 @@ dependencies = [
 
 [[package]]
 name = "shim"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "cc",
 ]
@@ -419,7 +419,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "sigcheck"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "game-bindings",
  "thiserror",
@@ -433,7 +433,7 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "stereo-core"
-version = "0.1.0"
+version = "0.0.1"
 
 [[package]]
 name = "syn"
@@ -459,7 +459,7 @@ dependencies = [
 
 [[package]]
 name = "test-support"
-version = "0.1.0"
+version = "0.0.1"
 
 [[package]]
 name = "thiserror"
@@ -550,7 +550,7 @@ dependencies = [
 
 [[package]]
 name = "trial"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "diag",
  "ipc-layout",
@@ -572,7 +572,7 @@ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
 name = "viewer"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "ipc-layout",
  "viewer-client",
@@ -581,7 +581,7 @@ dependencies = [
 
 [[package]]
 name = "viewer-client"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "ipc-layout",
  "thiserror",
@@ -707,7 +707,7 @@ checksum = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef"
 
 [[package]]
 name = "xr"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "openxr",
  "serde",
