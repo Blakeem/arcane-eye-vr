@@ -1,6 +1,7 @@
 //! Tests of the frame handler against WARP swapchains, with the session log captured.
 
 mod camera;
+mod depth;
 mod failed;
 mod source;
 
@@ -8,15 +9,13 @@ use std::time::{Duration, Instant};
 
 use diag::health::{Feature, Health};
 use game_bindings::state::arm_alloc_guard;
-use gfx::nearest::Nearest;
 use gfx::publish::ViewNames;
 use ipc_layout::perf_line::{self, PerfSummary};
 use settings::player::StereoSettings;
-use stereo_core::eye::EyeScale;
 
 use super::{
-    FrameLogs, FrameReport, FrameState, UiFrame, keep_cameras, log_depth, log_flat, on_frame,
-    record_interval, skipped,
+    FrameLogs, FrameReport, FrameState, UiFrame, keep_cameras, log_flat, on_frame, record_interval,
+    skipped,
 };
 use crate::eye_view::Layout;
 use crate::logged;
@@ -27,7 +26,6 @@ use crate::raw::{
 use crate::ui_layer::cursor::Aim;
 use crate::ui_layer::cursor::place::{Pointer, spot};
 use crate::ui_layer::test_support::{hidden_cursor_layer, idle_layer};
-use crate::ui_layer::ui_depth::DepthReport;
 use crate::view_camera::FrameCameras;
 use crate::viewer::ViewerLink;
 
@@ -156,7 +154,7 @@ fn the_601st_frame_logs_one_perf_summary_that_the_parser_reads() {
 }
 
 #[test]
-fn a_perf_window_with_a_ui_layer_logs_one_ui_depth_line_before_the_perf_summary() {
+fn a_perf_window_with_a_ui_layer_logs_one_ui_depth_and_cursor_depth_line_before_the_summary() {
     let test = TestSwapchain::new(320, 200);
     let (mut state, _names) = test_state("ui-depth-line");
     state.ui_layer = Some(idle_layer());
@@ -171,20 +169,14 @@ fn a_perf_window_with_a_ui_layer_logs_one_ui_depth_line_before_the_perf_summary(
     let fields =
         " arcane_eye_core::frame msg=\"ui depth\" nearest_m=-1.0 ui_columns=0 eye_scale=1.0";
     assert!(line.ends_with(fields), "no result, no UI disparity and the full eye distance: {line}");
-    assert!(position("\"ui depth\"") < position("\"perf summary\""), "{lines:#?}");
-}
-
-#[test]
-fn the_ui_depth_line_of_a_ui_that_hides_the_scene_holds_the_nearest_distance_minus_2() {
-    let report =
-        DepthReport { nearest: Some(Nearest::Hidden), columns: 0, eye_scale: EyeScale::FULL };
-
-    let lines = log_lines("ui-depth-hidden", || log_depth(report));
-
-    let [line] = lines.as_slice() else { panic!("one ui depth line: {lines:#?}") };
-    let fields =
-        " arcane_eye_core::frame msg=\"ui depth\" nearest_m=-2.0 ui_columns=0 eye_scale=1.0";
-    assert!(line.ends_with(fields), "{line}");
+    let cursor: Vec<&String> =
+        lines.iter().filter(|text| text.contains("\"cursor depth\"")).collect();
+    let [cursor_line] = cursor.as_slice() else { panic!("one cursor depth line: {lines:#?}") };
+    let cursor_fields =
+        " arcane_eye_core::frame msg=\"cursor depth\" over=none left_columns=0 right_columns=0";
+    assert!(cursor_line.ends_with(cursor_fields), "no result and no move: {cursor_line}");
+    assert!(position("\"ui depth\"") < position("\"cursor depth\""), "{lines:#?}");
+    assert!(position("\"cursor depth\"") < position("\"perf summary\""), "{lines:#?}");
 }
 
 /// The counting allocator counts only in debug builds.

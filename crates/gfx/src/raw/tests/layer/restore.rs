@@ -1,10 +1,11 @@
-//! The context state the layer draw finds is the state it leaves, against a WARP device. The
-//! nearest read's test binds and reads the same state.
+//! The context state the layer draw finds is the state it leaves, against a WARP device. The tests
+//! of the nearest read and the pointer read bind and read the same state.
 
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D::D3D11_PRIMITIVE_TOPOLOGY_LINELIST;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_CULL_NONE, D3D11_FILL_SOLID, D3D11_RASTERIZER_DESC, D3D11_VIEWPORT,
+    D3D11_BIND_CONSTANT_BUFFER, D3D11_BUFFER_DESC, D3D11_CULL_NONE, D3D11_FILL_SOLID,
+    D3D11_RASTERIZER_DESC, D3D11_USAGE_DEFAULT, D3D11_VIEWPORT, ID3D11Buffer,
     ID3D11RasterizerState, ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D,
 };
 
@@ -22,8 +23,10 @@ pub(in crate::raw::tests) struct Bound {
     scissor: [i32; 4],
     raster: Option<ID3D11RasterizerState>,
     target: Option<ID3D11RenderTargetView>,
-    /// The pixel shader's first two resources, which the nearest read binds.
+    /// The pixel shader's first two resources, which each read binds.
     resources: [Option<ID3D11ShaderResourceView>; 2],
+    /// The pixel shader's first constant buffer, which the pointer read binds.
+    constants: Option<ID3D11Buffer>,
     topology: i32,
     blend_factor: [f32; 4],
     sample_mask: u32,
@@ -33,7 +36,7 @@ pub(in crate::raw::tests) fn bound(gpu: &Gpu) -> Bound {
     let context = &gpu.context;
     let (mut viewport, mut count) = (D3D11_VIEWPORT::default(), 1);
     let (mut scissor, mut scissor_count) = (RECT::default(), 1);
-    let (mut targets, mut resources) = ([None], [None, None]);
+    let (mut targets, mut resources, mut constants) = ([None], [None, None], [None]);
     let (mut blend_factor, mut sample_mask) = ([0.0; 4], 0);
     // SAFETY: the count names the one viewport slot, and both live for the call.
     unsafe { context.RSGetViewports(&raw mut count, Some(&raw mut viewport)) };
@@ -45,17 +48,20 @@ pub(in crate::raw::tests) fn bound(gpu: &Gpu) -> Bound {
     unsafe { context.OMGetRenderTargets(Some(&mut targets), None) };
     // SAFETY: the slice lives for the call.
     unsafe { context.PSGetShaderResources(0, Some(&mut resources)) };
+    // SAFETY: the slice lives for the call.
+    unsafe { context.PSGetConstantBuffers(0, Some(&mut constants)) };
     // SAFETY: both out slots live for the call.
     unsafe { context.OMGetBlendState(None, Some(&mut blend_factor), Some(&raw mut sample_mask)) };
     // SAFETY: the context is live.
     let topology = unsafe { context.IAGetPrimitiveTopology() }.0;
-    let [target] = targets;
+    let ([target], [constants]) = (targets, constants);
     Bound {
         viewport: [viewport.TopLeftX, viewport.TopLeftY, viewport.Width, viewport.Height],
         scissor: [scissor.left, scissor.top, scissor.right, scissor.bottom],
         raster,
         target,
         resources,
+        constants,
         topology,
         blend_factor,
         sample_mask,
@@ -77,6 +83,21 @@ fn other_raster(gpu: &Gpu) -> ID3D11RasterizerState {
     state.expect("the rasterizer state")
 }
 
+/// A constant buffer of one 16-byte register.
+fn other_constants(gpu: &Gpu) -> ID3D11Buffer {
+    let desc = D3D11_BUFFER_DESC {
+        ByteWidth: 16,
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: D3D11_BIND_CONSTANT_BUFFER.0.cast_unsigned(),
+        ..Default::default()
+    };
+    let mut buffer = None;
+    // SAFETY: `desc` and the out slot are live for the call, and no initial data is passed.
+    unsafe { gpu.device.CreateBuffer(&raw const desc, None, Some(&raw mut buffer)) }
+        .expect("create the constant buffer");
+    buffer.expect("the constant buffer")
+}
+
 /// A view of `texture` to sample.
 fn sampled_view(gpu: &Gpu, texture: &ID3D11Texture2D) -> Option<ID3D11ShaderResourceView> {
     let mut view = None;
@@ -87,12 +108,13 @@ fn sampled_view(gpu: &Gpu, texture: &ID3D11Texture2D) -> Option<ID3D11ShaderReso
 }
 
 /// Binds a viewport, a scissor rectangle, a rasterizer state, a target, two pixel shader
-/// resources, a topology and blend values that differ from the draws', and returns what the context
-/// then holds.
+/// resources, a pixel shader constant buffer, a topology and blend values that differ from the
+/// draws', and returns what the context then holds.
 pub(in crate::raw::tests) fn bind_other_state(gpu: &Gpu) -> Bound {
     let other_target = filled(gpu, 4, 4, BLUE);
     let views =
         [filled(gpu, 2, 2, RED), filled(gpu, 2, 2, GREEN)].map(|view| sampled_view(gpu, &view));
+    let constants = other_constants(gpu);
     let mut target_view = None;
     let raster = other_raster(gpu);
     let viewport = D3D11_VIEWPORT {
@@ -116,6 +138,8 @@ pub(in crate::raw::tests) fn bind_other_state(gpu: &Gpu) -> Bound {
     unsafe { gpu.context.OMSetRenderTargets(Some(&[target_view.clone()]), None) };
     // SAFETY: the slice lives for the call.
     unsafe { gpu.context.PSSetShaderResources(0, Some(&views)) };
+    // SAFETY: the slice holds one constant buffer of this context's device.
+    unsafe { gpu.context.PSSetConstantBuffers(0, Some(&[Some(constants.clone())])) };
     // SAFETY: the topology is a plain value.
     unsafe { gpu.context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST) };
     // SAFETY: the blend factor lives for the call.
@@ -123,6 +147,7 @@ pub(in crate::raw::tests) fn bind_other_state(gpu: &Gpu) -> Bound {
     let state = bound(gpu);
     assert_eq!(state.target, target_view, "the test bound its target");
     assert_eq!(state.resources, views, "the test bound its resources");
+    assert_eq!(state.constants, Some(constants), "the test bound its constant buffer");
     assert_eq!(state.raster, Some(raster), "the test bound its rasterizer state");
     assert_eq!(state.topology, D3D11_PRIMITIVE_TOPOLOGY_LINELIST.0);
     assert_eq!(state.viewport, [1.0, 2.0, 3.0, 4.0]);

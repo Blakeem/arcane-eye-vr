@@ -33,7 +33,12 @@ fn ui(gpu: &Gpu, side: u32, marked: &[(u32, u32, [u8; 4])]) -> ID3D11Texture2D {
 }
 
 /// A UI texture of `side` by `side` texels that holds `base` but at `marked`, each `(x, y, pixel)`.
-fn ui_over(gpu: &Gpu, side: u32, base: [u8; 4], marked: &[(u32, u32, [u8; 4])]) -> ID3D11Texture2D {
+pub(super) fn ui_over(
+    gpu: &Gpu,
+    side: u32,
+    base: [u8; 4],
+    marked: &[(u32, u32, [u8; 4])],
+) -> ID3D11Texture2D {
     let mut pixels = vec![base; texels(side, side)];
     for (x, y, pixel) in marked {
         pixels[index(*x, *y, side)] = *pixel;
@@ -50,7 +55,18 @@ fn index(x: u32, y: u32, width: u32) -> usize {
 /// An `R32_FLOAT` distance texture of `width` by `height` texels that holds `FAR` but at `marked`,
 /// each `(x, y, value)`.
 fn distances(gpu: &Gpu, width: u32, height: u32, marked: &[(u32, u32, f32)]) -> ID3D11Texture2D {
-    let mut values = vec![FAR; texels(width, height)];
+    distances_over(gpu, [width, height], FAR, marked)
+}
+
+/// An `R32_FLOAT` distance texture of `size`, width then height, that holds `base` but at `marked`,
+/// each `(x, y, value)`.
+pub(super) fn distances_over(
+    gpu: &Gpu,
+    [width, height]: [u32; 2],
+    base: f32,
+    marked: &[(u32, u32, f32)],
+) -> ID3D11Texture2D {
+    let mut values = vec![base; texels(width, height)];
     for (x, y, value) in marked {
         values[index(*x, *y, width)] = *value;
     }
@@ -268,4 +284,13 @@ fn a_discarded_read_gives_no_result_and_its_slot_serves_the_next_start() {
 
     assert_eq!(after_discard, None);
     assert_eq!(finished(&gpu, &mut read), Nearest::At(2.5), "each slot holds the later start");
+}
+
+#[test]
+fn the_read_belongs_to_the_device_that_created_it() {
+    let (gpu, other) = (warp(), warp());
+    let read = NearestRead::create(&gpu.device).expect("create the read");
+
+    assert!(read.belongs_to(&gpu.device));
+    assert!(!read.belongs_to(&other.device));
 }

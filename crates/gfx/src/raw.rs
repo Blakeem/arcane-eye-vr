@@ -1,6 +1,7 @@
 //! The gfx crate's unsafe edge: the viewer header mapping, the D3D11 and DXGI calls of the
-//! publisher, the layer draw's calls in `layer`, the nearest read's calls in `nearest` and the
-//! region draw's calls in `region`.
+//! publisher, the layer draw's calls in `layer`, the nearest read's calls in `nearest`, the pointer
+//! read's calls in `pointer`, the calls both reads share in `row` and the region draw's calls in
+//! `region`.
 
 #![expect(
     unsafe_code,
@@ -34,7 +35,9 @@ use crate::publish::{PublishError, SetupError, Step};
 
 pub(crate) mod layer;
 pub(crate) mod nearest;
+pub(crate) mod pointer;
 pub(crate) mod region;
+pub(crate) mod row;
 
 /// The header's size as `CreateFileMappingW` takes it.
 const HEADER_MAPPING_SIZE: u32 = 128;
@@ -269,7 +272,7 @@ fn step<T>(step: Step, result: windows::core::Result<T>) -> Result<T, PublishErr
     }
 }
 
-/// A draw's create step, which names the draw's error of a failed create.
+/// A draw's or a read's step, which names its error of a failed create or map call.
 pub(crate) trait CreateStep {
     type Error;
 

@@ -1,5 +1,5 @@
-//! The context state the layer draw and the nearest read's draw change, saved before the draw and
-//! restored after it.
+//! The context state the layer draw and the draws of the nearest read and the pointer read change,
+//! saved before the draw and restored after it.
 //!
 //! The saved state holds no shader class instances and no unordered-access view above slot 7.
 
@@ -7,9 +7,9 @@ use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_VIEWPORT, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE, ID3D11BlendState,
-    ID3D11DepthStencilView, ID3D11DeviceContext, ID3D11DomainShader, ID3D11GeometryShader,
-    ID3D11HullShader, ID3D11InputLayout, ID3D11PixelShader, ID3D11RasterizerState,
-    ID3D11RenderTargetView, ID3D11SamplerState, ID3D11ShaderResourceView,
+    ID3D11Buffer, ID3D11DepthStencilView, ID3D11DeviceContext, ID3D11DomainShader,
+    ID3D11GeometryShader, ID3D11HullShader, ID3D11InputLayout, ID3D11PixelShader,
+    ID3D11RasterizerState, ID3D11RenderTargetView, ID3D11SamplerState, ID3D11ShaderResourceView,
     ID3D11UnorderedAccessView, ID3D11VertexShader,
 };
 
@@ -20,7 +20,7 @@ const VIEWPORT_SLOTS: usize = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PI
 /// The initial count that keeps an unordered-access view's hidden counter.
 const KEEP_COUNTER: u32 = u32::MAX;
 
-/// The pixel shader's resource slots a draw binds: the layer draw's one and the nearest read's two.
+/// The pixel shader's resource slots a draw binds: the layer draw's one and each read's two.
 const RESOURCE_SLOTS: usize = 2;
 
 /// The context state the draw changes.
@@ -49,8 +49,8 @@ impl Saved {
     }
 }
 
-/// The input assembler state, the five shaders, the pixel shader's first resources and its first
-/// sampler.
+/// The input assembler state, the five shaders, the pixel shader's first resources, its first
+/// sampler and its first constant buffer, which the pointer read binds.
 struct Stages {
     topology: D3D_PRIMITIVE_TOPOLOGY,
     layout: Option<ID3D11InputLayout>,
@@ -61,6 +61,7 @@ struct Stages {
     domain: Option<ID3D11DomainShader>,
     resources: [Option<ID3D11ShaderResourceView>; RESOURCE_SLOTS],
     sampler: [Option<ID3D11SamplerState>; 1],
+    constants: [Option<ID3D11Buffer>; 1],
 }
 
 impl Stages {
@@ -68,6 +69,7 @@ impl Stages {
         let (mut vertex, mut pixel, mut geometry, mut hull, mut domain) =
             (None, None, None, None, None);
         let (mut resources, mut sampler) = ([const { None }; RESOURCE_SLOTS], [None]);
+        let mut constants = [None];
         // SAFETY: the context is live. The call returns the topology by value.
         let topology = unsafe { context.IAGetPrimitiveTopology() };
         // SAFETY: the context is live. An unbound layout comes back as an error, which is `None`.
@@ -86,7 +88,20 @@ impl Stages {
         unsafe { context.PSGetShaderResources(0, Some(&mut resources)) };
         // SAFETY: the slice holds one slot and lives for the call.
         unsafe { context.PSGetSamplers(0, Some(&mut sampler)) };
-        Self { topology, layout, vertex, pixel, geometry, hull, domain, resources, sampler }
+        // SAFETY: the slice holds one slot and lives for the call.
+        unsafe { context.PSGetConstantBuffers(0, Some(&mut constants)) };
+        Self {
+            topology,
+            layout,
+            vertex,
+            pixel,
+            geometry,
+            hull,
+            domain,
+            resources,
+            sampler,
+            constants,
+        }
     }
 
     fn restore(self, context: &ID3D11DeviceContext) {
@@ -108,6 +123,8 @@ impl Stages {
         unsafe { context.PSSetShaderResources(0, Some(&self.resources)) };
         // SAFETY: the slice holds the sampler the context held, or none.
         unsafe { context.PSSetSamplers(0, Some(&self.sampler)) };
+        // SAFETY: the slice holds the constant buffer the context held, or none.
+        unsafe { context.PSSetConstantBuffers(0, Some(&self.constants)) };
     }
 }
 

@@ -29,10 +29,10 @@ use crate::ui_layer::decide::{Draw, Step, Write, depth_shift};
 use crate::ui_layer::test_support::target_parts;
 use crate::ui_layer::ui_depth::{DepthInput, DepthReport};
 
-const BLACK: Pixel = [0, 0, 0, 255];
+pub(super) const BLACK: Pixel = [0, 0, 0, 255];
 
 /// The UI texture's width, one texel per column of a 32-column half.
-const UI_WIDTH: u32 = 32;
+pub(super) const UI_WIDTH: u32 = 32;
 
 /// The UI texel column that is red.
 const RED_COLUMN: usize = 10;
@@ -44,13 +44,13 @@ const SEE_THROUGH: Pixel = [0, 128, 0, 128];
 const SEE_THROUGH_TEXEL: usize = 24;
 
 /// The far plane distance of the test camera, in meters.
-const FAR_M: f32 = 10_000.0;
+pub(super) const FAR_M: f32 = 10_000.0;
 
 /// A scene 0.5 m away as a share of the far plane, near enough for the largest UI disparity.
-const NEAR_SHARE: f32 = 0.5 / FAR_M;
+pub(super) const NEAR_SHARE: f32 = 0.5 / FAR_M;
 
 /// The frames a test runs at most until the first read's result arrives.
-const MAX_FRAMES: usize = 200;
+pub(super) const MAX_FRAMES: usize = 200;
 
 /// The measured dialogue's lens.
 const CAMERA: Camera = Camera {
@@ -70,22 +70,31 @@ fn hiding_pixels() -> Vec<Pixel> {
 }
 
 /// The UI texture: the hiding UI with `SEE_THROUGH` at `SEE_THROUGH_TEXEL`, so the scene shows.
-fn ui_pixels() -> Vec<Pixel> {
+pub(super) fn ui_pixels() -> Vec<Pixel> {
     let mut pixels = hiding_pixels();
     pixels[SEE_THROUGH_TEXEL] = SEE_THROUGH;
     pixels
 }
 
 /// A game whose table names the UI texture and `distances`, and the textures it holds.
-struct Scene {
-    game: Game,
+pub(super) struct Scene {
+    pub(super) game: Game,
     ui: ID3D11Texture2D,
     _distances: ID3D11Texture2D,
 }
 
 impl Scene {
     fn new(test: &TestSwapchain, distances: ID3D11Texture2D) -> Self {
-        let ui = texture_of(test, UI_WIDTH, &ui_pixels());
+        Self::showing(test, &ui_pixels(), distances)
+    }
+
+    /// A scene whose UI texture is `UI_WIDTH` texels wide and holds `pixels` in row order.
+    pub(super) fn showing(
+        test: &TestSwapchain,
+        pixels: &[Pixel],
+        distances: ID3D11Texture2D,
+    ) -> Self {
+        let ui = texture_of(test, UI_WIDTH, pixels);
         let address = |texture: &ID3D11Texture2D| texture.as_raw().expose_provenance();
         let world = World::with_keys(&[
             (TextureKey::UI, address(&ui)),
@@ -97,7 +106,7 @@ impl Scene {
 
 /// The input of a frame `frame` frames after `start`, 16 ms apart, with a 5 percent depth offset,
 /// which moves a side by side frame's right half 2 columns, and the test camera.
-fn input(start: Instant, frame: u32) -> DepthInput {
+pub(super) fn input(start: Instant, frame: u32) -> DepthInput {
     let since = Duration::from_millis(16).checked_mul(frame).expect("a test duration");
     let stereo = StereoSettings { depth_offset_percent: depth(5.0), ..StereoSettings::default() };
     let now = start.checked_add(since).expect("a test time");
@@ -142,12 +151,12 @@ fn centimeters(report: DepthReport) -> Option<f32> {
 }
 
 /// The frame `more` frames after the frame `frames`.
-fn later(frames: u32, more: u32) -> u32 {
+pub(super) fn later(frames: u32, more: u32) -> u32 {
     frames.checked_add(more).expect("a test frame")
 }
 
 /// The back buffer's pixels at `columns` of `row`.
-fn at<const N: usize>(pixels: &[Pixel], row: usize, columns: [usize; N]) -> [Pixel; N] {
+pub(super) fn at<const N: usize>(pixels: &[Pixel], row: usize, columns: [usize; N]) -> [Pixel; N] {
     let start = (WIDTH as usize).checked_mul(row).expect("a test row");
     columns.map(|column| pixels[start.checked_add(column).expect("a test index")])
 }
@@ -242,7 +251,7 @@ fn a_flat_frame_sets_no_ui_disparity_and_the_full_eye_distance_at_once() {
 
     let report = layer.depth_report();
     assert_eq!((report.columns, report.eye_scale), (0, EyeScale::FULL));
-    assert_eq!(layer.eye_scale(), EyeScale::FULL);
+    assert_eq!(layer.hand_eye_scale(), EyeScale::FULL);
 }
 
 // A WARP device offers no failure of the read's create, draw or map calls that leaves the device

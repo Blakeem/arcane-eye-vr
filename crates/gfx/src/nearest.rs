@@ -9,9 +9,9 @@
 //! scene, whatever the distance texture holds.
 //!
 //! A started read draws two values per grid column into a row texture, the smallest distance and
-//! the smallest alpha, and copies that row into a staging texture of its own. A later frame maps
-//! the staging texture with no wait. The read draws on the context it gets and puts every changed
-//! value back before it returns, as the layer draw does.
+//! the smallest alpha, and copies that row into a staging texture of its own, which a later frame
+//! maps with no wait, in the crate's `readback` module. The read draws on the context it gets and
+//! puts every changed value back before it returns, as the layer draw does.
 
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_SHADER_RESOURCE, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
@@ -19,18 +19,16 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_R32_FLOAT};
 use windows::core::HRESULT;
 
-use crate::raw::nearest::{Columns, Pipeline, Staging};
+use crate::raw::nearest::Pipeline;
+use crate::raw::row::{Row, Texel, sampled_view};
 use crate::raw::texture_desc;
+use crate::readback::Readback;
 
 /// The texels between two grid points in each direction, as `SPACING` in `shaders/nearest.slang`.
 pub const SPACING: u32 = 8;
 
 /// The smallest alpha of a layer texel that hides the scene under it.
 const HIDING: f32 = 0.99;
-
-/// The reads that can wait for the GPU at once. A start finds no free slot only while the GPU runs
-/// this many frames behind.
-const SLOTS: usize = 3;
 
 /// The nearest read step that failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,17 +90,6 @@ pub enum Nearest {
     Hidden,
 }
 
-/// The values the read draws for one grid column, in the order of the shader's output channels.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct GridColumn {
-    /// The smallest distance under the column's covering texels, or a negative value when none
-    /// covers.
-    pub(crate) distance: f32,
-    /// The smallest alpha of the column's visited texels.
-    pub(crate) alpha: f32,
-}
-
 /// The checks of `texture` as the distance texture: one sample per texel of `R32_FLOAT`, at least
 /// two texels wide and sampled by a shader.
 ///
@@ -127,28 +114,13 @@ pub fn check_distance(texture: &ID3D11Texture2D) -> Result<(), DistanceFault> {
     Ok(())
 }
 
-/// A read that waits for the GPU: its place in the start order and its scale.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Pending {
-    order: u64,
-    scale: f32,
-}
-
-/// A staging texture and the read that waits for it, if any.
-#[derive(Default)]
-struct Slot {
-    staging: Option<Staging>,
-    pending: Option<Pending>,
-}
-
 /// The nearest read's objects on one device.
 pub struct NearestRead {
     pipeline: Pipeline,
     /// The row texture of the last start, made again when the grid's width changes.
-    columns: Option<Columns>,
-    slots: [Slot; SLOTS],
-    /// The order the next start gets.
-    next_order: u64,
+    columns: Option<Row>,
+    /// The staging textures and the waiting reads, each with the scale its start named.
+    readback: Readback<f32>,
 }
 
 impl NearestRead {
@@ -161,14 +133,13 @@ impl NearestRead {
         Ok(Self {
             pipeline: Pipeline::create(device)?,
             columns: None,
-            slots: Default::default(),
-            next_order: 0,
+            readback: Readback::new(device),
         })
     }
 
     /// Whether the read's objects belong to `device`.
     pub fn belongs_to(&self, device: &ID3D11Device) -> bool {
-        self.pipeline.belongs_to(device)
+        self.pipeline.device() == device
     }
 
     /// Starts a read of `distances` under `layer` through `context`, the immediate context of the
@@ -178,8 +149,7 @@ impl NearestRead {
     ///
     /// # Errors
     ///
-    /// Returns the view or the texture that could not be created. The start then drew nothing and
-    /// started no read.
+    /// Returns the view or the texture that could not be created. The start then started no read.
     pub fn start(
         &mut self,
         context: &ID3D11DeviceContext,
@@ -187,28 +157,20 @@ impl NearestRead {
         distances: &ID3D11Texture2D,
         scale: f32,
     ) -> Result<(), NearestError> {
-        let Some(slot) = self.slots.iter().position(|slot| slot.pending.is_none()) else {
+        if !self.readback.has_free() {
             return Ok(());
-        };
+        }
+        let device = self.pipeline.device();
         let width = texture_desc(layer).Width.div_ceil(SPACING);
-        let layer_view = self.pipeline.sampled_view(NearestStep::LayerView, layer)?;
-        let distance_view = self.pipeline.sampled_view(NearestStep::DistanceView, distances)?;
+        let layer_view = sampled_view(device, NearestStep::LayerView, layer)?;
+        let distance_view = sampled_view(device, NearestStep::DistanceView, distances)?;
         let columns = match self.columns.take().filter(|columns| columns.width() == width) {
             Some(columns) => columns,
-            None => self.pipeline.columns(width)?,
+            None => Row::create(device, width, NearestStep::Columns, NearestStep::ColumnsView)?,
         };
         let columns = self.columns.insert(columns);
-        let Some(slot) = self.slots.get_mut(slot) else { return Ok(()) };
-        let staging = match slot.staging.take().filter(|staging| staging.width() == width) {
-            Some(staging) => staging,
-            None => self.pipeline.staging(width)?,
-        };
-        let staging = slot.staging.insert(staging);
         self.pipeline.draw(context, columns, &layer_view, &distance_view);
-        staging.fill(context, columns);
-        slot.pending = Some(Pending { order: self.next_order, scale });
-        self.next_order = self.next_order.wrapping_add(1);
-        Ok(())
+        self.readback.queue(context, columns, NearestStep::Staging, scale)
     }
 
     /// The result of the newest read that the GPU finished, or `None` when no read finished since
@@ -223,59 +185,42 @@ impl NearestRead {
         &mut self,
         context: &ID3D11DeviceContext,
     ) -> Result<Option<Nearest>, NearestError> {
-        let mut newest = None;
-        for _ in 0..SLOTS {
-            let Some(slot) = self.oldest_pending() else { break };
-            let (Some(staging), Some(pending)) = (&slot.staging, slot.pending) else { break };
-            let read = staging.read(context, |columns| found(columns, pending.scale))?;
-            let Some(found) = read else { break };
-            slot.pending = None;
-            newest = Some(found);
-        }
-        Ok(newest)
+        self.readback.newest(context, NearestStep::Map, found)
     }
 
     /// Forgets every read that waits for the GPU, so [`Self::newest`] gives no result of a read
-    /// started before this call. A later start in a forgotten read's slot queues its copy behind the
-    /// forgotten one, so the slot's next map holds the later start's values.
+    /// started before this call.
     pub fn discard(&mut self) {
-        for slot in &mut self.slots {
-            slot.pending = None;
-        }
-    }
-
-    fn oldest_pending(&mut self) -> Option<&mut Slot> {
-        self.slots
-            .iter_mut()
-            .filter(|slot| slot.pending.is_some())
-            .min_by_key(|slot| slot.pending.map_or(u64::MAX, |pending| pending.order))
+        self.readback.discard();
     }
 }
 
-/// What the row `columns` of a read whose start named `scale` found. A row whose every column has
-/// a smallest alpha of at least [`HIDING`] hides the scene. Otherwise the smallest distance that is
-/// 0 or more counts, since a column with no covering texel holds a negative distance and a NaN
-/// compares false.
-fn found(columns: &[GridColumn], scale: f32) -> Nearest {
-    let hides = !columns.is_empty() && columns.iter().all(|column| column.alpha >= HIDING);
+/// What the row `columns` of a read whose start named `scale` found. Each column's red channel is
+/// the smallest distance under its covering texels, or a negative value when none covers, and its
+/// green channel the smallest alpha of its visited texels. A row whose every column has a smallest
+/// alpha of at least [`HIDING`] hides the scene. Otherwise the smallest distance that is 0 or more
+/// counts, since a column with no covering texel holds a negative distance and a NaN compares
+/// false.
+fn found(columns: &[Texel], scale: f32) -> Nearest {
+    let hides = !columns.is_empty() && columns.iter().all(|&[_, alpha]| alpha >= HIDING);
     if hides {
         return Nearest::Hidden;
     }
-    let distances = columns.iter().map(|column| column.distance);
+    let distances = columns.iter().map(|&[distance, _]| distance);
     let smallest = distances.filter(|distance| *distance >= 0.0).reduce(f32::min);
     smallest.map_or(Nearest::Uncovered, |distance| Nearest::At(distance * scale))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{GridColumn, Nearest, found};
+    use super::{Nearest, Texel, found};
 
     const OPAQUE: f32 = 1.0;
     const HALF: f32 = 0.5;
     const NONE_COVERS: f32 = -1.0;
 
-    fn row(columns: &[(f32, f32)]) -> Vec<GridColumn> {
-        columns.iter().map(|&(distance, alpha)| GridColumn { distance, alpha }).collect()
+    fn row(columns: &[(f32, f32)]) -> Vec<Texel> {
+        columns.iter().map(|&column| Texel::from(column)).collect()
     }
 
     #[test]

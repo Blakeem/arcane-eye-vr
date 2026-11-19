@@ -21,7 +21,7 @@ use crate::ui_layer::cursor::counter::WindowsCursor;
 use crate::ui_layer::cursor::image::{Buffers, Image};
 use crate::ui_layer::cursor::place::{Pointer, spot};
 use crate::ui_layer::cursor::{Aim, Canvas, Cursor, read};
-use crate::ui_layer::decide::{Draw, halves};
+use crate::ui_layer::decide::{Draw, Moves, halves};
 use crate::ui_layer::test_support::{cursor_frame, draw_step, target_parts};
 
 const BLUE: Pixel = [0, 0, 255, 255];
@@ -63,7 +63,8 @@ fn draw_into(
     let device = raw::device(&test.swapchain).expect("the swapchain's device");
     let context = raw::immediate_context(&device).expect("the immediate context");
     let rects = halves(WIDTH, HEIGHT).expect("the halves");
-    let canvas = Canvas { context: &context, back_buffer: target, halves: &rects, columns: 0 };
+    let canvas =
+        Canvas { context: &context, back_buffer: target, halves: &rects, moves: Moves::ZERO };
     cursor.draw(layer, &canvas, aim);
 }
 
@@ -292,7 +293,7 @@ fn a_cursor_frame_with_an_unchanged_handle_makes_no_heap_allocation() {
     let back_buffer = raw::back_buffer_texture(&test.swapchain).expect("the back buffer");
     let rects = halves(WIDTH, HEIGHT).expect("the halves");
     let canvas =
-        Canvas { context: &context, back_buffer: &back_buffer, halves: &rects, columns: 0 };
+        Canvas { context: &context, back_buffer: &back_buffer, halves: &rects, moves: Moves::ZERO };
     let moved = aim(&test_cursor, 20, 12);
 
     let guard = arm_alloc_guard().expect("arm the allocation guard");
@@ -324,7 +325,7 @@ fn cursor_frames_whose_handle_changes_make_no_heap_allocation() {
     let back_buffer = raw::back_buffer_texture(&test.swapchain).expect("the back buffer");
     let rects = halves(WIDTH, HEIGHT).expect("the halves");
     let canvas =
-        Canvas { context: &context, back_buffer: &back_buffer, halves: &rects, columns: 0 };
+        Canvas { context: &context, back_buffer: &back_buffer, halves: &rects, moves: Moves::ZERO };
 
     let mut guarded_draw = |test_cursor: &TestCursor, x, y| {
         let guard = arm_alloc_guard().expect("arm the allocation guard");

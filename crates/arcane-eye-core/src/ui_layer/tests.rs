@@ -2,6 +2,7 @@
 //! table in test memory.
 
 mod cursor;
+mod cursor_depth;
 mod decide;
 mod depth;
 mod flat;

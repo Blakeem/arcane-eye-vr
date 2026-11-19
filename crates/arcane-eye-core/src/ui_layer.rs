@@ -11,16 +11,17 @@
 //!                       whether Windows shows its cursor over a drawn cursor, and what the core
 //!                       writes for the next frame
 //!   [aim]               the drawn cursor's pointer and cursor handle, in `cursor`
-//!   [ui depth]          the columns by which a side by side frame's UI and cursor move in front
-//!                       of the scene under the UI, in `ui_depth`. 0 while the UI hides the
-//!                       scene and in every other frame
+//!   [ui depth]          the columns by which a side by side frame's UI moves in front of the
+//!                       scene under it, 0 while the UI hides the scene, and the cursor's columns
+//!                       at the depth of what is under the pointer, in `ui_depth`. 0 in every
+//!                       other frame
 //!   [pair]              a flat frame's entire picture into each half of the back buffer
 //!   [move]              a side by side frame's right half moved right by the player's depth
 //!                       offset, black in the columns it uncovers, in a frame that holds no UI yet
 //!   [draw]              the UI key's texture over each half of the back buffer, moved by those
 //!                       columns
 //!   [cursor]            the game's cursor over each half of the back buffer, in each frame whose
-//!                       pointer is in the game window's client area, moved by those columns
+//!                       pointer is in the game window's client area, moved by the cursor's columns
 //!   [counter]           the Windows cursor hidden under a drawn cursor as decided, and shown in a
 //!                       frame with no drawn cursor, in `cursor`
 //!   [write]             0 while the feature runs, the game's value when it stops
@@ -64,7 +65,7 @@ use self::cursor::counter::Marked;
 use self::cursor::{Aim, Canvas, Cursor};
 use self::decide::{Draw, Picture, Seen, Step, Write, crossed, depth_shift, halves, step};
 pub(crate) use self::target::{DrawFault, Target};
-use self::ui_depth::{DepthInput, DepthReport, UiDepth};
+use self::ui_depth::{Columns, CursorReport, DepthInput, DepthReport, DrawnUi, UiDepth};
 use crate::config::Config;
 use crate::eye_view::Layout;
 use crate::game_source::GameSource;
@@ -202,13 +203,17 @@ impl UiLayer {
         self.cursor.show();
     }
 
-    /// The eye scale in use, which the eye cameras render at from their next proxies.
-    pub(crate) const fn eye_scale(&self) -> EyeScale {
-        self.depth.eye_scale()
+    /// Hands the UI depth's eye scale in use to the eye cameras at a Present call.
+    pub(crate) fn hand_eye_scale(&mut self) -> EyeScale {
+        self.depth.hand_eye_scale()
     }
 
     pub(crate) fn depth_report(&self) -> DepthReport {
         self.depth.report()
+    }
+
+    pub(crate) fn cursor_report(&self) -> CursorReport {
+        self.depth.cursor_report()
     }
 
     /// One frame of `layout`: reads the composite stage's UI enable byte, draws a flat frame's
@@ -305,8 +310,8 @@ impl UiLayer {
     }
 
     /// Runs `draw` on the back buffer: the pair or the move first, then the UI key's texture of this
-    /// frame into each half, then the cursor of `aim` into each half, both moved by the columns the
-    /// UI depth gives a side by side frame's UI. The UI texture is read before the pair and the
+    /// frame into each half, then the cursor of `aim` into each half, each moved by its columns the
+    /// UI depth gives a side by side frame. The UI texture is read before the pair and the
     /// move, so a failed read leaves the frame as the game drew it. A fault of the cursor's read,
     /// conversion or placed draw skips only the cursor. Returns whether the cursor was drawn.
     fn draw_halves(
@@ -331,9 +336,11 @@ impl UiLayer {
         let columns = match &ui {
             Some(ui) if draw.draws_side_by_side_ui() => {
                 let [left, _] = rects;
-                self.depth.on_frame(target.devices, ui, input, left.width)
+                let pointer = aim.map(|aim| aim.spot.shares());
+                let drawn = DrawnUi { ui, half_width: left.width, pointer };
+                self.depth.on_frame(target.devices, input, &drawn)
             }
-            _ => 0,
+            _ => Columns::SURFACE,
         };
         let back_buffer = match raw::back_buffer_texture(target.swapchain) {
             Ok(texture) => texture,
@@ -347,10 +354,11 @@ impl UiLayer {
             layer.draw_black(context, &back_buffer, &[shift.uncovered])?;
         }
         if let Some(ui) = ui {
-            layer.draw_placed(context, &back_buffer, &ui, &crossed(&rects, columns))?;
+            layer.draw_placed(context, &back_buffer, &ui, &crossed(&rects, columns.ui))?;
         }
         let Some(aim) = aim else { return Ok(Marked::Nothing) };
-        let canvas = Canvas { context, back_buffer: &back_buffer, halves: &rects, columns };
+        let moves = columns.cursor;
+        let canvas = Canvas { context, back_buffer: &back_buffer, halves: &rects, moves };
         Ok(self.cursor.draw(layer, &canvas, aim))
     }
 
@@ -368,7 +376,7 @@ impl UiLayer {
     }
 
     /// Drops the layer draw, whose copy of the back buffer holds video memory, the cursor's texture
-    /// and the UI depth's read, sets the UI depth's values in use to no UI disparity and the full
+    /// and the UI depth's reads, sets the UI depth's values in use to no UI disparity and the full
     /// eye distance, gives the cursor display counter the game's value back, and gives the UI enable
     /// byte the game's value back when the core still holds it at 0 in the stage the pipeline holds
     /// now. The frame handler also runs it after the Present call-site hook failed.

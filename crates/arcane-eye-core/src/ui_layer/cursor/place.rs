@@ -35,6 +35,16 @@ pub(crate) struct Sprite {
     pub(crate) hotspot: [u16; 2],
 }
 
+impl Spot {
+    /// The pointer's place as shares of the client area's width and height, from 0 to below 1. A
+    /// share is the same share of each half's width or height, where [`place`] puts the hotspot.
+    pub(crate) fn shares(self) -> [f32; 2] {
+        let across = f32::from(self.x) / f32::from(self.width);
+        let down = f32::from(self.y) / f32::from(self.height);
+        [across, down]
+    }
+}
+
 /// The spot of `pointer`, or `None` when it lies outside the client area or the area exceeds a
 /// 16-bit size.
 pub(crate) fn spot(pointer: Pointer) -> Option<Spot> {
@@ -98,6 +108,13 @@ mod tests {
         }
         assert_eq!(spot(Pointer { x: 0, y: 0, width: 0, height: 0 }), None);
         assert!(spot(pointer(1919, 1079)).is_some());
+    }
+
+    #[test]
+    fn a_spots_shares_are_its_column_and_row_over_the_client_areas_width_and_height() {
+        let spot = spot(pointer(960, 270)).expect("a pointer inside");
+
+        assert_eq!(spot.shares(), [0.5, 0.25]);
     }
 
     #[test]

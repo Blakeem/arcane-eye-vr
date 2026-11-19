@@ -1,14 +1,16 @@
-//! The targets of measured and constructed scenes, and the values in use that follow them.
+//! The targets of measured and constructed scenes, the values in use that follow them, and the
+//! pointer read's probe and the cursor's moves.
 
 use std::time::Duration;
 
 use game_bindings::camera::Camera;
 use gfx::nearest::Nearest;
+use gfx::pointer::Pointed;
 use settings::player::{DepthOffsetPercent, IpdMm, StereoSettings};
 use stereo_core::eye::EyeScale;
 
-use super::{Depth, View, after, follow, targets};
-use crate::ui_layer::decide::ui_columns;
+use super::{Depth, Over, View, after, cursor_moves, follow, probe, targets};
+use crate::ui_layer::decide::{Moves, ui_columns};
 
 /// The main view's camera in the measured dialogue close-up.
 const DIALOGUE: Camera = Camera {
@@ -156,4 +158,88 @@ fn a_scene_behind_the_screen_surface_lowers_the_ui_disparity_in_use_at_the_falli
     let stepped = after(in_use, at(8.0), dialogue(), Duration::from_secs(1));
 
     assert_between(stepped.disparity, 0.019_99, 0.020_01, "a fall of 0.01 in one second");
+}
+
+/// The depth offset of 1.5 percent as a share.
+const OFFSET: f32 = 0.015;
+
+/// A half's width of a 3840 column back buffer.
+const HALF_WIDTH: u16 = 1920;
+
+/// A pointer read's result over a UI texel of alpha 0.1, which lets the scene show.
+fn over_scene(hit: f32) -> Pointed {
+    Pointed { alpha: 0.1, hit }
+}
+
+fn moves(left: i16, right: i16) -> Moves {
+    Moves { left, right }
+}
+
+#[test]
+fn a_cursor_over_the_scene_sits_where_each_eye_sees_the_hit() {
+    let moved = |hit| cursor_moves(Some(over_scene(hit)), 37, OFFSET, HALF_WIDTH);
+
+    // 0.00439 of 1920 is 8.4 columns, and 0.015 - 0.00439 of 1920 is 20.4 columns.
+    assert_eq!(moved(0.004_39), moves(8, 20));
+    assert_eq!(moved(0.0117), moves(22, 6));
+    assert_eq!(moved(0.0), moves(0, 29), "no hit, at the depth offset's depth");
+    assert_eq!(moved(0.0275), moves(53, -24), "the right half's cursor left of its place");
+}
+
+#[test]
+fn a_cursor_over_the_ui_or_with_no_result_moves_as_the_ui() {
+    for hit in [0.0, 0.0117, 0.0275] {
+        let over_ui = Some(Pointed { alpha: 0.9, hit });
+        assert_eq!(cursor_moves(over_ui, 37, OFFSET, HALF_WIDTH), moves(37, -37), "{hit}");
+    }
+    assert_eq!(cursor_moves(None, 5, OFFSET, HALF_WIDTH), moves(5, -5));
+}
+
+#[test]
+fn an_alpha_of_0_25_lets_the_scene_show_and_a_nan_alpha_covers_it() {
+    let at_limit = Some(Pointed { alpha: 0.25, hit: 0.0117 });
+    let nan = Some(Pointed { alpha: f32::NAN, hit: 0.0117 });
+
+    assert_eq!(cursor_moves(at_limit, 5, OFFSET, HALF_WIDTH), moves(22, 6));
+    assert_eq!(cursor_moves(nan, 5, OFFSET, HALF_WIDTH), moves(5, -5));
+    assert_eq!(Over::of(at_limit), Over::Scene);
+    assert_eq!(Over::of(nan), Over::Ui);
+    assert_eq!(Over::of(None), Over::NoResult);
+}
+
+#[test]
+fn a_hit_outside_0_to_1_moves_the_cursor_as_the_ui() {
+    for hit in [-0.01, 1.01, f32::NAN, f32::INFINITY] {
+        let pointed = Some(over_scene(hit));
+        assert_eq!(cursor_moves(pointed, 5, OFFSET, HALF_WIDTH), moves(5, -5), "{hit}");
+    }
+}
+
+#[test]
+fn the_cursor_depth_line_names_what_the_pointer_is_over() {
+    let names = [Over::NoResult, Over::Ui, Over::Scene].map(Over::as_str);
+
+    assert_eq!(names, ["none", "ui", "scene"]);
+}
+
+#[test]
+fn the_probe_scales_the_ray_by_the_eye_scale_and_reaches_half_the_limit_and_the_offset() {
+    let view = View { lens: 1.080_552_4, eye_m: 0.065, offset: OFFSET };
+
+    let full = probe([0.25, 0.5], view, EyeScale::FULL, 100.0).expect("a ray");
+    let half = probe([0.25, 0.5], view, EyeScale::clamped(0.5), 100.0).expect("a ray");
+
+    // 1.0805524 * 0.065 / (4 * 100) and (0.04 + 0.015) / 2.
+    assert_between(full.ray, 0.000_175_58, 0.000_175_60, "the full eye distance's ray");
+    assert_between(half.ray, 0.000_087_79, 0.000_087_80, "the half eye distance's ray");
+    assert_eq!((full.place, full.reach), ([0.25, 0.5], 0.0275));
+}
+
+#[test]
+fn a_far_plane_that_gives_no_finite_ray_above_0_gives_no_probe() {
+    let view = View { lens: 1.080_552_4, eye_m: 0.065, offset: OFFSET };
+
+    for far_m in [0.0, -1.0, f32::INFINITY, f32::NAN] {
+        assert_eq!(probe([0.25, 0.5], view, EyeScale::FULL, far_m), None, "{far_m}");
+    }
 }

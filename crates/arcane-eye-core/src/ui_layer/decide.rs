@@ -1,7 +1,7 @@
 //! The UI layer's decisions: the pair, the move and the UI texture the core draws into a frame, what
 //! it writes to the composite stage's UI enable byte, whether Windows shows its cursor, the halves of
-//! the back buffer each draw covers, the areas of the move, and the columns and places of a UI
-//! drawn with a crossed disparity.
+//! the back buffer each draw covers, the areas of the move, the columns and places of a UI drawn
+//! with a crossed disparity, and the places of a layer moved by its own columns in each half.
 
 use gfx::layer::{Area, Placement, Rect};
 use settings::player::DepthOffsetPercent;
@@ -191,6 +191,13 @@ fn rounded_columns(columns: f32, max: u16) -> Option<u16> {
     (0..=max).find(|column| f32::from(*column) >= rounded)
 }
 
+/// `columns` rounded to an integer from `-max` to `max`, half away from 0, or `None` when it rounds
+/// past them, past an `i16`, or is NaN.
+pub(crate) fn signed_columns(columns: f32, max: u16) -> Option<i16> {
+    let magnitude = i16::try_from(rounded_columns(columns.abs(), max)?).ok()?;
+    Some(if columns < 0.0 { magnitude.saturating_neg() } else { magnitude })
+}
+
 /// The columns that a UI disparity of `disparity`, a share of a half's width, moves the UI in each
 /// half of `half_width` columns: half the disparity's columns, rounded. A disparity whose columns
 /// round above the half's width, or a NaN disparity, gives 0, which leaves the UI on the surface.
@@ -198,22 +205,43 @@ pub(crate) fn ui_columns(disparity: f32, half_width: u16) -> u16 {
     rounded_columns(disparity * f32::from(half_width) / 2.0, half_width).unwrap_or(0)
 }
 
+/// The columns a layer moves to the right in the left half and in the right half. A negative value
+/// moves it to the left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Moves {
+    pub(crate) left: i16,
+    pub(crate) right: i16,
+}
+
+impl Moves {
+    /// No move in either half, so the layer sits on the screen surface.
+    pub(crate) const ZERO: Self = Self { left: 0, right: 0 };
+
+    /// `columns` to the right in the left half and `columns` to the left in the right half, so the
+    /// layer sits in front of the screen surface. `columns` past an `i16` move by the largest one.
+    pub(crate) fn crossed(columns: u16) -> Self {
+        let columns = i16::try_from(columns).unwrap_or(i16::MAX);
+        Self { left: columns, right: columns.saturating_neg() }
+    }
+}
+
 /// The places of a layer stretched over each of `halves`, drawn `columns` to the right in the left
 /// half and `columns` to the left in the right half, so it sits in front of the screen surface.
 /// Each place stays clipped to its own half.
 pub(crate) fn crossed(halves: &[Rect; 2], columns: u16) -> [Placement; 2] {
-    shifted(halves.map(|half| Placement { area: area_of(half), clip: half }), columns)
+    shifted(
+        halves.map(|half| Placement { area: area_of(half), clip: half }),
+        Moves::crossed(columns),
+    )
 }
 
-/// `placements` of the left half and the right half moved `columns` to the right in the left half
-/// and `columns` to the left in the right half. Each keeps its clip.
-pub(crate) fn shifted([left, right]: [Placement; 2], columns: u16) -> [Placement; 2] {
-    let shift = f32::from(columns);
-    let moved = |placement: Placement, by: f32| Placement {
-        area: Area { x: placement.area.x + by, ..placement.area },
+/// `placements` of the left half and the right half moved by `moves`. Each keeps its clip.
+pub(crate) fn shifted([left, right]: [Placement; 2], moves: Moves) -> [Placement; 2] {
+    let shift = |placement: Placement, by: i16| Placement {
+        area: Area { x: placement.area.x + f32::from(by), ..placement.area },
         ..placement
     };
-    [moved(left, shift), moved(right, -shift)]
+    [shift(left, moves.left), shift(right, moves.right)]
 }
 
 fn area_of(rect: Rect) -> Area {

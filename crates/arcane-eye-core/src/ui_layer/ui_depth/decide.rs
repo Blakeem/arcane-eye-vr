@@ -1,5 +1,6 @@
-//! The UI depth's decisions: the UI disparity and the eye scale that a nearest distance asks for, and
-//! the values in use that follow them or that a UI that hides the scene sets.
+//! The UI depth's decisions: the UI disparity and the eye scale that a nearest distance asks for,
+//! the values in use that follow them or that a UI that hides the scene sets, and the pointer read's
+//! probe and the cursor's moves that its result gives.
 //!
 //! Disparities are shares of a half's width. A scene point `z` meters away has the crossed disparity
 //! `lens * eye_m / (2 * z)` between the two halves at the eye distance `eye_m`, where `lens` is the
@@ -11,8 +12,11 @@ use std::time::Duration;
 
 use game_bindings::camera::Camera;
 use gfx::nearest::Nearest;
+use gfx::pointer::{Pointed, Probe};
 use settings::player::StereoSettings;
 use stereo_core::eye::EyeScale;
+
+use crate::ui_layer::decide::{Moves, signed_columns};
 
 /// The share the UI sits in front of the scene under it.
 const MARGIN: f32 = 0.0025;
@@ -34,6 +38,10 @@ const PERCENT: f32 = 100.0;
 
 /// The millimeters in one meter, the unit of the eye distance.
 const MILLIMETERS_PER_METER: f32 = 1000.0;
+
+/// A UI texel under the pointer covers the scene when its alpha is above this value, as `COVERING`
+/// in `shaders/nearest.slang` decides for the nearest read.
+const COVERING: f32 = 0.25;
 
 /// The UI disparity and the eye scale of one moment, as targets or as the values in use.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -65,9 +73,14 @@ impl View {
         Self {
             lens: (camera.aspect * (camera.fov_y_rad / 2.0).tan()).recip(),
             eye_m: stereo.ipd_mm.millimeters() / MILLIMETERS_PER_METER,
-            offset: stereo.depth_offset_percent.percent() / PERCENT,
+            offset: offset(stereo),
         }
     }
+}
+
+/// The depth offset of the player's `stereo` settings as a share.
+pub(crate) fn offset(stereo: StereoSettings) -> f32 {
+    stereo.depth_offset_percent.percent() / PERCENT
 }
 
 /// The values in use after a frame whose newest result is `found`, `elapsed` after the last step
@@ -126,6 +139,76 @@ pub(crate) fn follow(in_use: Depth, target: Depth, elapsed: Duration) -> Depth {
         EyeScale::clamped(risen.min(target.eye_scale.share()))
     };
     Depth { disparity, eye_scale }
+}
+
+/// What the pointer is over in the newest pointer read's result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Over {
+    /// No result arrived since the last reset.
+    NoResult,
+    /// A UI texel whose alpha is above [`COVERING`], or NaN.
+    Ui,
+    /// A UI texel whose alpha is at most [`COVERING`], so the scene shows.
+    Scene,
+}
+
+impl Over {
+    pub(crate) fn of(pointed: Option<Pointed>) -> Self {
+        match pointed {
+            None => Self::NoResult,
+            Some(pointed) if pointed.alpha <= COVERING => Self::Scene,
+            Some(_) => Self::Ui,
+        }
+    }
+
+    /// The name the `cursor depth` line gives it.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::NoResult => "none",
+            Self::Ui => "ui",
+            Self::Scene => "scene",
+        }
+    }
+}
+
+/// The pointer read's probe for the pointer at `place`, shares of the client area, in `view` at the
+/// eye scale in use `eye_scale`, with the main view camera's far plane `far_m` as the distance
+/// texture's unit. The left eye sits half the eye distance left of the head camera, so the head
+/// camera's ray through the pointer lies `lens * eye_m / (4 * t)` meters away where the left eye
+/// sees it `t` to the right of the pointer. The march reaches half the sum of the largest UI
+/// disparity and the depth offset. `None` for a ray that is not finite and above 0.
+pub(crate) fn probe(place: [f32; 2], view: View, eye_scale: EyeScale, far_m: f32) -> Option<Probe> {
+    let ray = view.lens * view.eye_m * eye_scale.share() / (4.0 * far_m);
+    if !ray.is_finite() || ray <= 0.0 {
+        return None;
+    }
+    Some(Probe { place, ray, reach: f32::midpoint(LIMIT, view.offset) })
+}
+
+/// The cursor's moves in each half of `half_width` columns, from the newest pointer read's result
+/// `pointed`, the UI's columns `ui_columns` and the depth offset `offset` as a share. A cursor over
+/// no result or over the UI moves as the UI does. A cursor over the scene sits where each eye sees
+/// the hit: `hit` to the right in the left half, and `hit` to the left of the right half's scene,
+/// which the depth offset moves right. A hit outside 0 to 1 or a move past the half moves as the UI
+/// does.
+pub(crate) fn cursor_moves(
+    pointed: Option<Pointed>,
+    ui_columns: u16,
+    offset: f32,
+    half_width: u16,
+) -> Moves {
+    let crossed = Moves::crossed(ui_columns);
+    let Some(pointed) = pointed else { return crossed };
+    if Over::of(Some(pointed)) != Over::Scene || !(0.0..=1.0).contains(&pointed.hit) {
+        return crossed;
+    }
+    let width = f32::from(half_width);
+    let left = signed_columns(pointed.hit * width, half_width);
+    let right = signed_columns((offset - pointed.hit) * width, half_width);
+    match (left, right) {
+        (Some(left), Some(right)) => Moves { left, right },
+        _ => crossed,
+    }
 }
 
 #[cfg(test)]

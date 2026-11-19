@@ -5,7 +5,8 @@
 //! game source when the dev flag `viewer.source` names one. Before that hand-over the UI layer draws
 //! into the back buffer. It logs once which feature's failure made the stereo pair flat. It times
 //! each call and logs the perf summary line once per window of frames, after the camera lines of the
-//! window's newest main view camera and newest eye view camera and the UI layer's `ui depth` line.
+//! window's newest main view camera and newest eye view camera and the UI layer's `ui depth` and
+//! `cursor depth` lines.
 //! [`on_failed_present_call`] is its work after `present-hook` failed.
 //!
 //! It keeps no back-buffer reference and no swapchain reference. An extra swapchain reference keeps a
@@ -33,7 +34,7 @@ use crate::eye_view::Layout;
 use crate::game_source::GameSource;
 use crate::pair::PairState;
 use crate::raw::{self, BackBuffer, Devices};
-use crate::ui_layer::ui_depth::{DepthInput, DepthReport};
+use crate::ui_layer::ui_depth::{CursorReport, DepthInput, DepthReport};
 use crate::ui_layer::{Target, UiLayer};
 use crate::view_camera::{FrameCamera, FrameCameras, Viewpoint};
 use crate::viewer::ViewerLink;
@@ -88,9 +89,9 @@ impl FrameState {
         Self { game_source, ui_layer, ..Self::default() }
     }
 
-    /// The eye scale the UI layer holds in use, or the full eye distance with no UI layer.
-    pub(crate) fn eye_scale(&self) -> EyeScale {
-        self.ui_layer.as_ref().map_or(EyeScale::FULL, UiLayer::eye_scale)
+    /// Hands the eye cameras the UI layer's eye scale in use, or the full eye distance with no layer.
+    pub(crate) fn hand_eye_scale(&mut self) -> EyeScale {
+        self.ui_layer.as_mut().map_or(EyeScale::FULL, UiLayer::hand_eye_scale)
     }
 }
 
@@ -203,7 +204,7 @@ fn keep_cameras(state: &mut FrameState, cameras: FrameCameras) {
 
 /// Adds the time since the previous Present call to the frame-time window. When that interval fills
 /// the window, logs the camera lines that `ipc_layout::camera_line` describes, the UI layer's
-/// `ui depth` line, then the perf summary line.
+/// `ui depth` and `cursor depth` lines, then the perf summary line.
 fn record_interval(state: &mut FrameState, now: Instant) {
     let Some(previous) = state.last_call.replace(now) else {
         return;
@@ -216,7 +217,7 @@ fn record_interval(state: &mut FrameState, now: Instant) {
         log_camera(camera);
     }
     if let Some(layer) = &state.ui_layer {
-        log_depth(layer.depth_report());
+        log_depth(layer.depth_report(), layer.cursor_report());
     }
     let back_buffer = state.last.map(|snapshot| snapshot.back_buffer);
     // The window limits this line to one per SUMMARY_FRAMES frames, so it needs no rate-limit macro.
@@ -262,16 +263,24 @@ fn log_camera(frame: &FrameCamera) {
     );
 }
 
-/// Logs the UI depth's line: the nearest distance of [`DepthReport::nearest_m`], the columns per
-/// half of the UI disparity in use and the eye scale in use.
-fn log_depth(report: DepthReport) {
-    // The perf window limits this line to one per SUMMARY_FRAMES frames, so it needs no rate-limit
+/// Logs the UI depth's lines. The `ui depth` line holds the nearest distance of
+/// [`DepthReport::nearest_m`], the columns per half of the UI disparity in use and the eye scale in
+/// use. The `cursor depth` line holds what the newest pointer read's result is over, `ui`, `scene`
+/// or `none` for no result, and the cursor's moves in use in the left half and the right half.
+fn log_depth(depth: DepthReport, cursor: CursorReport) {
+    // The perf window limits each line to one per SUMMARY_FRAMES frames, so they need no rate-limit
     // macro.
     tracing::info!(
-        nearest_m = ?report.nearest_m(),
-        ui_columns = report.columns,
-        eye_scale = ?report.eye_scale.share(),
+        nearest_m = ?depth.nearest_m(),
+        ui_columns = depth.columns,
+        eye_scale = ?depth.eye_scale.share(),
         "ui depth"
+    );
+    tracing::info!(
+        over = cursor.over.as_str(),
+        left_columns = cursor.moves.left,
+        right_columns = cursor.moves.right,
+        "cursor depth"
     );
 }
 

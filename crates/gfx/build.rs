@@ -27,7 +27,7 @@ struct Shader {
     output: &'static str,
 }
 
-const SHADERS: [Shader; 6] = [
+const SHADERS: [Shader; 8] = [
     Shader {
         source: "layer.slang",
         entry: "vertex_main",
@@ -63,6 +63,18 @@ const SHADERS: [Shader; 6] = [
         entry: "pixel_main",
         profile: "ps_5_0",
         output: "nearest.ps.dxbc",
+    },
+    Shader {
+        source: "pointer.slang",
+        entry: "vertex_main",
+        profile: "vs_5_0",
+        output: "pointer.vs.dxbc",
+    },
+    Shader {
+        source: "pointer.slang",
+        entry: "pixel_main",
+        profile: "ps_5_0",
+        output: "pointer.ps.dxbc",
     },
 ];
 

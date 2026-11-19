@@ -23,7 +23,7 @@ use tracing::{info, warn};
 use crate::context::CoreContext;
 use crate::eye_camera;
 use crate::eye_view::{self, Layout};
-use crate::frame::{self, FrameReport, UiFrame};
+use crate::frame::{self, FrameReport, FrameState, UiFrame};
 use crate::game_state;
 use crate::install::{GameCode, InstallError};
 use crate::object_slot;
@@ -102,7 +102,8 @@ fn on_present_call(context: &CoreContext, thread: &RenderThread, registers: &mut
     }
     let layout = eye_view::frame_layout(context, thread);
     let settings = context.settings.get();
-    let eye_scale = context.frame.with(thread, |state| state.eye_scale()).unwrap_or(EyeScale::FULL);
+    let eye_scale =
+        context.frame.with(thread, FrameState::hand_eye_scale).unwrap_or(EyeScale::FULL);
     eye_camera::end_frame(context, thread, layout, settings.stereo, eye_scale);
     shadow_cache::end_frame(context, thread, layout);
     object_slot::end_frame(context, thread, layout);

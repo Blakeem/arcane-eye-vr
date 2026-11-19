@@ -62,9 +62,16 @@ pub(crate) fn distances_of(
     height: u32,
     value: f32,
 ) -> ID3D11Texture2D {
+    distance_rows(test, width, &vec![value; height as usize])
+}
+
+/// An `R32_FLOAT` shader resource texture of `test`'s device, `width` texels wide, with one row per
+/// value of `rows` that holds that value in every texel.
+pub(crate) fn distance_rows(test: &TestSwapchain, width: u32, rows: &[f32]) -> ID3D11Texture2D {
     let device = super::device(&test.swapchain).expect("the swapchain's device");
-    let texels = (width as usize).checked_mul(height as usize).expect("a test texel count");
-    let values = vec![value; texels];
+    let values: Vec<f32> =
+        rows.iter().flat_map(|value| std::iter::repeat_n(*value, width as usize)).collect();
+    let height = u32::try_from(rows.len()).expect("a test height");
     let data = D3D11_SUBRESOURCE_DATA {
         pSysMem: values.as_ptr().cast(),
         SysMemPitch: u32::try_from(row_len(width)).expect("a test pitch"),

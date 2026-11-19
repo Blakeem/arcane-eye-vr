@@ -25,6 +25,7 @@ use crate::publish::{Outcome, Publisher, ViewNames};
 mod failures;
 mod layer;
 mod nearest;
+mod pointer;
 
 const BYTES_PER_PIXEL: usize = 4;
 

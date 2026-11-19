@@ -11,7 +11,9 @@ Texture2D<float> distances : register(t1);
 // the target with the same value.
 static const uint SPACING = 8;
 
-// A layer texel covers the scene when its alpha is above this value.
+// A layer texel covers the scene when its alpha is above this value. `COVERING` in
+// crates/arcane-eye-core/src/ui_layer/ui_depth/decide.rs judges the pointer's UI texel with the
+// same value.
 static const float COVERING = 0.25;
 
 // The column's distance when no texel of it covers, below every distance.
@@ -34,8 +36,8 @@ uint texel_at(float share, uint first, uint size)
     return first + min(uint(share * float(size)), size - 1);
 }
 
-// The red channel is the smallest distance and the green channel the smallest alpha, the layout of
-// `GridColumn` in crates/gfx/src/nearest.rs.
+// The red channel is the smallest distance and the green channel the smallest alpha, the layout
+// `found` in crates/gfx/src/nearest.rs reads.
 [shader("pixel")]
 float2 pixel_main(float4 position : SV_Position) : SV_Target
 {
