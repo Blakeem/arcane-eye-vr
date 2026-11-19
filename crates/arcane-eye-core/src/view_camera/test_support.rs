@@ -73,6 +73,18 @@ impl TestView {
         game_mem::try_read(field).expect("a readable view field")
     }
 
+    /// The `N` floats from `offset` bytes into the view on.
+    pub(crate) fn floats_at<const N: usize>(&self, offset: usize) -> [f32; N] {
+        let field = self.address.checked_add(offset).expect("a view field");
+        game_mem::try_read_array(field).expect("readable view floats")
+    }
+
+    /// Writes `values` from `offset` bytes into the view on, as the engine fills a block.
+    pub(crate) fn put_floats(&self, offset: usize, values: &[f32]) {
+        let field = self.writes().offset(offset).expect("a view field");
+        game_mem::try_write_slice(field, values).expect("writable view floats");
+    }
+
     /// Does what the engine does to the view after the begin-recording hook: begin-recording stores
     /// the `ReadState` pointer as the last-seen controller, and the frame sync at the frame's end
     /// points the `ReadState` at `controller`.

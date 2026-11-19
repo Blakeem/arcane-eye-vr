@@ -4,6 +4,7 @@
 use std::time::Instant;
 
 use game_mem::GameAddr;
+use ipc_layout::launch_token::Mode;
 use settings::player::StereoSettings;
 
 use super::cursor::Aim;
@@ -29,7 +30,12 @@ pub(crate) fn target_parts(test: &TestSwapchain) -> (BackBuffer, Devices, Window
 
 /// The UI depth's input of a frame with the default settings and no camera, which starts no read.
 pub(crate) fn no_camera() -> DepthInput {
-    DepthInput { stereo: StereoSettings::default(), camera: None, now: Instant::now() }
+    DepthInput {
+        stereo: StereoSettings::default(),
+        camera: None,
+        now: Instant::now(),
+        mode: Mode::DesktopStereo,
+    }
 }
 
 /// The draw of a frame of `layer` into `target` whose step draws `draw` and wants the Windows

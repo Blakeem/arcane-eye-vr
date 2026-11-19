@@ -1,6 +1,7 @@
 //! The init sequence against test roots, test mappings and test event names.
 
 use super::{InitError, InitStatus, Names, guarded, open_status, run, start, start_reload};
+use crate::config::Config;
 use crate::context::CoreContext;
 use crate::raw::reload_event::{self, Event};
 use crate::raw::test_support::TestMapping;
@@ -24,7 +25,7 @@ fn a_reload_event_that_already_exists_starts_no_settings_thread_and_logs_the_cau
     let taken = Event::named(&name).expect("create the event first");
     let published = Arc::new(Published::new(Settings::default()));
     let (reload, log) = logged("reload-taken-log", || {
-        start_reload(dir.path(), &name, DevFlags::default(), &published)
+        start_reload(dir.path(), &name, Config::of_dev(DevFlags::default()), &published)
     });
     assert!(reload.is_none(), "a settings thread on a taken event");
     let line = log.lines().next().expect("the warning");

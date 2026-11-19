@@ -2,11 +2,11 @@
 
 use diag::health::{Feature, FeatureState, Health};
 use settings::dev::{DevFlags, MainViewEye, SecondView, StereoFlags};
-use settings::player::Settings;
-use stereo_core::eye::Eye;
+use settings::player::StereoSettings;
+use stereo_core::eye::{Eye, EyeScale};
 
 use super::super::target::{eye_of, target};
-use super::super::{Target, install};
+use super::super::{Placement, Target, install};
 use crate::config::Config;
 use crate::install::GameCode;
 use crate::logged;
@@ -22,10 +22,12 @@ const fn stereo(main_view_eye: MainViewEye, second_view: SecondView) -> StereoFl
 }
 
 fn config(main_view_eye: MainViewEye, second_view: SecondView) -> Config {
-    Config {
-        settings: Settings::default(),
-        dev: DevFlags { stereo: stereo(main_view_eye, second_view), ..DevFlags::default() },
-    }
+    Config::of_dev(DevFlags { stereo: stereo(main_view_eye, second_view), ..DevFlags::default() })
+}
+
+/// The first frame's placement of every install: the head axis at the full eye distance.
+fn first() -> Placement {
+    Placement::head(StereoSettings::default(), EyeScale::FULL)
 }
 
 /// The lines of `text` that hold `message`.
@@ -48,7 +50,7 @@ fn install_in_test_exe(name: &str, config: Config) -> (Health, String) {
     let health = Health::new();
     health.install_ok(Feature::PresentHook);
     let code = GameCode::copy();
-    let (installed, text) = logged(name, || install(&health, &code, config));
+    let (installed, text) = logged(name, || install(&health, &code, config, first()));
     assert!(installed.is_none(), "a hook in the test exe");
     (health, text)
 }
@@ -81,7 +83,7 @@ fn center_with_second_view_off_installs_no_hook_and_logs_that() {
     let health = Health::new();
     let code = GameCode::copy();
     let off = config(MainViewEye::Center, SecondView::Off);
-    let (installed, text) = logged("eye-camera-center", || install(&health, &code, off));
+    let (installed, text) = logged("eye-camera-center", || install(&health, &code, off, first()));
     assert!(installed.is_none(), "a hook with center");
     assert_eq!(health.state(Feature::EyeCamera), FeatureState::Pending);
     let lines: Vec<&str> = text.lines().collect();
@@ -129,7 +131,8 @@ fn an_eye_without_a_running_present_hook_installs_nothing_and_logs_the_cause() {
     health.install_failed(Feature::PresentHook);
     let code = GameCode::copy();
     let right = config(MainViewEye::Right, SecondView::Off);
-    let (installed, text) = logged("eye-camera-no-present", || install(&health, &code, right));
+    let (installed, text) =
+        logged("eye-camera-no-present", || install(&health, &code, right, first()));
     assert!(installed.is_none(), "a hook with no frame end");
     assert_eq!(health.state(Feature::EyeCamera), FeatureState::Unavailable);
     let cause =

@@ -1,12 +1,13 @@
 //! The core DLL's unsafe edge.
 //!
 //! It holds the exports, the Present call-site, view camera, eye camera, shadow cache and object
-//! slot hook installs, the write destinations of the render view, of the shadow stage, of the object
-//! data stage and of the pages the core
-//! shares with game threads, the launch token's status field, and the D3D11 and DXGI calls of the
-//! frame handler. Its `eye_view` module holds the eye view feature's hook install and game calls, its
-//! `game_texture` module the borrow of a texture that game memory names, its `cursor` module the
-//! Win32 calls of the drawn cursor, and its `reload_event` module the settings thread's event calls.
+//! slot hook installs, the write destinations of the shadow stage, of the object data stage and of
+//! the pages the core shares with game threads, the launch token's status field, and the D3D11 and
+//! DXGI calls of the frame handler. Its `eye_view` module holds the eye view feature's hook install
+//! and game calls, its `game_texture` module the borrow of a texture that game memory names, its
+//! `cursor` module the Win32 calls of the drawn cursor, its `reload_event` module the settings
+//! thread's event calls, its `composite_stage` module the write destination of the UI enable byte,
+//! and its `render_view` module the write destinations of a render view.
 
 #![expect(
     unsafe_code,
@@ -18,7 +19,6 @@ use std::mem::ManuallyDrop;
 use std::ptr;
 
 use game_bindings::object_stage::ObjectStage;
-use game_bindings::render_view::RenderView;
 use game_bindings::shadow_stage::ShadowStage;
 use game_mem::{GameAddr, WriteDest, try_read};
 use hooks::{HookError, MidHook, MidThunk, Registers};
@@ -170,17 +170,6 @@ pub(crate) fn object_stage_job_start(registers: &Registers) -> (ObjectStage, Wri
     // starts the job that reads the slot index.
     let writes = unsafe { WriteDest::new(address, ObjectStage::WRITE_LEN) };
     (ObjectStage::new(address), writes)
-}
-
-/// The render view that `rcx` holds at the begin-recording entry, and the destination of the core's
-/// writes to its first [`RenderView::WRITE_LEN`] bytes, which lives for the hook's borrow of
-/// `registers`. Only the eye camera hook passes its registers here.
-pub(crate) fn begin_recording_view(registers: &Registers) -> (RenderView, WriteDest<'_>) {
-    let address = GameAddr::new(registers.rcx());
-    // SAFETY: at the begin-recording entry `rcx` holds the engine's render view, game memory that no
-    // Rust reference covers. The destination lives only for the hook, while the engine records it.
-    let writes = unsafe { WriteDest::new(address, RenderView::WRITE_LEN) };
-    (RenderView::new(address), writes)
 }
 
 /// Committed, zero-filled read-write pages that the core shares with game threads, such as the eye
@@ -387,6 +376,7 @@ pub(crate) mod cursor;
 pub(crate) mod eye_view;
 pub(crate) mod game_texture;
 pub(crate) mod reload_event;
+pub(crate) mod render_view;
 
 #[cfg(test)]
 pub(crate) mod test_pixels;

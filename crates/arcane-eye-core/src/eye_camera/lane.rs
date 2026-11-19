@@ -3,9 +3,10 @@
 
 use game_bindings::render_view::{CameraController, RenderView};
 use game_mem::{GameAddr, WriteDest, WriteError};
-use stereo_core::eye::{Eye, PerEye};
-use stereo_core::eye_camera::{self, EyeCamera};
+use stereo_core::eye::Eye;
+use stereo_core::eye_camera;
 
+use super::placement::Placement;
 use super::proxy::{self, ProxyParts, RING_LEN};
 use super::{EyeFault, History, Outcome};
 use crate::raw::SharedPages;
@@ -28,8 +29,8 @@ pub(super) struct LastProxy {
 #[derive(Debug)]
 pub(super) struct Lane {
     eye: Eye,
-    /// The eye's signed offset from the head along the head's right axis, in meters.
-    offset_m: f32,
+    /// How the lane's next proxies place its eye.
+    placement: Placement,
     /// The byte offset of each proxy in the pages, the next one first.
     pub(super) ring: [usize; RING_LEN],
     turn: Turn,
@@ -37,10 +38,9 @@ pub(super) struct Lane {
 }
 
 impl Lane {
-    /// The lane at `offset_m` from the head for `eye`, whose ring starts `ring_start` bytes into the
-    /// pages.
-    pub(super) fn new(eye: Eye, offset_m: f32, ring_start: usize) -> Self {
-        Self { eye, offset_m, ring: proxy::ring(ring_start), turn: Turn::Open, last: None }
+    /// The lane of `eye` placed by `placement`, whose ring starts `ring_start` bytes into the pages.
+    pub(super) fn new(eye: Eye, placement: Placement, ring_start: usize) -> Self {
+        Self { eye, placement, ring: proxy::ring(ring_start), turn: Turn::Open, last: None }
     }
 
     /// Whether the lane proxied a view in the current frame.
@@ -48,9 +48,14 @@ impl Lane {
         self.turn == Turn::Taken
     }
 
-    /// Sets the lane's offset from the head to its eye's offset in `offsets_m`.
-    pub(super) fn set_offset(&mut self, offsets_m: PerEye<f32>) {
-        self.offset_m = offsets_m[self.eye];
+    /// Places the eye of the lane's next proxies by `placement`.
+    pub(super) const fn set_placement(&mut self, placement: Placement) {
+        self.placement = placement;
+    }
+
+    /// The head pose sequence number the lane's proxies are filled with, 0 for none.
+    pub(super) const fn sequence(&self) -> u32 {
+        self.placement.sequence()
     }
 
     /// Ends the frame, so the lane proxies its next view.
@@ -58,8 +63,9 @@ impl Lane {
         self.turn = Turn::Open;
     }
 
-    /// Fills the lane's next proxy in `pages` from `head`, the `ReadState` controller of `view`, and
-    /// points `view` at it through `writes`. The lane's turn ends even when a read or write faults.
+    /// Fills the lane's next proxy in `pages` from `head`, the `ReadState` controller of `view`, with
+    /// the lane's eye placed by its placement, and points `view` at it through `writes`. The lane's
+    /// turn ends even when a read or write faults.
     pub(super) fn proxy(
         &mut self,
         pages: &SharedPages,
@@ -73,7 +79,7 @@ impl Lane {
         let last_seen = view.last_seen_controller().ok_or(EyeFault::LastSeenUnreadable)?;
         let history = self.history(head, last_seen);
         let head_view = copy.view();
-        let camera = EyeCamera::from_head(&head_view, self.offset_m);
+        let camera = self.placement.camera(&head_view, self.eye);
         let head_position = eye_camera::position(&head_view);
         let [next, ..] = self.ring;
         self.ring.rotate_left(1);

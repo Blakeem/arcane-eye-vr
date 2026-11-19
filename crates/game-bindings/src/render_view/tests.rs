@@ -7,6 +7,7 @@ use game_mem::GameAddr;
 use super::{
     CameraController, Environment, PlayerRoom, ReadState, RenderView, ViewContent, ViewParts,
 };
+use crate::camera::BlockPair;
 use crate::offsets::{
     CONTROLLER_SIZE, CONTROLLER_VIEW, CONTROLLER_VTABLE_SLOTS, CONTROLLER_WORLD_TRANSLATE_SLOT,
     ENVIRONMENT_RECORD_ID, PER_CAMERA_FAR, PER_CAMERA_NEAR, PER_CAMERA_POSITION,
@@ -57,6 +58,20 @@ fn a_view_yields_its_controller_and_its_per_camera_fields() {
     assert_eq!(read.projection.to_vec(), projection);
     assert_eq!((read.near, read.far), (0.5, 900.0));
     assert_eq!(read.position, [1.0, 2.0, 3.0]);
+}
+
+#[test]
+fn each_block_pair_reads_its_own_per_camera_block() {
+    let mut view = vec![0_u8; 0x2740 + 0x100];
+    put(&mut view, 0x2660 + PER_CAMERA_FAR, &floats(&[900.0]));
+    put(&mut view, 0x2740 + PER_CAMERA_FAR, &floats(&[250.0]));
+    let view = black_box(view);
+    let render_view = RenderView::new(address_of(&view));
+    let far = |pair| render_view.per_camera_of(pair).map(|block| block.far);
+    assert_eq!(far(BlockPair::First), Some(900.0));
+    assert_eq!(far(BlockPair::Second), Some(250.0));
+    assert_eq!(render_view.per_camera(), render_view.per_camera_of(BlockPair::First));
+    assert_eq!(RenderView::new(UNMAPPED).per_camera_of(BlockPair::Second), None);
 }
 
 #[test]

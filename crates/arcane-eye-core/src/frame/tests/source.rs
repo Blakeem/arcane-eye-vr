@@ -8,6 +8,7 @@ use crate::frame::FrameState;
 use crate::game_source::test_support::World;
 use crate::raw::test_support::{TestSwapchain, TestViewer, test_view_names};
 use crate::viewer::ViewerLink;
+use crate::vr_view::VrView;
 
 /// The size of the texture the viewer has after two frames of `state` with a viewer.
 fn shared_size(state: &mut FrameState, test: &TestSwapchain, names: &str) -> (u32, u32) {
@@ -29,7 +30,7 @@ fn a_game_source_gives_the_viewer_the_keys_texture_in_place_of_the_back_buffer()
     let test = TestSwapchain::new(128, 96);
     let texture = test.texture(48, 32);
     let world = World::new(texture.as_raw().expose_provenance());
-    let mut state = FrameState::new(Some(world.source(TextureKey::SCENE)), None);
+    let mut state = FrameState::new(Some(world.source(TextureKey::SCENE)), None, VrView::default());
     let mut size = None;
     let lines = log_lines("game-source", || {
         size = Some(shared_size(&mut state, &test, "game-source"));
@@ -44,7 +45,7 @@ fn a_game_source_without_a_texture_gives_the_viewer_the_back_buffer_and_logs_the
     let test = TestSwapchain::new(128, 96);
     let texture = test.texture(48, 32);
     let world = World::new(texture.as_raw().expose_provenance());
-    let mut state = FrameState::new(Some(world.source(TextureKey::UI)), None);
+    let mut state = FrameState::new(Some(world.source(TextureKey::UI)), None, VrView::default());
     let mut size = None;
     let lines = log_lines("game-source-fault", || {
         size = Some(shared_size(&mut state, &test, "game-source-fault"));

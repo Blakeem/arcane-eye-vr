@@ -9,16 +9,17 @@ use game_mem::{
     GameAddr, WriteDest, WriteError, try_read, try_read_array, try_write, try_write_slice,
 };
 
-use crate::camera::PerCamera;
+use crate::camera::{BlockPair, PerCamera};
 use crate::offsets::{
     CONTROLLER_SIZE, CONTROLLER_VIEW, CONTROLLER_VTABLE_SLOTS, CONTROLLER_WORLD_TRANSLATE_SLOT,
     ENVIRONMENT_RECORD_ID, PER_CAMERA_FAR, PER_CAMERA_NEAR, PER_CAMERA_POSITION,
-    PER_CAMERA_PROJECTION, PER_CAMERA_VIEW, SCENE_ACTIVE, VIEW_ATMOSPHERE, VIEW_ATMOSPHERE_LOCK,
-    VIEW_ATMOSPHERE_REQUEST, VIEW_ATMOSPHERE_TARGET, VIEW_FOG_VARIANT, VIEW_JOB_CONTEXT,
-    VIEW_LAST_SEEN_CONTROLLER, VIEW_LIGHTING, VIEW_LIGHTING_LOCK, VIEW_LIGHTING_REQUEST,
-    VIEW_LIGHTING_TARGET, VIEW_OCCLUSION, VIEW_PER_CAMERA, VIEW_PLAYER_ROOM, VIEW_PLAYER_ROOM_SIZE,
-    VIEW_READ_STATE_CONTROLLER, VIEW_SCENE, VIEW_SPLIT_INDEX, VIEW_SPLIT_SIDE, VIEW_STAGE_ARRAY,
-    VIEW_STAGE_OWNER, VIEW_WRITE_STATE_CONTROLLER, VIEW_WRITE_STATE_ENABLED,
+    PER_CAMERA_PROJECTION, PER_CAMERA_VIEW, PER_VIEW_CORNER_RAYS, SCENE_ACTIVE, VIEW_ATMOSPHERE,
+    VIEW_ATMOSPHERE_LOCK, VIEW_ATMOSPHERE_REQUEST, VIEW_ATMOSPHERE_TARGET, VIEW_FOG_VARIANT,
+    VIEW_JOB_CONTEXT, VIEW_LAST_SEEN_CONTROLLER, VIEW_LIGHTING, VIEW_LIGHTING_LOCK,
+    VIEW_LIGHTING_REQUEST, VIEW_LIGHTING_TARGET, VIEW_OCCLUSION, VIEW_PER_VIEW_1, VIEW_PLAYER_ROOM,
+    VIEW_PLAYER_ROOM_SIZE, VIEW_READ_STATE_CONTROLLER, VIEW_SCENE, VIEW_SPLIT_INDEX,
+    VIEW_SPLIT_SIDE, VIEW_STAGE_ARRAY, VIEW_STAGE_OWNER, VIEW_WRITE_STATE_CONTROLLER,
+    VIEW_WRITE_STATE_ENABLED,
 };
 
 /// A render view, by its address in the game process.
@@ -50,6 +51,8 @@ const _: () = assert!(VIEW_WRITE_STATE_ENABLED < VIEW_PLAYER_ROOM);
 const _: () = assert!(VIEW_SPLIT_INDEX < VIEW_PLAYER_ROOM);
 const _: () = assert!(VIEW_SPLIT_SIDE + size_of::<i32>() <= VIEW_PLAYER_ROOM);
 const _: () = assert!(VIEW_LAST_SEEN_CONTROLLER + size_of::<usize>() <= VIEW_PLAYER_ROOM);
+const _: () =
+    assert!(VIEW_PER_VIEW_1 + PER_VIEW_CORNER_RAYS[2] + 3 * size_of::<f32>() <= VIEW_PLAYER_ROOM);
 
 /// The pointers that tell a render view's own stage objects from another view's. A null pointer
 /// reads as address 0.
@@ -165,7 +168,12 @@ impl RenderView {
 
     /// The view's `PerCamera` block 0, or `None` when any field of it cannot be read.
     pub fn per_camera(self) -> Option<PerCamera> {
-        let block = self.0.checked_add(VIEW_PER_CAMERA)?;
+        self.per_camera_of(BlockPair::First)
+    }
+
+    /// The `PerCamera` block of the view's `pair`, or `None` when any field of it cannot be read.
+    pub fn per_camera_of(self, pair: BlockPair) -> Option<PerCamera> {
+        let block = self.0.checked_add(pair.per_camera())?;
         Some(PerCamera {
             view: try_read_array(block.checked_add(PER_CAMERA_VIEW)?)?,
             projection: try_read_array(block.checked_add(PER_CAMERA_PROJECTION)?)?,
@@ -258,6 +266,25 @@ impl RenderView {
     /// Returns the [`WriteError`] of fields that cannot be written or lie outside `view`.
     pub fn write_player_room(view: WriteDest<'_>, room: PlayerRoom) -> Result<(), WriteError> {
         try_write_slice(view.offset(VIEW_PLAYER_ROOM)?, &room.0)
+    }
+
+    /// Sets the three corner rays of the `PerView` block of `pair` in the view whose first
+    /// [`RenderView::WRITE_LEN`] bytes are `view` to `rays`, and leaves each ray's unused `f32`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`WriteError`] of a ray that cannot be written or lies outside `view`. The rays
+    /// before it then hold their new values.
+    pub fn write_corner_rays(
+        view: WriteDest<'_>,
+        pair: BlockPair,
+        rays: &[[f32; 3]; 3],
+    ) -> Result<(), WriteError> {
+        let block = view.offset(pair.per_view())?;
+        for (offset, ray) in PER_VIEW_CORNER_RAYS.iter().zip(rays) {
+            try_write_slice(block.offset(*offset)?, ray)?;
+        }
+        Ok(())
     }
 
     fn pointer(self, offset: usize) -> Option<GameAddr> {

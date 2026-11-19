@@ -2,14 +2,17 @@
 //!
 //! The install resolves the `dx11_present_call` signature in the game exe's code and puts a mid hook
 //! on the match. The handler reads the eye view's layout for the next frame, ends the frames of the
-//! eye camera at the eye scale the UI layer holds in use, then of the shadow cache, the object slot
-//! and the view camera, runs the frame work with the UI layer before the engine's `Present` call,
-//! reports the first frame through the launch token, reads the game state and runs the eye view's
-//! create. It copies the published player settings once, so a frame uses one set of values.
-//! After the hook's feature failed, the handler runs only [`give_back`].
+//! eye camera with the placement the frame handler hands over, then of the shadow cache, the object
+//! slot and the view camera, runs the frame work with the UI layer before the engine's `Present`
+//! call, reports the first frame through the launch token, reads the game state and runs the eye
+//! view's create. The placement holds the eye scale the UI layer holds in use, or in the launch mode
+//! `vr` the head pose in use while the view camera runs. It copies the published player settings
+//! once, so a frame uses one set of values. After the hook's feature failed, the handler runs only
+//! [`give_back`].
 
 use std::mem::ManuallyDrop;
 use std::panic::{self, AssertUnwindSafe};
+use std::time::Instant;
 
 use diag::health::{Feature, FeatureState, Health};
 use game_bindings::signatures::DX11_PRESENT_CALL;
@@ -21,15 +24,16 @@ use stereo_core::eye::EyeScale;
 use tracing::{info, warn};
 
 use crate::context::CoreContext;
-use crate::eye_camera;
+use crate::eye_camera::{self, Placement};
 use crate::eye_view::{self, Layout};
-use crate::frame::{self, FrameReport, FrameState, UiFrame};
+use crate::frame::{self, FrameInput, FrameReport};
 use crate::game_state;
 use crate::install::{GameCode, InstallError};
 use crate::object_slot;
 use crate::raw::{self, StatusView};
 use crate::shadow_cache;
 use crate::view_camera;
+use crate::vr_view::Rays;
 
 /// The hook runs after `present-hook` failed too, so the handler can run [`give_back`].
 const PRESENT_RUNS: Runs = Runs::AfterFailureToo;
@@ -101,17 +105,22 @@ fn on_present_call(context: &CoreContext, thread: &RenderThread, registers: &mut
         return;
     }
     let layout = eye_view::frame_layout(context, thread);
-    let settings = context.settings.get();
-    let eye_scale =
-        context.frame.with(thread, FrameState::hand_eye_scale).unwrap_or(EyeScale::FULL);
-    eye_camera::end_frame(context, thread, layout, settings.stereo, eye_scale);
+    let stereo = context.settings.get().stereo;
+    let now = Instant::now();
+    let rays = Rays::of(&context.health);
+    let placement = context
+        .frame
+        .with(thread, |state| state.hand_placement(stereo, rays, now))
+        .unwrap_or_else(|| Placement::head(stereo, EyeScale::FULL));
+    let head_sequence = eye_camera::end_frame(context, thread, layout, placement);
     shadow_cache::end_frame(context, thread, layout);
     object_slot::end_frame(context, thread, layout);
     let cameras = view_camera::end_frame(context, thread, layout);
     let camera = cameras.main.map(|main| main.camera);
-    let ui = UiFrame { health: &context.health, next: layout, stereo: settings.stereo, camera };
-    let frame =
-        context.frame.with(thread, |state| frame::on_present_call(state, registers, cameras, ui));
+    let input = FrameInput { health: &context.health, next: layout, stereo, camera, head_sequence };
+    let frame = context
+        .frame
+        .with(thread, |state| frame::on_present_call(state, registers, cameras, input));
     if frame == Some(FrameReport::FirstPresent) {
         report(context.status.as_ref(), Status::FirstPresent);
     }
@@ -143,10 +152,10 @@ const fn handler(present_hook: FeatureState) -> Handler {
 /// the cursor display counter the game's values back. The shadow cache, the object slot, the view
 /// camera and the viewer link get no frame. [`frame::on_failed_present_call`] runs both steps.
 fn give_back(context: &CoreContext, thread: &RenderThread, layout: Layout) {
-    let stereo = context.settings.get().stereo;
+    let placement = Placement::head(context.settings.get().stereo, EyeScale::FULL);
     context.frame.with(thread, |state| {
         frame::on_failed_present_call(state, || {
-            eye_camera::end_frame(context, thread, layout, stereo, EyeScale::FULL);
+            eye_camera::end_frame(context, thread, layout, placement);
         });
     });
 }

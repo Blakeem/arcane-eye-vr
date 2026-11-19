@@ -1,10 +1,12 @@
-//! The camera of one eye as a pure function of the head camera.
+//! The camera of one eye as a pure function of the head camera, or of a head pose in an anchor.
 //!
 //! A view matrix is world-to-camera, 16 `f32` in column-major order. Elements 0, 4 and 8 are the
 //! camera's right axis, elements 1, 5 and 9 its up axis, elements 2, 6 and 10 its forward axis, and
 //! elements 12 to 14 its translation. The space is left-handed with Y up and +Z forward, so +X in
 //! camera space is the viewer's right. An eye keeps the head's rotation and sits on the head's right
 //! axis, so the two eyes' view directions are parallel.
+
+use crate::head::{CameraFrame, HeadPose};
 
 /// The camera of one eye.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -26,6 +28,13 @@ impl EyeCamera {
         let view = [r0, u0, f0, w0, r1, u1, f1, w1, r2, u2, f2, w2, tx - offset_m, ty, tz, w3];
         let inverse = rigid_inverse(&view);
         Self { view, inverse, position: translation(&inverse) }
+    }
+
+    /// The camera of the eye `offset_m` meters along the right axis of the head frame that `pose`
+    /// places in `anchor`. A negative offset is to the head's left.
+    pub fn from_pose(anchor: &CameraFrame, pose: &HeadPose, offset_m: f32) -> Self {
+        let eye = anchor.placed(pose).moved_right(offset_m);
+        Self { view: eye.view(), inverse: eye.inverse_view(), position: eye.position }
     }
 }
 

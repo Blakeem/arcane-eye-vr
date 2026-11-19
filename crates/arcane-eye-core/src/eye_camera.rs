@@ -12,7 +12,9 @@
 //! view matrices and an own slot 9 that returns the eye's position, and points the view's `ReadState`
 //! at the proxy. Every draw places its vertices relative to the position slot 9 returns, so geometry,
 //! lighting and decals all use the eye. The engine's frame sync points each `ReadState` back at the
-//! head controller at each frame's end.
+//! head controller at each frame's end. The frame's [`Placement`] places the eye: on the head
+//! controller's right axis, or in the launch mode `vr` by the head pose on top of the head
+//! controller's camera.
 //!
 //! Each of the two views has its own ring of proxies in pages that the core context holds for the
 //! process life, so a proxy that a render worker thread still reads stays mapped. A frame ends at the
@@ -20,10 +22,11 @@
 //! and `main_view_eye = "center"` the feature installs no hook.
 
 mod lane;
+mod placement;
 pub(crate) mod proxy;
 mod target;
 
-use std::mem::ManuallyDrop;
+use std::mem::{self, ManuallyDrop};
 use std::time::Duration;
 
 use diag::health::{Feature, Health};
@@ -35,11 +38,11 @@ use game_bindings::state;
 use game_mem::{GameAddr, WriteDest};
 use hooks::{MidHook, Registers, RenderThread, Runs};
 use settings::dev::MainViewEye;
-use settings::player::StereoSettings;
-use stereo_core::eye::{self, Eye, EyeScale, PerEye};
+use stereo_core::eye::Eye;
 use tracing::{Level, info, warn};
 
 use self::lane::Lane;
+pub(crate) use self::placement::Placement;
 use self::proxy::{PAGES_SIZE, RING_SIZE};
 pub(crate) use self::target::Target;
 use self::target::target;
@@ -59,9 +62,6 @@ hooks::render_mid_hook!(
 
 /// The shortest time between two warnings of the handler.
 const LOG_PERIOD: Duration = Duration::from_secs(10);
-
-/// The millimeters in one meter, the unit of the eye offset.
-const MILLIMETERS_PER_METER: f32 = 1000.0;
 
 /// The installed hook and the feature's render thread state.
 pub(crate) struct Installed {
@@ -137,9 +137,14 @@ pub(crate) enum History {
 
 /// Installs the eye camera hook in `code`, the game exe's code, when `config` names a target and the
 /// Present call-site hook is running, and reports the outcome in the health registry and the log.
-/// Without a target it installs nothing and logs that. A failure installs nothing and leaves the other
-/// features running.
-pub(crate) fn install(health: &Health, code: &GameCode, config: Config) -> Option<Installed> {
+/// The first frame's proxies place each eye by `first`. Without a target it installs nothing and
+/// logs that. A failure installs nothing and leaves the other features running.
+pub(crate) fn install(
+    health: &Health,
+    code: &GameCode,
+    config: Config,
+    first: Placement,
+) -> Option<Installed> {
     let stereo = config.dev.stereo;
     let main_view_eye = stereo.main_view_eye.as_str();
     let Some(target) = target(stereo) else {
@@ -149,7 +154,7 @@ pub(crate) fn install(health: &Health, code: &GameCode, config: Config) -> Optio
     if target == Target::StereoPair && stereo.main_view_eye != MainViewEye::Center {
         warn!(main_view_eye, "main_view_eye is ignored while second_view is on");
     }
-    match hook_view_begin(health, code, target, offsets_m(config.settings.stereo, EyeScale::FULL)) {
+    match hook_view_begin(health, code, target, first) {
         Ok((site, installed)) => {
             health.install_ok(Feature::EyeCamera);
             info!(
@@ -168,25 +173,20 @@ pub(crate) fn install(health: &Health, code: &GameCode, config: Config) -> Optio
     }
 }
 
-/// Each eye's signed offset from the head in meters, for the eye distance of `stereo` times `scale`.
-fn offsets_m(stereo: StereoSettings, scale: EyeScale) -> PerEye<f32> {
-    eye::offsets_m(scale.of(stereo.ipd_mm.millimeters() / MILLIMETERS_PER_METER))
-}
-
 /// Resolves both signatures and commits the proxy pages before the hook goes in, so a failure leaves
-/// the game unmodified.
+/// the game unmodified. The first frame's proxies place each eye by `placement`.
 fn hook_view_begin(
     health: &Health,
     code: &GameCode,
     target: Target,
-    offsets_m: PerEye<f32>,
+    placement: Placement,
 ) -> Result<(GameAddr, Installed), EyeCameraError> {
     if !health.is_running(Feature::PresentHook) {
         return Err(EyeCameraError::NoFrameEnd);
     }
     let (world_translate, site) = locate(code)?;
     let pages = SharedPages::commit(PAGES_SIZE)?;
-    let state = EyeState::new(pages, world_translate, target, offsets_m);
+    let state = EyeState::new(pages, world_translate, target, placement);
     let hook = hook_at(site)?;
     Ok((site, Installed { hook, state }))
 }
@@ -201,7 +201,7 @@ fn hook_at(site: GameAddr) -> Result<ManuallyDrop<MidHook>, InstallError> {
 
 /// The hook's handler, on the render thread once per render view per frame. `rcx` holds the view.
 fn on_view_begin(context: &CoreContext, thread: &RenderThread, registers: &mut Registers) {
-    let (view, writes) = raw::begin_recording_view(registers);
+    let (view, writes) = raw::render_view::begin_recording_view(registers);
     context.eye_camera.with(thread, |state| {
         if let Some(state) = state {
             state.on_view_begin(view, writes);
@@ -210,21 +210,21 @@ fn on_view_begin(context: &CoreContext, thread: &RenderThread, registers: &mut R
 }
 
 /// Ends the frame of the eye camera, so the next frame's views are chosen afresh in `layout` and
-/// render at the eye distance of `stereo`, the player settings in effect, times `scale`, the eye
-/// scale the UI layer holds in use.
+/// place each eye by `placement`. Returns the head pose sequence number that the ended frame's main
+/// view proxy was filled with, 0 when the frame proxied no main view or the feature is off.
 pub(crate) fn end_frame(
     context: &CoreContext,
     thread: &RenderThread,
     layout: Layout,
-    stereo: StereoSettings,
-    scale: EyeScale,
-) {
-    context.eye_camera.with(thread, |state| {
-        if let Some(state) = state {
-            state.set_offsets(offsets_m(stereo, scale));
-            state.end_frame(layout);
-        }
+    placement: Placement,
+) -> u32 {
+    let sequence = context.eye_camera.with(thread, |state| {
+        state.as_mut().map_or(0, |state| {
+            state.set_placement(placement);
+            state.end_frame(layout)
+        })
     });
+    sequence.unwrap_or(0)
 }
 
 /// The role of `view` for `target` in a frame of `layout`, or `None` when the eye camera proxies no
@@ -262,17 +262,20 @@ pub(crate) struct EyeState {
     eye_view: Lane,
     /// The layout of the current frame.
     layout: Layout,
+    /// The head pose sequence number the current frame's main view proxy was filled with, 0 while
+    /// no main view was proxied.
+    main_sequence: u32,
     logs: EyeLogs,
 }
 
 impl EyeState {
-    /// The state for proxies in `pages`, which hold [`PAGES_SIZE`] bytes, at `offsets_m` from the
-    /// head controllers whose slot 9 is `world_translate`.
+    /// The state for proxies in `pages`, which hold [`PAGES_SIZE`] bytes, of the head controllers
+    /// whose slot 9 is `world_translate`, whose first frame places each eye by `placement`.
     fn new(
         pages: SharedPages,
         world_translate: GameAddr,
         target: Target,
-        offsets_m: PerEye<f32>,
+        placement: Placement,
     ) -> Self {
         let main_eye = match target {
             Target::MainView(eye) => eye,
@@ -282,24 +285,27 @@ impl EyeState {
             pages,
             world_translate,
             target,
-            main: Lane::new(main_eye, offsets_m[main_eye], 0),
-            eye_view: Lane::new(Eye::Right, offsets_m[Eye::Right], RING_SIZE),
+            main: Lane::new(main_eye, placement, 0),
+            eye_view: Lane::new(Eye::Right, placement, RING_SIZE),
             layout: Layout::MainOnly,
+            main_sequence: 0,
             logs: EyeLogs::default(),
         }
     }
 
-    /// Gives each lane its eye's offset from the head in `offsets_m`, for its next proxies.
-    pub(crate) fn set_offsets(&mut self, offsets_m: PerEye<f32>) {
-        self.main.set_offset(offsets_m);
-        self.eye_view.set_offset(offsets_m);
+    /// Places each eye of the next proxies by `placement`.
+    pub(crate) const fn set_placement(&mut self, placement: Placement) {
+        self.main.set_placement(placement);
+        self.eye_view.set_placement(placement);
     }
 
-    /// Ends the frame, so each lane proxies its next view, in a next frame of `layout`.
-    pub(crate) const fn end_frame(&mut self, layout: Layout) {
+    /// Ends the frame, so each lane proxies its next view, in a next frame of `layout`. Returns the
+    /// head pose sequence number the ended frame's main view proxy was filled with, 0 for none.
+    pub(crate) const fn end_frame(&mut self, layout: Layout) -> u32 {
         self.main.end_frame();
         self.eye_view.end_frame();
         self.layout = layout;
+        mem::replace(&mut self.main_sequence, 0)
     }
 
     /// Renders `view`, whose first bytes are `writes`, from an eye for this frame when it is the
@@ -331,9 +337,11 @@ impl EyeState {
     }
 
     /// Proxies `view` in its lane when the view has a role in this frame, its lane proxied no view
-    /// yet and its `ReadState` holds a head controller.
+    /// yet and its `ReadState` holds a head controller. A proxied main view records the sequence
+    /// number of its lane's placement.
     fn proxy_view(&mut self, view: RenderView, writes: WriteDest<'_>) -> Result<Outcome, EyeFault> {
-        let lane = match role(self.target, self.layout, view) {
+        let role = role(self.target, self.layout, view);
+        let lane = match role {
             Some(Role::MainView) => &mut self.main,
             Some(Role::EyeView) => &mut self.eye_view,
             None => return Ok(Outcome::Unchanged),
@@ -344,7 +352,11 @@ impl EyeState {
         let Some(head) = head_controller(view, self.world_translate)? else {
             return Ok(Outcome::Unchanged);
         };
-        lane.proxy(&self.pages, view, writes, head)
+        let outcome = lane.proxy(&self.pages, view, writes, head)?;
+        if role == Some(Role::MainView) {
+            self.main_sequence = self.main.sequence();
+        }
+        Ok(outcome)
     }
 }
 

@@ -2,15 +2,16 @@
 //!
 //! On the first frame with devices it creates the viewer header. On each later frame the publisher
 //! copies the back buffer into the shared texture while a viewer runs, or the game source's texture
-//! when the frame handler holds one and it yields a texture. The texture reference it takes drops
-//! before the frame handler returns.
+//! when the frame handler holds one and it yields a texture, with the frame's tag. The texture
+//! reference it takes drops before the frame handler returns. Once the header exists, the link reads
+//! the head pose the viewing side wrote into it.
 
 use std::time::{Duration, Instant};
 
 use diag::rate::{Once, RateLimit};
 use diag::{error_every, once, warn_every};
 use gfx::publish::{Outcome, Present, Publisher, ViewNames};
-use ipc_layout::viewer_header::pose::FrameTag;
+use ipc_layout::viewer_header::pose::{FrameTag, HeadSample};
 use tracing::Level;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 
@@ -56,14 +57,24 @@ impl ViewerLink {
         Self { link: Link::Pending(names), logs: LinkLogs::default() }
     }
 
+    /// The head pose the viewing side wrote last into the header, or `None` before the header exists,
+    /// after its creation failed, or while [`Publisher::head_pose`] reads none.
+    pub(crate) fn head_pose(&self) -> Option<HeadSample> {
+        match &self.link {
+            Link::Ready(publisher) => publisher.head_pose(),
+            Link::Pending(_) | Link::Failed => None,
+        }
+    }
+
     /// Runs the viewer work for one frame of `swapchain`, whose device and immediate context are
-    /// `devices`. The viewer gets the texture of `game`, and the back buffer for `None` or in a
-    /// frame where `game` yields no texture.
+    /// `devices`, tagged with `tag`. The viewer gets the texture of `game`, and the back buffer for
+    /// `None` or in a frame where `game` yields no texture.
     pub(crate) fn on_frame(
         &mut self,
         swapchain: &IDXGISwapChain,
         devices: &Devices,
         game: Option<&mut GameSource>,
+        tag: FrameTag,
     ) {
         let Self { link, logs } = self;
         let publisher = match link {
@@ -99,7 +110,7 @@ impl ViewerLink {
             }
             None => raw::back_buffer_texture(swapchain),
         };
-        let present = Present { now: Instant::now(), tag: FrameTag::NONE };
+        let present = Present { now: Instant::now(), tag };
         let outcome = publisher.on_frame(present, device, context, source);
         match outcome {
             Ok(Outcome::Published) => {

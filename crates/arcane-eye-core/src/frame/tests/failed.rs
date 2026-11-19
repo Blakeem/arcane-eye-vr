@@ -9,12 +9,13 @@ use crate::raw::test_support::{TestCursor, TestSwapchain, display_count};
 use crate::ui_layer::cursor::Aim;
 use crate::ui_layer::cursor::place::{Pointer, spot};
 use crate::ui_layer::test_support::hidden_cursor_layer;
+use crate::vr_view::VrView;
 
 /// A frame state whose UI layer hid the Windows cursor under a drawn cursor in `test`'s back buffer.
 fn hidden_cursor_state(test: &TestSwapchain, cursor: &TestCursor) -> FrameState {
     let pointer = Pointer { x: 10, y: 4, width: 64, height: 32 };
     let aim = Aim { handle: cursor.handle(), spot: spot(pointer).expect("a pointer inside") };
-    FrameState::new(None, Some(hidden_cursor_layer(test, aim)))
+    FrameState::new(None, Some(hidden_cursor_layer(test, aim)), VrView::default())
 }
 
 #[test]

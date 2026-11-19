@@ -19,6 +19,7 @@ mod ui_layer;
 mod view_camera;
 mod viewer;
 mod viewer_source;
+mod vr_view;
 
 /// A folder for test `name` next to the test binary, so a run that keeps a log file open leaves it
 /// in `target/`.

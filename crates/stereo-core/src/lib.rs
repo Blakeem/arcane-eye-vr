@@ -2,5 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod corner_rays;
 pub mod eye;
 pub mod eye_camera;
+pub mod head;

@@ -6,11 +6,13 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use ipc_layout::launch_token::Mode;
 use settings::dev::{DevFlags, SecondView};
 use settings::player::{DepthOffsetPercent, IpdMm, Settings};
 use tracing::{Dispatch, dispatcher};
 
 use super::{Published, Reload, StartError, apply, run, start};
+use crate::config::Config;
 use crate::raw::reload_event::{self, Event, EventError};
 use crate::{logged, messages, test_dir};
 
@@ -27,10 +29,21 @@ fn with_ipd(millimeters: f32) -> Settings {
     settings
 }
 
-/// Runs one reload of the files in `root` and returns the messages it logged under the session log
-/// of test folder `log_name`.
+/// The config of a start with the default files in the mode `desktop-stereo`.
+fn default_start() -> Config {
+    Config::of_dev(DevFlags::default())
+}
+
+/// Runs one reload of the files in `root` in the mode `desktop-stereo` and returns the messages it
+/// logged under the session log of test folder `log_name`.
 fn apply_logged(root: &Path, published: &Published, log_name: &str) -> Vec<String> {
-    let ((), text) = logged(log_name, || apply(root, DevFlags::default(), published));
+    apply_logged_in(Mode::DesktopStereo, root, published, log_name)
+}
+
+/// [`apply_logged`] after a start in the launch mode `mode`.
+fn apply_logged_in(mode: Mode, root: &Path, published: &Published, log_name: &str) -> Vec<String> {
+    let started = Config { mode, ..default_start() };
+    let ((), text) = logged(log_name, || apply(root, started, published));
     messages(&text)
 }
 
@@ -132,13 +145,33 @@ fn dev_flags_that_differ_from_the_start_change_no_setting_and_wait_for_the_next_
 }
 
 #[test]
+fn a_changed_vr_table_logs_its_own_line_in_the_mode_vr_only() {
+    let dir = test_dir("reload-dev-vr");
+    let root = dir.path();
+    let published = Published::new(Settings::default());
+    fs::write(root.join("dev.toml"), "[vr]\ntest_head = \"sweep\"\n").expect("write");
+    let reloaded = "\"settings reloaded\" ipd_mm=65.0 depth_offset_percent=1.5";
+    let desktop = apply_logged(root, &published, "reload-dev-vr-log-1");
+    assert_eq!(desktop, [reloaded], "the mode desktop-stereo never reads the [vr] table");
+    let vr = apply_logged_in(Mode::Vr, root, &published, "reload-dev-vr-log-2");
+    let vr_changed = "\"dev file changed, and its vr flags apply at the next start\" \
+                      horizon=level test_head=sweep test_yaw_deg=20.0";
+    assert_eq!(vr, [reloaded, vr_changed]);
+    fs::write(root.join("dev.toml"), "[stereo]\nsecond_view = false\n").expect("write");
+    let stereo = apply_logged_in(Mode::Vr, root, &published, "reload-dev-vr-log-3");
+    let changed = "\"dev file changed, and its flags apply at the next start\" main_view_eye=center \
+                   second_view=false viewer_source=back_buffer";
+    assert_eq!(stereo, [reloaded, changed], "an unchanged [vr] table logs no vr line");
+}
+
+#[test]
 fn the_started_thread_publishes_a_changed_file_on_a_request_and_ends_when_its_handle_drops() {
     let dir = test_dir("reload-thread");
     let root = dir.path();
     let name = reload_event::test_name("thread");
     let published = Arc::new(Published::new(Settings::default()));
     let folder = root.to_path_buf();
-    let reload = start(folder, &name, DevFlags::default(), Arc::clone(&published))
+    let reload = start(folder, &name, default_start(), Arc::clone(&published))
         .expect("start the settings thread");
     fs::write(root.join("settings.toml"), "[stereo]\nipd_mm = 61\n").expect("write");
     wait_quietly();
@@ -163,8 +196,8 @@ fn the_thread_reads_the_files_once_per_request_and_never_without_one() {
     let ((), text) = logged("reload-run-log", || {
         let dispatch = dispatcher::get_default(Dispatch::clone);
         let thread = thread::spawn(move || {
-            let flags = DevFlags::default();
-            dispatcher::with_default(&dispatch, || run(&stopped, &reload, &folder, flags, &shared));
+            let run_thread = || run(&stopped, &reload, &folder, default_start(), &shared);
+            dispatcher::with_default(&dispatch, run_thread);
         });
         fs::write(root.join("settings.toml"), "[stereo]\nipd_mm = 61\n").expect("write");
         wait_quietly();
@@ -191,7 +224,7 @@ fn a_reload_event_name_that_another_kind_of_object_holds_starts_no_thread() {
     let name = reload_event::test_name("mutex");
     let mutex = reload_event::hold_with_mutex(&name);
     let published = Arc::new(Published::new(Settings::default()));
-    let started = start(dir.path().to_path_buf(), &name, DevFlags::default(), published);
+    let started = start(dir.path().to_path_buf(), &name, default_start(), published);
     assert!(matches!(started, Err(StartError::Event(EventError::Create(_)))), "{started:?}");
     drop(mutex);
 }
@@ -202,9 +235,9 @@ fn a_reload_event_that_exists_starts_no_second_thread() {
     let name = reload_event::test_name("exists");
     let published = Arc::new(Published::new(Settings::default()));
     let folder = dir.path().to_path_buf();
-    let first = start(folder.clone(), &name, DevFlags::default(), Arc::clone(&published))
+    let first = start(folder.clone(), &name, default_start(), Arc::clone(&published))
         .expect("start the settings thread");
-    let second = start(folder, &name, DevFlags::default(), published);
+    let second = start(folder, &name, default_start(), published);
     assert!(
         matches!(second, Err(StartError::Event(EventError::Exists { name: ref named })) if *named == name),
         "{second:?}"

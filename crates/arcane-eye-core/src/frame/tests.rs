@@ -4,6 +4,7 @@ mod camera;
 mod depth;
 mod failed;
 mod source;
+mod vr;
 
 use std::time::{Duration, Instant};
 
@@ -14,8 +15,8 @@ use ipc_layout::perf_line::{self, PerfSummary};
 use settings::player::StereoSettings;
 
 use super::{
-    FrameLogs, FrameReport, FrameState, UiFrame, keep_cameras, log_flat, on_frame, record_interval,
-    skipped,
+    FrameInput, FrameLogs, FrameReport, FrameState, keep_cameras, log_flat, on_frame,
+    record_interval, skipped,
 };
 use crate::eye_view::Layout;
 use crate::logged;
@@ -28,6 +29,7 @@ use crate::ui_layer::cursor::place::{Pointer, spot};
 use crate::ui_layer::test_support::{hidden_cursor_layer, idle_layer};
 use crate::view_camera::FrameCameras;
 use crate::viewer::ViewerLink;
+use crate::vr_view::VrView;
 
 /// A frame state whose viewer link uses names of its own, and those names.
 fn test_state(test: &str) -> (FrameState, ViewNames) {
@@ -42,15 +44,16 @@ fn log_lines(name: &str, frames: impl FnOnce()) -> Vec<String> {
     text.lines().map(str::to_owned).collect()
 }
 
-/// The UI layer's part of a flat frame's handler state, with the default settings and no camera.
-fn flat_ui(health: &Health) -> UiFrame<'_> {
-    UiFrame { health, next: Layout::MainOnly, stereo: StereoSettings::default(), camera: None }
+/// The frame work's input of a flat frame, with the default settings, no camera and no head pose.
+fn flat_input(health: &Health) -> FrameInput<'_> {
+    let stereo = StereoSettings::default();
+    FrameInput { health, next: Layout::MainOnly, stereo, camera: None, head_sequence: 0 }
 }
 
 fn frame(state: &mut FrameState, test: &TestSwapchain) -> FrameReport {
     let health = Health::new();
-    let ui = flat_ui(&health);
-    test.with(|address, swapchain| on_frame(state, address, swapchain, ui, Instant::now()))
+    let input = flat_input(&health);
+    test.with(|address, swapchain| on_frame(state, address, swapchain, input, Instant::now()))
         .expect("a swapchain")
 }
 
@@ -330,7 +333,7 @@ fn a_skipped_frame_after_a_hidden_cursor_gives_the_counter_the_games_value_back_
     let pointer = Pointer { x: 10, y: 4, width: 64, height: 32 };
     let aim = Aim { handle: test_cursor.handle(), spot: spot(pointer).expect("a pointer inside") };
     let before = display_count();
-    let mut state = FrameState::new(None, Some(hidden_cursor_layer(&test, aim)));
+    let mut state = FrameState::new(None, Some(hidden_cursor_layer(&test, aim)), VrView::default());
     let hidden = display_count();
 
     let reports = [skipped(state.ui_layer.as_mut()), skipped(state.ui_layer.as_mut())];
@@ -347,11 +350,11 @@ fn a_new_device_at_a_reused_swapchain_address_replaces_the_held_devices() {
     let (mut state, _names) = test_state("reused-address");
     let reused = first.address();
     let health = Health::new();
-    let (ui, now) = (flat_ui(&health), Instant::now());
+    let (input, now) = (flat_input(&health), Instant::now());
     first
-        .with(|_, swapchain| on_frame(&mut state, reused, swapchain, ui, now))
+        .with(|_, swapchain| on_frame(&mut state, reused, swapchain, input, now))
         .expect("a swapchain");
-    let report = second.with(|_, swapchain| on_frame(&mut state, reused, swapchain, ui, now));
+    let report = second.with(|_, swapchain| on_frame(&mut state, reused, swapchain, input, now));
     assert_eq!(report, Some(FrameReport::Later));
     let (held_device, held_context) = state.devices.as_ref().expect("the held devices");
     let expected = raw::device(&second.swapchain).expect("the second swapchain's device");

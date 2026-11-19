@@ -44,6 +44,11 @@ fn the_distance_between_the_eyes_accepts_50_to_80_millimeters() {
     assert_eq!(IpdMm::try_from(80.001), Err(IpdRangeError(80.001)));
 }
 
+#[test]
+fn a_distance_of_64_millimeters_is_0_064_meters() {
+    assert!((ipd(64.0).meters() - 0.064).abs() < 1e-7);
+}
+
 fn depth(percent: f32) -> DepthOffsetPercent {
     DepthOffsetPercent::try_from(percent).expect("a depth offset in range")
 }

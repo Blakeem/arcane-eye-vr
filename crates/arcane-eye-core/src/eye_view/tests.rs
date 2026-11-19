@@ -14,7 +14,6 @@ use game_bindings::offsets::VIEW_PLAYER_ROOM_SIZE;
 use game_bindings::render_view::{Environment, PlayerRoom, ViewContent};
 use game_mem::GameAddr;
 use settings::dev::{DevFlags, MainViewEye, SecondView, StereoFlags};
-use settings::player::Settings;
 
 use super::decide::{Action, Observed, RETRY_PERIOD, Readiness, Retry, Stale, decide, readiness};
 use super::install;
@@ -24,7 +23,7 @@ use crate::logged;
 
 fn config(second_view: SecondView) -> Config {
     let stereo = StereoFlags { main_view_eye: MainViewEye::Center, second_view };
-    Config { settings: Settings::default(), dev: DevFlags { stereo, ..DevFlags::default() } }
+    Config::of_dev(DevFlags { stereo, ..DevFlags::default() })
 }
 
 /// An environment whose target address, ids and request id all derive from `id`. The active and the

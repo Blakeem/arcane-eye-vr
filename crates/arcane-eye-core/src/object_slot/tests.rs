@@ -7,7 +7,6 @@ use game_bindings::render_view::RenderView;
 use game_bindings::state::arm_alloc_guard;
 use game_mem::{GameAddr, WriteDest, try_read_bytes, try_write, try_write_slice};
 use settings::dev::{DevFlags, MainViewEye, SecondView, StereoFlags};
-use settings::player::Settings;
 
 use super::{Outcome, SlotFault, SlotState, assign, install};
 use crate::config::Config;
@@ -64,7 +63,7 @@ impl TestStage {
 
 fn config(second_view: SecondView) -> Config {
     let stereo = StereoFlags { main_view_eye: MainViewEye::Center, second_view };
-    Config { settings: Settings::default(), dev: DevFlags { stereo, ..DevFlags::default() } }
+    Config::of_dev(DevFlags { stereo, ..DevFlags::default() })
 }
 
 /// A registry where each of `features` installed.

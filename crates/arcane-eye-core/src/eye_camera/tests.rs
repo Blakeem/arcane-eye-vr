@@ -3,6 +3,7 @@
 
 mod install;
 mod pair;
+mod vr;
 
 use game_bindings::offsets::{
     CONTROLLER_INVERSE_VIEW, CONTROLLER_SIZE, CONTROLLER_VIEW, CONTROLLER_VTABLE_SLOTS,
@@ -17,7 +18,7 @@ use stereo_core::eye::{Eye, EyeScale, PerEye};
 use super::lane::last_seen_fault;
 use super::proxy::{self, PROXY_SIZE, RING_LEN};
 use super::test_support::{HALF_IPD_M, HEAD_POSITION, HEAD_VIEW, HeadController, RIGHT, eye_state};
-use super::{EyeFault, EyeState, History, Outcome, offsets_m};
+use super::{EyeFault, EyeState, History, Outcome, Placement};
 use crate::eye_view::Layout;
 use crate::logged;
 use crate::raw::SharedPages;
@@ -100,7 +101,7 @@ fn new_offsets_move_the_eye_of_the_next_frames_proxy_and_keep_the_views_history(
     let mut camera = eye_state(Eye::Right);
     proxied(begin(&mut camera, view.view()), History::Cut);
     view.finish_frame(head.address().get());
-    camera.set_offsets(PerEye { left: -0.04, right: 0.04 });
+    camera.set_placement(Placement::Head { offsets_m: PerEye { left: -0.04, right: 0.04 } });
     camera.end_frame(Layout::MainOnly);
     let proxy = proxied(begin(&mut camera, view.view()), History::Kept);
     let translate = call_world_translate(proxy::world_translate_fn(), proxy);
@@ -112,9 +113,14 @@ fn the_eye_offsets_are_the_full_eye_distance_times_the_eye_scale_in_use() {
     let ipd_mm = IpdMm::try_from(64.0).expect("an eye distance in range");
     let stereo = StereoSettings { ipd_mm, ..StereoSettings::default() };
 
-    assert_eq!(offsets_m(stereo, EyeScale::FULL), PerEye { left: -0.032, right: 0.032 });
-    assert_eq!(offsets_m(stereo, EyeScale::clamped(0.5)), PerEye { left: -0.016, right: 0.016 });
-    assert_eq!(offsets_m(stereo, EyeScale::clamped(0.0)), PerEye { left: 0.0, right: 0.0 });
+    assert_eq!(Placement::head(stereo, EyeScale::FULL), head_at(0.032));
+    assert_eq!(Placement::head(stereo, EyeScale::clamped(0.5)), head_at(0.016));
+    assert_eq!(Placement::head(stereo, EyeScale::clamped(0.0)), head_at(0.0));
+}
+
+/// The placement of each eye `half_m` meters to its side of the head controller.
+const fn head_at(half_m: f32) -> Placement {
+    Placement::Head { offsets_m: PerEye { left: -half_m, right: half_m } }
 }
 
 #[test]

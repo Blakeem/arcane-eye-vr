@@ -25,7 +25,7 @@ pub struct Flag {
 }
 
 /// Every dev flag.
-pub const FLAGS: [Flag; 3] = [
+pub const FLAGS: [Flag; 6] = [
     Flag {
         name: "stereo.main_view_eye",
         question: "Which eye position does the game's single render view use, for trials that run \
@@ -44,6 +44,26 @@ pub const FLAGS: [Flag; 3] = [
         name: "viewer.source",
         question: "Do the game's scene texture and UI texture hold what the mod needs at the Present \
                    call site, for trials that capture each of them alone?",
+        added: Version { major: 0, minor: 0, patch: 1 },
+        expires: Version { major: 0, minor: 3, patch: 0 },
+    },
+    Flag {
+        name: "vr.horizon",
+        question: "Does the head pose apply in a level frame at the game camera's position, or in the \
+                   game camera's own frame with its pitch?",
+        added: Version { major: 0, minor: 0, patch: 1 },
+        expires: Version { major: 0, minor: 3, patch: 0 },
+    },
+    Flag {
+        name: "vr.test_head",
+        question: "Does a head pose turn each eye's picture as a headset would, for trials that run \
+                   with no headset?",
+        added: Version { major: 0, minor: 0, patch: 1 },
+        expires: Version { major: 0, minor: 3, patch: 0 },
+    },
+    Flag {
+        name: "vr.test_yaw_deg",
+        question: "How far to the right in degrees does the test head pose turn?",
         added: Version { major: 0, minor: 0, patch: 1 },
         expires: Version { major: 0, minor: 3, patch: 0 },
     },
@@ -83,6 +103,22 @@ mod tests {
             );
             assert!(flag.added < flag.expires, "{}", flag.name);
         }
+    }
+
+    #[test]
+    fn the_vr_flags_were_added_in_0_0_1_and_expire_in_0_3_0() {
+        let vr: Vec<(&str, Version, Version)> = FLAGS
+            .iter()
+            .filter(|flag| flag.name.starts_with("vr."))
+            .map(|flag| (flag.name, flag.added, flag.expires))
+            .collect();
+        let (added, expires) = (version(0, 0, 1), version(0, 3, 0));
+        let expected = vec![
+            ("vr.horizon", added, expires),
+            ("vr.test_head", added, expires),
+            ("vr.test_yaw_deg", added, expires),
+        ];
+        assert_eq!(vr, expected);
     }
 
     #[test]

@@ -5,7 +5,8 @@
 //! breakpoint. The camera-cut field was checked by a static disassembly of the installed exe. The
 //! pipeline, frame, level, second-view and shadow stage offsets come from bg3-vr's recipe and a
 //! static disassembly. The game client offsets come from a static disassembly and debugger reads of
-//! the state id.
+//! the state id. The `PerView` corner rays come from bg3-vr's layout and a dump of both blocks of
+//! a turned eye view.
 
 /// The camera controller pointer of a render view's `ReadState`, which the engine builds the view's
 /// `PerView` and `PerCamera` blocks from.
@@ -17,6 +18,18 @@ pub const VIEW_LAST_SEEN_CONTROLLER: usize = 0x2B00;
 
 /// `PerCamera` block 0 of a render view.
 pub const VIEW_PER_CAMERA: usize = 0x2660;
+
+/// `PerCamera` block 1 of a render view, with the layout of block 0.
+pub const VIEW_PER_CAMERA_1: usize = 0x2740;
+
+/// `PerView` block 0 of a render view, which belongs to `PerCamera` block 0.
+pub const VIEW_PER_VIEW: usize = 0x2340;
+
+/// `PerView` block 1 of a render view, which belongs to `PerCamera` block 1.
+pub const VIEW_PER_VIEW_1: usize = 0x24D0;
+
+/// The three corner rays in a `PerView` block, each three `f32` and one unused `f32`.
+pub const PER_VIEW_CORNER_RAYS: [usize; 3] = [0x70, 0x80, 0x90];
 
 /// The world-to-camera view matrix in a `PerCamera` block, 16 `f32` in column-major order.
 pub const PER_CAMERA_VIEW: usize = 0x00;

@@ -1,6 +1,7 @@
 //! The UI depth: in a side by side frame whose UI the core draws, the UI comes in front of the
 //! scene under it when that scene is nearer than the screen surface, past a limit the eye distance
-//! shrinks instead, and the cursor sits at the depth of what is under the pointer.
+//! shrinks instead outside the launch mode `vr`, and the cursor sits at the depth of what is under
+//! the pointer.
 //!
 //! ```text
 //! UI LAYER FRAME whose draw is Ui or MoveThenUi, render thread, before the UI draw
@@ -40,6 +41,7 @@ use game_bindings::camera::Camera;
 use game_bindings::texture_table::TextureKey;
 use game_mem::GameAddr;
 use gfx::nearest::{DistanceFault, Nearest, NearestError, NearestRead, check_distance};
+use ipc_layout::launch_token::Mode;
 use settings::player::StereoSettings;
 use stereo_core::eye::EyeScale;
 use tracing::Level;
@@ -58,12 +60,15 @@ use crate::raw::Devices;
 /// What the UI depth reads at the Present call site besides the frame's textures.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DepthInput {
-    /// The player settings in effect, whose depth offset also moves the right half.
+    /// The player settings in effect, whose depth offset also moves the right half. The depth
+    /// offset is 0 in the launch mode `vr`.
     pub(crate) stereo: StereoSettings,
     /// The main view's camera of the frame, or `None` when the view camera feature read none.
     pub(crate) camera: Option<Camera>,
     /// The time of this Present call.
     pub(crate) now: Instant,
+    /// The launch mode, whose `vr` keeps the full eye distance past the UI disparity's limit.
+    pub(crate) mode: Mode,
 }
 
 /// The `ui depth` line's nearest distance for a UI over no scene or no result.
@@ -228,7 +233,7 @@ impl UiDepth {
         scene: &'frame Scene,
     ) -> Option<Start<'frame>> {
         let place = drawn.pointer?;
-        let view = View::of(&scene.camera, input.stereo);
+        let view = View::of(&scene.camera, input.stereo, input.mode);
         let probe = probe(place, view, self.rendered, scene.camera.far)?;
         Some(Start { ui: drawn.ui, distances: &scene.distances, probe })
     }
@@ -290,7 +295,7 @@ impl UiDepth {
             let elapsed = self
                 .stepped
                 .map_or(Duration::ZERO, |stepped| input.now.saturating_duration_since(stepped));
-            let view = View::of(&scene.camera, input.stereo);
+            let view = View::of(&scene.camera, input.stereo, input.mode);
             self.in_use = after(self.in_use, found, view, elapsed);
             self.stepped = Some(input.now);
             self.newest = Some(found);

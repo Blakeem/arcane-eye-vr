@@ -8,6 +8,7 @@ use game_bindings::camera::Camera;
 use game_bindings::state::arm_alloc_guard;
 use game_bindings::texture_table::TextureKey;
 use gfx::nearest::{Nearest, NearestError, NearestStep};
+use ipc_layout::launch_token::Mode;
 use settings::player::StereoSettings;
 use stereo_core::eye::EyeScale;
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
@@ -110,7 +111,7 @@ pub(super) fn input(start: Instant, frame: u32) -> DepthInput {
     let since = Duration::from_millis(16).checked_mul(frame).expect("a test duration");
     let stereo = StereoSettings { depth_offset_percent: depth(5.0), ..StereoSettings::default() };
     let now = start.checked_add(since).expect("a test time");
-    DepthInput { stereo, camera: Some(CAMERA), now }
+    DepthInput { stereo, camera: Some(CAMERA), now, mode: Mode::DesktopStereo }
 }
 
 /// Runs side by side frames from the frame `first` on until the UI depth's report meets `done`,

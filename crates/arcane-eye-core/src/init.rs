@@ -20,7 +20,6 @@ use hooks::{MidHook, RenderCell};
 use ipc_layout::core_init::INIT_STARTED;
 use ipc_layout::launch_token::{self, Mode, UnknownMode};
 use ipc_layout::settings_reload;
-use settings::dev::DevFlags;
 use tracing::dispatcher::{self, SetGlobalDefaultError};
 use tracing::{Dispatch, info, warn};
 
@@ -40,6 +39,7 @@ use crate::shadow_cache;
 use crate::ui_layer::{self, UiLayer};
 use crate::view_camera::{self, ViewCamera};
 use crate::viewer_source;
+use crate::vr_view::{self, Rays, VrView};
 
 /// The code `arcane_eye_init` returns. 0 is success, every other value names the failure.
 #[repr(u32)]
@@ -154,12 +154,13 @@ fn run(
     let core = start(mode, &root.log_dir())?;
     dispatcher::set_global_default(core.dispatch)?;
     root.warn_ignored();
-    let config = config::load(root.path());
+    let config = config::load(root.path(), mode);
     let settings = Arc::new(Published::new(config.settings));
-    let reload = start_reload(root.path(), names.reload_event, config.dev, &settings);
+    let reload = start_reload(root.path(), names.reload_event, config, &settings);
     let health = Health::new();
     let status = open_status(names.token);
     let installs = install_all(&health, status.as_ref(), config);
+    let vr = VrView::new(config.mode, config.dev.vr);
     let view_installed = installs.view_camera;
     let world_translate = view_installed.as_ref().map(|installed| installed.world_translate);
     let (eye_camera_hook, eye_state) =
@@ -176,8 +177,8 @@ fn run(
         _reload: reload,
         health,
         status,
-        frame: RenderCell::new(FrameState::new(installs.game_source, installs.ui_layer)),
-        view_camera: RenderCell::new(ViewCamera::new(world_translate)),
+        frame: RenderCell::new(FrameState::new(installs.game_source, installs.ui_layer, vr)),
+        view_camera: RenderCell::new(ViewCamera::new(world_translate, config.mode)),
         eye_camera: RenderCell::new(eye_state),
         eye_view: eye_view_state,
         shadow_cache: RenderCell::new(shadow_state),
@@ -195,12 +196,12 @@ fn run(
 }
 
 /// Starts the settings thread for the files in `folder`, which waits on the reload event
-/// `event_name`. A thread that cannot start is a warning, and a changed settings file then applies at
-/// the next start.
+/// `event_name`, with `started`, the config read at start. A thread that cannot start is a warning,
+/// and a changed settings file then applies at the next start.
 fn start_reload(
     folder: &Path,
     event_name: &str,
-    started: DevFlags,
+    started: Config,
     published: &Arc<Published>,
 ) -> Option<Reload> {
     match reload::start(folder.to_path_buf(), event_name, started, Arc::clone(published)) {
@@ -230,8 +231,9 @@ struct Installs {
 
 /// Runs every install against one copy of the game exe's code, which drops on return. The installs
 /// run in field order. The UI layer, game state, view camera, eye camera and eye view installs follow
-/// the Present call-site install, which all five need, and the shadow cache and object slot installs
-/// follow the eye view install, which they need.
+/// the Present call-site install, which all five need. The eye camera install follows the view camera
+/// install, whose outcome picks the first frame's placement in the launch mode `vr`, and the shadow
+/// cache and object slot installs follow the eye view install, which they need.
 fn install_all(health: &Health, status: Option<&StatusView>, config: Config) -> Installs {
     let code = GameCode::copy();
     Installs {
@@ -240,7 +242,12 @@ fn install_all(health: &Health, status: Option<&StatusView>, config: Config) -> 
         ui_layer: ui_layer::install(health, &code, config),
         game_state: game_state::install(health, &code),
         view_camera: view_camera::install(health, &code),
-        eye_camera: eye_camera::install(health, &code, config),
+        eye_camera: eye_camera::install(
+            health,
+            &code,
+            config,
+            vr_view::first_placement(config, Rays::of(health)),
+        ),
         eye_view: eye_view::install(health, &code, config),
         shadow_cache: shadow_cache::install(health, &code, config),
         object_slot: object_slot::install(health, &code, config),

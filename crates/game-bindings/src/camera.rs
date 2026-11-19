@@ -1,8 +1,39 @@
 //! A render view's `PerCamera` block and its decode into a camera: position, forward axis and lens.
+//! A view holds two pairs of a `PerCamera` block and the `PerView` block built from it.
 //!
 //! The engine's space is left-handed with Y up and +Z forward. The view matrix is world-to-camera
 //! with the camera's right, up and forward axes as the rows of its rotation. The projection is a
 //! reversed-Z perspective projection.
+
+use crate::offsets::{VIEW_PER_CAMERA, VIEW_PER_CAMERA_1, VIEW_PER_VIEW, VIEW_PER_VIEW_1};
+
+/// One of a render view's two pairs of a `PerCamera` block and its `PerView` block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockPair {
+    First,
+    Second,
+}
+
+impl BlockPair {
+    /// Both pairs, the first first.
+    pub const BOTH: [Self; 2] = [Self::First, Self::Second];
+
+    /// The byte offset of the pair's `PerCamera` block in a render view.
+    pub const fn per_camera(self) -> usize {
+        match self {
+            Self::First => VIEW_PER_CAMERA,
+            Self::Second => VIEW_PER_CAMERA_1,
+        }
+    }
+
+    /// The byte offset of the pair's `PerView` block in a render view.
+    pub const fn per_view(self) -> usize {
+        match self {
+            Self::First => VIEW_PER_VIEW,
+            Self::Second => VIEW_PER_VIEW_1,
+        }
+    }
+}
 
 /// The fields of a `PerCamera` block that the decode reads, as the engine built them for one frame.
 #[derive(Clone, Copy, Debug, PartialEq)]

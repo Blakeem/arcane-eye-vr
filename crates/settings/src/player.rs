@@ -12,6 +12,9 @@ use crate::rejection::Rejection;
 /// The only valid value of the top-level key `version`.
 pub(crate) const FORMAT_VERSION: i64 = 1;
 
+/// The millimeters in one meter.
+const MILLIMETERS_PER_METER: f32 = 1000.0;
+
 /// The player's settings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
@@ -42,6 +45,10 @@ impl IpdMm {
 
     pub const fn millimeters(self) -> f32 {
         self.0
+    }
+
+    pub const fn meters(self) -> f32 {
+        self.0 / MILLIMETERS_PER_METER
     }
 }
 
@@ -166,6 +173,9 @@ pub struct DepthOffsetPercent(f32);
 impl DepthOffsetPercent {
     pub const MIN: f32 = 0.0;
     pub const MAX: f32 = 5.0;
+
+    /// The depth offset that moves nothing.
+    pub const NONE: Self = Self(Self::MIN);
 
     pub const fn percent(self) -> f32 {
         self.0

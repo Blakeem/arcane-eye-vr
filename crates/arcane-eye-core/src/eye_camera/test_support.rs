@@ -9,7 +9,7 @@ use game_mem::GameAddr;
 use stereo_core::eye::{Eye, PerEye};
 
 use super::proxy::PAGES_SIZE;
-use super::{EyeState, Target};
+use super::{EyeState, Placement, Target};
 use crate::raw::SharedPages;
 use crate::view_camera::test_support::WORLD_TRANSLATE;
 
@@ -80,7 +80,7 @@ impl HeadController {
 pub(crate) fn target_state(target: Target) -> EyeState {
     let pages = SharedPages::commit(PAGES_SIZE).expect("commit the proxy pages");
     let offsets_m = PerEye { left: -HALF_IPD_M, right: HALF_IPD_M };
-    EyeState::new(pages, WORLD_TRANSLATE, target, offsets_m)
+    EyeState::new(pages, WORLD_TRANSLATE, target, Placement::Head { offsets_m })
 }
 
 /// The eye camera's state that renders the main view from `eye`.

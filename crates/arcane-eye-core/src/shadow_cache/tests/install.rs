@@ -2,7 +2,6 @@
 
 use diag::health::{Feature, FeatureState, Health};
 use settings::dev::{DevFlags, MainViewEye, SecondView, StereoFlags};
-use settings::player::Settings;
 
 use super::super::install;
 use crate::config::Config;
@@ -14,7 +13,7 @@ const NOT_INSTALLED: &str = "shadow cache hook not installed";
 
 fn config(second_view: SecondView) -> Config {
     let stereo = StereoFlags { main_view_eye: MainViewEye::Center, second_view };
-    Config { settings: Settings::default(), dev: DevFlags { stereo, ..DevFlags::default() } }
+    Config::of_dev(DevFlags { stereo, ..DevFlags::default() })
 }
 
 /// A registry where each of `features` installed.

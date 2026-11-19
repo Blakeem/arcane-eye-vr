@@ -1,16 +1,16 @@
 //! The frame handler's work at the Present call site.
 //!
 //! On the first frame it takes the device and the immediate context. On every frame it tracks the
-//! swapchain, its device and its back buffer, and hands the frame to the debug viewer link, with the
-//! game source when the dev flag `viewer.source` names one. Before that hand-over the UI layer draws
-//! into the back buffer. It logs once which feature's failure made the stereo pair flat. It times
-//! each call and logs the perf summary line once per window of frames, after the camera lines of the
-//! window's newest main view camera and newest eye view camera and the UI layer's `ui depth` and
-//! `cursor depth` lines.
-//! [`on_failed_present_call`] is its work after `present-hook` failed.
+//! swapchain, its device and its back buffer, and hands the frame with its tag to the debug viewer
+//! link, with the game source when the dev flag `viewer.source` names one. Before that hand-over the
+//! UI layer draws into the back buffer. It logs once which feature's failure made the stereo pair
+//! flat. It times each call and logs the perf summary line once per window of frames, after the
+//! lines of `lines`. [`on_failed_present_call`] is its work after `present-hook` failed.
 //!
 //! It keeps no back-buffer reference and no swapchain reference. An extra swapchain reference keeps a
 //! swapchain the game released alive, and DXGI then refuses a new swapchain on the same window.
+
+mod lines;
 
 use std::mem;
 use std::panic::{self, AssertUnwindSafe};
@@ -22,22 +22,27 @@ use diag::rate::{Once, RateLimit};
 use diag::{error_every, once, warn_every};
 use game_bindings::camera::Camera;
 use hooks::Registers;
-use ipc_layout::camera_line::{self, CameraEye};
 use ipc_layout::perf_line;
 use settings::player::StereoSettings;
-use stereo_core::eye::{Eye, EyeScale};
+use stereo_core::eye::EyeScale;
 use tracing::Level;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 use windows::core::HRESULT;
 
+use self::lines::{log_camera, log_depth, log_vr};
+use crate::eye_camera::Placement;
 use crate::eye_view::Layout;
 use crate::game_source::GameSource;
 use crate::pair::PairState;
 use crate::raw::{self, BackBuffer, Devices};
-use crate::ui_layer::ui_depth::{CursorReport, DepthInput, DepthReport};
+use crate::ui_layer::ui_depth::DepthInput;
 use crate::ui_layer::{Target, UiLayer};
-use crate::view_camera::{FrameCamera, FrameCameras, Viewpoint};
+use crate::view_camera::FrameCameras;
 use crate::viewer::ViewerLink;
+use crate::vr_view::{PresentCall, Rays, VrView};
+
+/// The log target of the frame handler's lines, those that `lines` logs included.
+const TARGET: &str = module_path!();
 
 /// The shortest time between two lines of one rate-limited call site.
 const LOG_PERIOD: Duration = Duration::from_secs(10);
@@ -71,6 +76,8 @@ pub(crate) struct FrameState {
     /// lines.
     cameras: FrameCameras,
     give_back: GiveBack,
+    /// The launch mode's head pose, depth offset and frame tag.
+    vr: VrView,
 }
 
 /// Whether the frame handler's give-back after a failure of `present-hook` still runs.
@@ -84,26 +91,43 @@ enum GiveBack {
 
 impl FrameState {
     /// The state of a frame handler whose viewer gets `game_source`, or the back buffer for `None`,
-    /// and that runs `ui_layer` when it holds one.
-    pub(crate) fn new(game_source: Option<GameSource>, ui_layer: Option<UiLayer>) -> Self {
-        Self { game_source, ui_layer, ..Self::default() }
+    /// that runs `ui_layer` when it holds one, in the launch mode of `vr`.
+    pub(crate) fn new(
+        game_source: Option<GameSource>,
+        ui_layer: Option<UiLayer>,
+        vr: VrView,
+    ) -> Self {
+        Self { game_source, ui_layer, vr, ..Self::default() }
     }
 
-    /// Hands the eye cameras the UI layer's eye scale in use, or the full eye distance with no layer.
-    pub(crate) fn hand_eye_scale(&mut self) -> EyeScale {
-        self.ui_layer.as_mut().map_or(EyeScale::FULL, UiLayer::hand_eye_scale)
+    /// Hands the eye cameras the placement of the next frame's proxies at the Present call of `now`,
+    /// for the player's `stereo` settings in effect, while the view camera leaves the corner rays as
+    /// `rays` says. The UI layer hands over its eye scale in use at each call, the full eye distance
+    /// with no layer, which the mode `vr` does not apply.
+    pub(crate) fn hand_placement(
+        &mut self,
+        stereo: StereoSettings,
+        rays: Rays,
+        now: Instant,
+    ) -> Placement {
+        let eye_scale = self.ui_layer.as_mut().map_or(EyeScale::FULL, UiLayer::hand_eye_scale);
+        let viewer = &self.viewer;
+        let call = PresentCall { stereo, eye_scale, rays, now };
+        self.vr.placement(|| viewer.head_pose(), call)
     }
 }
 
-/// What the UI layer takes from the Present call-site handler: the health registry, which also
-/// tells the frame handler whether the pair is flat, the layout of the next frame, the frame's copy
-/// of the player's stereo settings and the main view's camera of the frame.
+/// What the frame work takes from the Present call-site handler besides the swapchain: the health
+/// registry, which also tells the frame handler whether the pair is flat, the layout of the next
+/// frame, the frame's copy of the player's stereo settings, the main view's camera of the frame and
+/// the head pose sequence number the frame's main view proxy was filled with, 0 for none.
 #[derive(Clone, Copy)]
-pub(crate) struct UiFrame<'frame> {
+pub(crate) struct FrameInput<'frame> {
     pub(crate) health: &'frame Health,
     pub(crate) next: Layout,
     pub(crate) stereo: StereoSettings,
     pub(crate) camera: Option<Camera>,
+    pub(crate) head_sequence: u32,
 }
 
 /// The rate-limit state of each log call site of the frame handler.
@@ -128,18 +152,18 @@ struct Snapshot {
 
 /// Runs the frame work for the swapchain that `registers` hold at the Present call site, and logs a
 /// flat pair's start. `cameras` are the cameras of the frame's views that the view camera feature
-/// read, and `ui` is the UI layer's part of the handler's state.
+/// read, and `input` is the rest of the handler's state that the frame work takes.
 pub(crate) fn on_present_call(
     state: &mut FrameState,
     registers: &Registers,
     cameras: FrameCameras,
-    ui: UiFrame<'_>,
+    input: FrameInput<'_>,
 ) -> FrameReport {
     let now = Instant::now();
     keep_cameras(state, cameras);
-    log_flat(&mut state.logs, ui.health);
+    log_flat(&mut state.logs, input.health);
     let frame = raw::with_present_swapchain(registers, |address, swapchain| {
-        on_frame(state, address, swapchain, ui, now)
+        on_frame(state, address, swapchain, input, now)
     });
     let report = frame.unwrap_or_else(|| {
         error_every!(
@@ -204,7 +228,8 @@ fn keep_cameras(state: &mut FrameState, cameras: FrameCameras) {
 
 /// Adds the time since the previous Present call to the frame-time window. When that interval fills
 /// the window, logs the camera lines that `ipc_layout::camera_line` describes, the UI layer's
-/// `ui depth` and `cursor depth` lines, then the perf summary line.
+/// `ui depth` and `cursor depth` lines, the `vr view` line in the launch mode `vr`, then the perf
+/// summary line.
 fn record_interval(state: &mut FrameState, now: Instant) {
     let Some(previous) = state.last_call.replace(now) else {
         return;
@@ -218,6 +243,9 @@ fn record_interval(state: &mut FrameState, now: Instant) {
     }
     if let Some(layer) = &state.ui_layer {
         log_depth(layer.depth_report(), layer.cursor_report());
+    }
+    if let Some(report) = state.vr.report() {
+        log_vr(report);
     }
     let back_buffer = state.last.map(|snapshot| snapshot.back_buffer);
     // The window limits this line to one per SUMMARY_FRAMES frames, so it needs no rate-limit macro.
@@ -235,70 +263,12 @@ fn record_interval(state: &mut FrameState, now: Instant) {
     );
 }
 
-/// Logs one camera line. A reader pairs it with the perf summary line that follows it.
-fn log_camera(frame: &FrameCamera) {
-    let camera = &frame.camera;
-    let [x, y, z] = camera.position;
-    let [head_x, head_y, head_z] = frame.head();
-    let [fx, fy, fz] = camera.forward;
-    // The perf window limits this line to one per SUMMARY_FRAMES frames, so it needs no rate-limit
-    // macro. Debug writes an extreme f32 in exponent form, which keeps every field inside one log slot.
-    tracing::info!(
-        eye = camera_eye(frame.viewpoint).as_str(),
-        x = ?x,
-        y = ?y,
-        z = ?z,
-        head_x = ?head_x,
-        head_y = ?head_y,
-        head_z = ?head_z,
-        fx = ?fx,
-        fy = ?fy,
-        fz = ?fz,
-        fov_y_rad = ?camera.fov_y_rad,
-        aspect = ?camera.aspect,
-        near = ?camera.near,
-        far = ?camera.far,
-        "{}",
-        camera_line::MESSAGE
-    );
-}
-
-/// Logs the UI depth's lines. The `ui depth` line holds the nearest distance of
-/// [`DepthReport::nearest_m`], the columns per half of the UI disparity in use and the eye scale in
-/// use. The `cursor depth` line holds what the newest pointer read's result is over, `ui`, `scene`
-/// or `none` for no result, and the cursor's moves in use in the left half and the right half.
-fn log_depth(depth: DepthReport, cursor: CursorReport) {
-    // The perf window limits each line to one per SUMMARY_FRAMES frames, so they need no rate-limit
-    // macro.
-    tracing::info!(
-        nearest_m = ?depth.nearest_m(),
-        ui_columns = depth.columns,
-        eye_scale = ?depth.eye_scale.share(),
-        "ui depth"
-    );
-    tracing::info!(
-        over = cursor.over.as_str(),
-        left_columns = cursor.moves.left,
-        right_columns = cursor.moves.right,
-        "cursor depth"
-    );
-}
-
-/// The camera line's name for the position a view rendered from.
-const fn camera_eye(viewpoint: Viewpoint) -> CameraEye {
-    match viewpoint {
-        Viewpoint::Head => CameraEye::Center,
-        Viewpoint::Eye { eye: Eye::Left, .. } => CameraEye::Left,
-        Viewpoint::Eye { eye: Eye::Right, .. } => CameraEye::Right,
-    }
-}
-
 /// Runs the frame work for `swapchain`, which lives at `address`, at the Present call of `now`.
 fn on_frame(
     state: &mut FrameState,
     address: usize,
     swapchain: &IDXGISwapChain,
-    ui: UiFrame<'_>,
+    input: FrameInput<'_>,
     now: Instant,
 ) -> FrameReport {
     let (back_buffer, window) = match raw::swapchain_desc(swapchain) {
@@ -339,10 +309,12 @@ fn on_frame(
     if let Some(devices) = &state.devices {
         if let Some(layer) = &mut state.ui_layer {
             let target = Target { swapchain, devices, size: back_buffer, window };
-            let input = DepthInput { stereo: ui.stereo, camera: ui.camera, now };
-            layer.on_frame(ui.health, ui.next, &input, &target);
+            let stereo = state.vr.depth_stereo(input.stereo);
+            let depth = DepthInput { stereo, camera: input.camera, now, mode: state.vr.mode() };
+            layer.on_frame(input.health, input.next, &depth, &target);
         }
-        state.viewer.on_frame(swapchain, devices, state.game_source.as_mut());
+        let tag = state.vr.tag(input.head_sequence, input.camera);
+        state.viewer.on_frame(swapchain, devices, state.game_source.as_mut(), tag);
     }
     if first { FrameReport::FirstPresent } else { FrameReport::Later }
 }

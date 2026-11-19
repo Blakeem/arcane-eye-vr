@@ -5,18 +5,25 @@
 //! either `GetWorldTranslate`, for the head, or the eye camera's proxy function, for an eye. The eye
 //! view is the candidate the frame's layout names while the views sit side by side. The main view is
 //! the first other candidate of a frame at the site. A frame ends at the Present call-site hook, which
-//! takes the frame's cameras, so the feature installs only when that hook runs. The feature reads game
-//! memory and writes none.
+//! takes the frame's cameras, so the feature installs only when that hook runs. The feature writes
+//! game memory only in the launch mode `vr`, where it rewrites the corner rays of each view whose
+//! controller is an eye camera's proxy, in `rays`.
+
+mod rays;
 
 use std::mem::{self, ManuallyDrop};
+use std::time::Duration;
 
 use diag::health::{Feature, Health};
+use diag::rate::RateLimit;
+use diag::warn_every;
 use game_bindings::camera::Camera;
 use game_bindings::render_view::RenderView;
 use game_bindings::signatures::{GET_WORLD_TRANSLATE, RENDER_VIEW_CAMERA_BUILT};
 use game_bindings::state;
-use game_mem::GameAddr;
+use game_mem::{GameAddr, WriteDest};
 use hooks::{MidHook, Registers, RenderThread, Runs};
+use ipc_layout::launch_token::Mode;
 use stereo_core::eye::Eye;
 use tracing::{info, warn};
 
@@ -25,6 +32,9 @@ use crate::eye_camera::proxy;
 use crate::eye_view::Layout;
 use crate::install::{GameCode, InstallError};
 use crate::raw;
+
+/// The shortest time between two warnings of the corner ray rewrite.
+const LOG_PERIOD: Duration = Duration::from_secs(10);
 
 hooks::render_mid_hook!(
     camera_built_thunk,
@@ -90,8 +100,8 @@ fn hook_camera_built(code: &GameCode) -> Result<(GameAddr, Installed), InstallEr
 
 /// The hook's handler, on the render thread once per render view per frame. `rdi` holds the view.
 fn on_camera_built(context: &CoreContext, thread: &RenderThread, registers: &mut Registers) {
-    let view = RenderView::new(GameAddr::new(registers.rdi()));
-    context.view_camera.with(thread, |camera| camera.on_view(view));
+    let (view, writes) = raw::render_view::camera_built_view(registers);
+    context.view_camera.with(thread, |camera| camera.on_view(view, writes));
 }
 
 /// Ends the frame of the view camera, so the next frame's views are chosen in `layout`, and returns
@@ -172,26 +182,58 @@ impl Choice {
 pub(crate) struct ViewCamera {
     /// The resolved `GetWorldTranslate`, or `None` when the feature is not installed.
     world_translate: Option<GameAddr>,
+    /// The launch mode, which rewrites the corner rays of proxied views in `vr`.
+    mode: Mode,
     /// The layout of the current frame.
     layout: Layout,
     main: Choice,
     eye_view: Choice,
+    ray_log: RateLimit,
 }
 
 impl ViewCamera {
-    pub(crate) fn new(world_translate: Option<GameAddr>) -> Self {
+    pub(crate) fn new(world_translate: Option<GameAddr>, mode: Mode) -> Self {
         Self {
             world_translate,
+            mode,
             layout: Layout::MainOnly,
             main: Choice::Open,
             eye_view: Choice::Open,
+            ray_log: RateLimit::default(),
+        }
+    }
+
+    /// Rewrites the corner rays of `view`, whose first bytes are `writes`, in the mode `vr` when its
+    /// controller is a proxy, then chooses the view.
+    pub(crate) fn on_view(&mut self, view: RenderView, writes: WriteDest<'_>) {
+        if self.mode == Mode::Vr {
+            self.turn_rays(view, writes);
+        }
+        self.choose(view);
+    }
+
+    /// Rewrites the corner rays of `view` when its controller is a proxy. A read fault or an unusable
+    /// projection leaves the view's rays as the game built them for the frame, and a write fault may
+    /// leave the first pair's rays rewritten. Each logs a rate-limited warning.
+    fn turn_rays(&mut self, view: RenderView, writes: WriteDest<'_>) {
+        if !matches!(origin(self.world_translate, view), Some(Origin::Proxy(_))) {
+            return;
+        }
+        if let Err(fault) = rays::rewrite(view, writes) {
+            warn_every!(
+                self.ray_log,
+                LOG_PERIOD,
+                view = format_args!("{:#x}", view.address().get()),
+                fault = %fault,
+                "view camera did not rewrite every corner ray of a proxied view for this frame"
+            );
         }
     }
 
     /// Takes `view` as the frame's eye view when the layout names it, or else as the frame's main
     /// view when no view of the frame was, and its controller marks it as a candidate. A proxied view
     /// whose eye or head position cannot be read has no camera.
-    pub(crate) fn on_view(&mut self, view: RenderView) {
+    fn choose(&mut self, view: RenderView) {
         let choice =
             if self.layout.is_eye_view(view) { &mut self.eye_view } else { &mut self.main };
         if *choice != Choice::Open {

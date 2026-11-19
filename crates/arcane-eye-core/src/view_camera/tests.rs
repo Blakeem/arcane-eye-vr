@@ -1,9 +1,12 @@
 //! The choice of the main view and the eye view and their camera reads against views and
 //! controllers built in test memory.
 
+mod rays;
+
 use diag::health::{Feature, FeatureState, Health};
 use game_bindings::camera::PerCamera;
 use game_mem::{GameAddr, try_read, try_write};
+use ipc_layout::launch_token::Mode;
 use stereo_core::eye::Eye;
 
 use super::test_support::{TestController, TestView, WORLD_TRANSLATE, block_at};
@@ -31,7 +34,7 @@ fn running() -> Health {
 /// layout is the one the last frame end named.
 fn frame_cameras(camera: &mut ViewCamera, views: &[&TestView], next: Layout) -> FrameCameras {
     for view in views {
-        camera.on_view(view.view());
+        camera.on_view(view.view(), view.writes());
     }
     camera.end_frame(&running(), next)
 }
@@ -66,7 +69,7 @@ fn a_view_with_a_null_controller_is_skipped() {
     let controller = TestController::new(WORLD_TRANSLATE);
     let special = TestView::new(0, &block_at(1.0));
     let main = TestView::new(controller.address(), &block_at(2.0));
-    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE));
+    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE), Mode::DesktopStereo);
     assert_eq!(frame_camera_x(&mut camera, &[&special, &main]), Some(2.0));
 }
 
@@ -76,7 +79,7 @@ fn a_view_whose_controller_has_another_slot_9_function_is_skipped() {
     let gameplay = TestController::new(WORLD_TRANSLATE);
     let other_view = TestView::new(other.address(), &block_at(1.0));
     let main = TestView::new(gameplay.address(), &block_at(2.0));
-    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE));
+    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE), Mode::DesktopStereo);
     assert_eq!(frame_camera_x(&mut camera, &[&other_view, &main]), Some(2.0));
 }
 
@@ -85,7 +88,7 @@ fn the_first_matching_view_of_a_frame_wins_and_a_second_is_ignored() {
     let controller = TestController::new(WORLD_TRANSLATE);
     let first = TestView::new(controller.address(), &block_at(1.0));
     let second = TestView::new(controller.address(), &block_at(2.0));
-    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE));
+    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE), Mode::DesktopStereo);
     let cameras = frame_cameras(&mut camera, &[&first, &second], Layout::MainOnly);
     assert_eq!((x_of(cameras.main), cameras.eye_view), (Some(1.0), None));
 }
@@ -95,7 +98,7 @@ fn the_choice_starts_again_after_a_frame_end() {
     let controller = TestController::new(WORLD_TRANSLATE);
     let first = TestView::new(controller.address(), &block_at(1.0));
     let second = TestView::new(controller.address(), &block_at(2.0));
-    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE));
+    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE), Mode::DesktopStereo);
     assert_eq!(frame_camera_x(&mut camera, &[&first]), Some(1.0));
     assert_eq!(frame_camera_x(&mut camera, &[&second, &first]), Some(2.0));
     assert_eq!(frame_camera_x(&mut camera, &[]), None, "a frame with no view has no camera");
@@ -108,7 +111,7 @@ fn side_by_side_the_eye_view_has_its_own_camera_whatever_its_order() {
     let eye = TestView::new(controller.address(), &block_at(2.0));
     let third = TestView::new(controller.address(), &block_at(3.0));
     let side_by_side = Layout::SideBySide { main: main.view(), eye: eye.view() };
-    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE));
+    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE), Mode::DesktopStereo);
     frame_cameras(&mut camera, &[], side_by_side);
     let pair = frame_cameras(&mut camera, &[&eye, &main, &third], side_by_side);
     assert_eq!((x_of(pair.main), x_of(pair.eye_view)), (Some(1.0), Some(2.0)));
@@ -124,7 +127,7 @@ fn a_main_view_whose_block_does_not_decode_still_ends_the_choice_of_its_frame() 
     let flat = PerCamera { projection: [0.0; 16], ..block_at(1.0) };
     let main = TestView::new(controller.address(), &flat);
     let later = TestView::new(controller.address(), &block_at(2.0));
-    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE));
+    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE), Mode::DesktopStereo);
     assert_eq!(frame_camera_x(&mut camera, &[&main, &later]), None);
 }
 
@@ -133,7 +136,7 @@ fn no_view_is_the_main_view_without_a_resolved_function() {
     // A controller whose vtable slot 9 is null against an unresolved function.
     let controller = TestController::new(GameAddr::new(0));
     let view = TestView::new(controller.address(), &block_at(1.0));
-    let mut camera = ViewCamera::new(None);
+    let mut camera = ViewCamera::new(None, Mode::DesktopStereo);
     assert_eq!(frame_camera_x(&mut camera, &[&view]), None);
 }
 
@@ -144,11 +147,11 @@ fn a_feature_latched_off_ends_the_frame_with_no_camera_and_a_fresh_choice() {
     let eye = TestView::new(controller.address(), &block_at(2.0));
     let second = TestView::new(controller.address(), &block_at(3.0));
     let side_by_side = Layout::SideBySide { main: first.view(), eye: eye.view() };
-    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE));
+    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE), Mode::DesktopStereo);
     frame_cameras(&mut camera, &[], side_by_side);
     let health = running();
-    camera.on_view(first.view());
-    camera.on_view(eye.view());
+    camera.on_view(first.view(), first.writes());
+    camera.on_view(eye.view(), eye.writes());
     health.panic_caught(Feature::ViewCamera);
     let latched = camera.end_frame(&health, side_by_side);
     assert_eq!(latched, FrameCameras::default(), "cameras chosen before the latch");
@@ -160,8 +163,8 @@ fn a_feature_latched_off_ends_the_frame_with_no_camera_and_a_fresh_choice() {
 fn a_head_view_renders_from_the_center_with_its_own_position_as_the_head() {
     let controller = TestController::new(WORLD_TRANSLATE);
     let main = TestView::new(controller.address(), &block_at(2.0));
-    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE));
-    camera.on_view(main.view());
+    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE), Mode::DesktopStereo);
+    camera.on_view(main.view(), main.writes());
     let frame = camera.end_frame(&running(), Layout::MainOnly).main.expect("a head camera");
     assert_eq!(frame.viewpoint, Viewpoint::Head);
     assert_eq!(frame.head(), [2.0, 0.0, 0.0], "the head is the view's own PerCamera position");
@@ -187,8 +190,8 @@ fn a_view_on_an_eye_proxy_renders_from_that_eye_with_the_proxied_head() {
     let main = TestView::new(head.address().get(), &block_at(2.0));
     let mut eye_camera = eye_state(Eye::Left);
     eye_camera.on_view_begin(main.view(), main.writes());
-    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE));
-    camera.on_view(main.view());
+    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE), Mode::DesktopStereo);
+    camera.on_view(main.view(), main.writes());
     assert_eye_camera(camera.end_frame(&running(), Layout::MainOnly).main, Eye::Left, 2.0);
 }
 
@@ -200,11 +203,11 @@ fn side_by_side_proxied_views_render_from_the_left_and_the_right_eye() {
     let side_by_side = Layout::SideBySide { main: main.view(), eye: eye.view() };
     let mut eye_camera = target_state(Target::StereoPair);
     eye_camera.end_frame(side_by_side);
-    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE));
+    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE), Mode::DesktopStereo);
     frame_cameras(&mut camera, &[], side_by_side);
     for view in [&main, &eye] {
         eye_camera.on_view_begin(view.view(), view.writes());
-        camera.on_view(view.view());
+        camera.on_view(view.view(), view.writes());
     }
     let cameras = camera.end_frame(&running(), side_by_side);
     assert_eye_camera(cameras.main, Eye::Left, 1.0);
@@ -234,7 +237,7 @@ fn a_proxied_main_view_whose_head_position_is_unreadable_ends_its_frame_with_no_
     let (_template, controller, proxied) = view_on_proxy_in_page(&pages, last_word);
     let head = TestController::new(WORLD_TRANSLATE);
     let later = TestView::new(head.address(), &block_at(2.0));
-    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE));
+    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE), Mode::DesktopStereo);
     assert_eq!(proxy::head_position(controller), None, "the head position past the page");
     assert_eq!(frame_camera_x(&mut camera, &[&proxied, &later]), None);
 }
@@ -245,7 +248,7 @@ fn a_proxied_main_view_whose_proxy_names_no_eye_ends_its_frame_with_no_camera() 
     let (_template, controller, proxied) = view_on_proxy_in_page(&pages, 0);
     let head = TestController::new(WORLD_TRANSLATE);
     let later = TestView::new(head.address(), &block_at(2.0));
-    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE));
+    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE), Mode::DesktopStereo);
     assert_eq!(proxy::head_position(controller), Some([0.0; 3]), "a readable head position");
     assert_eq!(proxy::eye(controller), None, "a zero eye code");
     assert_eq!(frame_camera_x(&mut camera, &[&proxied, &later]), None);

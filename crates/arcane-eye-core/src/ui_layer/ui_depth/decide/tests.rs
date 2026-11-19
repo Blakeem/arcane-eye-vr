@@ -6,10 +6,11 @@ use std::time::Duration;
 use game_bindings::camera::Camera;
 use gfx::nearest::Nearest;
 use gfx::pointer::Pointed;
+use ipc_layout::launch_token::Mode;
 use settings::player::{DepthOffsetPercent, IpdMm, StereoSettings};
 use stereo_core::eye::EyeScale;
 
-use super::{Depth, Over, View, after, cursor_moves, follow, probe, targets};
+use super::{Depth, EyeDistance, Over, View, after, cursor_moves, follow, probe, targets};
 use crate::ui_layer::decide::{Moves, ui_columns};
 
 /// The main view's camera in the measured dialogue close-up.
@@ -22,13 +23,19 @@ const DIALOGUE: Camera = Camera {
     far: 10_000.0,
 };
 
-/// The measured dialogue's eye distance of 65 mm and depth offset of 1.5 percent.
+/// The measured dialogue's eye distance of 65 mm and depth offset of 1.5 percent, in the launch mode
+/// `desktop-stereo`.
 fn dialogue() -> View {
+    dialogue_in(Mode::DesktopStereo)
+}
+
+/// The measured dialogue's view in the launch mode `mode`.
+fn dialogue_in(mode: Mode) -> View {
     let stereo = StereoSettings {
         ipd_mm: IpdMm::try_from(65.0).expect("an eye distance in range"),
         depth_offset_percent: DepthOffsetPercent::try_from(1.5).expect("an offset in range"),
     };
-    View::of(&DIALOGUE, stereo)
+    View::of(&DIALOGUE, stereo, mode)
 }
 
 fn at(meters: f32) -> Nearest {
@@ -57,6 +64,16 @@ fn a_scene_nearer_than_the_limit_holds_the_limit_and_shrinks_the_eye_distance() 
 
     assert_between(target.disparity, 0.04, 0.04, "the UI disparity");
     assert_between(target.eye_scale.share(), 0.688, 0.691, "the eye scale");
+}
+
+#[test]
+fn in_the_mode_vr_a_scene_nearer_than_the_limit_holds_the_limit_and_the_full_eye_distance() {
+    let target = targets(at(1.0), dialogue_in(Mode::Vr));
+
+    assert_between(target.disparity, 0.04, 0.04, "the UI disparity");
+    assert_eq!(target.eye_scale, EyeScale::FULL);
+    assert_eq!(dialogue_in(Mode::Vr).eye_distance, EyeDistance::Fixed);
+    assert_eq!(dialogue().eye_distance, EyeDistance::Shrinks);
 }
 
 #[test]
@@ -224,7 +241,12 @@ fn the_cursor_depth_line_names_what_the_pointer_is_over() {
 
 #[test]
 fn the_probe_scales_the_ray_by_the_eye_scale_and_reaches_half_the_limit_and_the_offset() {
-    let view = View { lens: 1.080_552_4, eye_m: 0.065, offset: OFFSET };
+    let view = View {
+        lens: 1.080_552_4,
+        eye_m: 0.065,
+        offset: OFFSET,
+        eye_distance: EyeDistance::Shrinks,
+    };
 
     let full = probe([0.25, 0.5], view, EyeScale::FULL, 100.0).expect("a ray");
     let half = probe([0.25, 0.5], view, EyeScale::clamped(0.5), 100.0).expect("a ray");
@@ -237,7 +259,12 @@ fn the_probe_scales_the_ray_by_the_eye_scale_and_reaches_half_the_limit_and_the_
 
 #[test]
 fn a_far_plane_that_gives_no_finite_ray_above_0_gives_no_probe() {
-    let view = View { lens: 1.080_552_4, eye_m: 0.065, offset: OFFSET };
+    let view = View {
+        lens: 1.080_552_4,
+        eye_m: 0.065,
+        offset: OFFSET,
+        eye_distance: EyeDistance::Shrinks,
+    };
 
     for far_m in [0.0, -1.0, f32::INFINITY, f32::NAN] {
         assert_eq!(probe([0.25, 0.5], view, EyeScale::FULL, far_m), None, "{far_m}");

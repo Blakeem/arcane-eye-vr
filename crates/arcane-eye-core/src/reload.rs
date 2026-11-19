@@ -14,12 +14,13 @@ use std::thread::{self, JoinHandle};
 
 use arc_swap::ArcSwap;
 use diag::error_chain;
+use ipc_layout::launch_token::Mode;
 use settings::dev::DevFlags;
 use settings::file;
 use settings::player::Settings;
 use tracing::{info, warn};
 
-use crate::config;
+use crate::config::{self, Config};
 use crate::raw::reload_event::{self, Event, EventError, Signaled};
 
 const THREAD_NAME: &str = "arcane-eye-settings";
@@ -72,7 +73,7 @@ pub(crate) enum StartError {
 }
 
 /// Creates the reload event `event_name` and starts the settings thread for the files in `folder`,
-/// which the core read once at start. `started` are the dev flags of that read.
+/// which the core read once at start. `started` is the config of that read.
 ///
 /// # Errors
 ///
@@ -81,7 +82,7 @@ pub(crate) enum StartError {
 pub(crate) fn start(
     folder: PathBuf,
     event_name: &str,
-    started: DevFlags,
+    started: Config,
     published: Arc<Published>,
 ) -> Result<Reload, StartError> {
     let reload = Event::named(event_name)?;
@@ -93,7 +94,7 @@ pub(crate) fn start(
 }
 
 /// Applies the files in `folder` once per signal of `reload`, until `stop` is signaled or a wait fails.
-fn run(stop: &Event, reload: &Event, folder: &Path, started: DevFlags, published: &Published) {
+fn run(stop: &Event, reload: &Event, folder: &Path, started: Config, published: &Published) {
     loop {
         match reload_event::wait(stop, reload) {
             Ok(Signaled::Reload) => apply(folder, started, published),
@@ -106,8 +107,8 @@ fn run(stop: &Event, reload: &Event, folder: &Path, started: DevFlags, published
     }
 }
 
-/// Reads both files in `folder` once and applies them.
-fn apply(folder: &Path, started: DevFlags, published: &Published) {
+/// Reads both files in `folder` once and applies them against `started`, the config read at start.
+fn apply(folder: &Path, started: Config, published: &Published) {
     match file::read_settings(folder) {
         Ok(parsed) => {
             config::warn_unknown_keys(&parsed);
@@ -125,17 +126,34 @@ fn apply(folder: &Path, started: DevFlags, published: &Published) {
         ),
     }
     match file::read_dev(folder) {
-        Ok(flags) if flags == started => {}
-        Ok(flags) => info!(
-            main_view_eye = flags.stereo.main_view_eye.as_str(),
-            second_view = flags.stereo.second_view.as_bool(),
-            viewer_source = flags.viewer.source.as_str(),
-            "dev file changed, and its flags apply at the next start"
-        ),
+        Ok(flags) => info_changed_dev(started, flags),
         Err(error) => warn!(
             error = %error_chain::chain(&error),
             "dev file gave no values, and the flags read at start stay"
         ),
+    }
+}
+
+/// Logs the dev file's `flags` that differ from the flags read at start in `started`: one line for the
+/// `[stereo]` and `[viewer]` tables and one for the `[vr]` table. The mode `desktop-stereo` never reads
+/// the `[vr]` table, so it logs no `[vr]` change.
+fn info_changed_dev(started: Config, flags: DevFlags) {
+    let with_started_vr = DevFlags { vr: started.dev.vr, ..flags };
+    if with_started_vr != started.dev {
+        info!(
+            main_view_eye = flags.stereo.main_view_eye.as_str(),
+            second_view = flags.stereo.second_view.as_bool(),
+            viewer_source = flags.viewer.source.as_str(),
+            "dev file changed, and its flags apply at the next start"
+        );
+    }
+    if started.mode == Mode::Vr && flags.vr != started.dev.vr {
+        info!(
+            horizon = flags.vr.horizon.as_str(),
+            test_head = flags.vr.test_head.as_str(),
+            test_yaw_deg = flags.vr.test_yaw_deg.degrees(),
+            "dev file changed, and its vr flags apply at the next start"
+        );
     }
 }
 

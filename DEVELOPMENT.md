@@ -38,6 +38,20 @@ An unknown key in `dev.toml` rejects the file. A change to `dev.toml` applies at
 
 `second_view = false` turns the stereo pair off, so the game draws its own view across the entire frame.
 
+## Immersive mode
+
+The launch mode `vr` renders each eye's picture from the headset's head pose on top of the game's own camera. The game's camera, its interface and its mouse picking stay as they are, and the second view's picture is not moved to the right. The mod reads the head pose that the launch app writes into the debug viewer link. The launch app's side is not built yet.
+
+The table `[vr]` in `dev.toml` holds the flags of this mode.
+
+```toml
+# dev.toml
+[vr]
+horizon = "level"           # the frame the head pose turns in: level (at the game camera, level with the ground) or camera (the game camera with its tilt)
+test_head = "off"           # a head pose the mod makes for trials with no headset: off, yaw (a fixed turn) or sweep (a turn to each side and back every 4 seconds)
+test_yaw_deg = 20           # the turn of the test head pose to the right in degrees, from -180 to 180
+```
+
 ## Root folder
 
 The mod's root folder is `%LOCALAPPDATA%\arcane-eye-vr\`. It holds `settings.toml`, `dev.toml` and the session logs in `logs\`. The environment variable `ARCANE_EYE_VR_HOME` sets a different root folder when its value is an absolute path. The game reads it from the environment it inherits. The launch app starts the game through Steam, so the game gets Steam's environment and not the launch app's. A user variable reaches the game when Steam starts after the variable is set. `trial.exe` sets it on the game it starts.

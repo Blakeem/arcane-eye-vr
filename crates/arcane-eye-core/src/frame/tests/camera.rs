@@ -6,6 +6,7 @@ use diag::health::{Feature, Health};
 use game_bindings::camera::Camera;
 use game_bindings::state::arm_alloc_guard;
 use ipc_layout::camera_line::{self, CameraEye, CameraLine};
+use ipc_layout::launch_token::Mode;
 use stereo_core::eye::Eye;
 
 use super::{call_times, log_lines, summaries, test_state, timed_frame};
@@ -64,7 +65,7 @@ fn the_camera_read_and_the_camera_line_make_no_heap_allocation() {
     let main = TestView::new(controller.address(), &block_at(2.0));
     let eye = TestView::new(controller.address(), &block_at(3.0));
     let side_by_side = Layout::SideBySide { main: main.view(), eye: eye.view() };
-    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE));
+    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE), Mode::DesktopStereo);
     let health = Health::new();
     health.install_ok(Feature::ViewCamera);
     camera.end_frame(&health, side_by_side);
@@ -77,7 +78,7 @@ fn the_camera_read_and_the_camera_line_make_no_heap_allocation() {
         }
         let guard = arm_alloc_guard().expect("arm the allocation guard");
         for view in [&special, &main, &eye] {
-            camera.on_view(view.view());
+            camera.on_view(view.view(), view.writes());
         }
         let frame_cameras = camera.end_frame(&health, side_by_side);
         timed_frame(&mut state, &test, last, frame_cameras);

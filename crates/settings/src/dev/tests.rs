@@ -1,6 +1,9 @@
 //! The dev file parser against texts written by hand.
 
-use super::{DevFlags, MainViewEye, SecondView, StereoFlags, ViewerFlags, ViewerSource, parse};
+use super::{
+    DevFlags, Horizon, MainViewEye, SecondView, StereoFlags, TestHead, TestYawDeg, ViewerFlags,
+    ViewerSource, VrFlags, parse,
+};
 use crate::rejection::{Position, Rejection};
 
 fn eye(value: &str) -> Result<DevFlags, Rejection> {
@@ -97,6 +100,43 @@ fn an_unknown_key_rejects_the_file() {
         ))
     );
     let top_level = parse("version = 1\n");
-    let reason = "unknown field `version`, expected `stereo` or `viewer`";
+    let reason = "unknown field `version`, expected one of `stereo`, `viewer`, `vr`";
     assert_eq!(top_level, Err(rejection(reason, 1, 1)));
+}
+
+#[test]
+fn the_vr_flags_default_to_a_level_horizon_and_no_test_head_turned_20_degrees() {
+    let vr = DevFlags::default().vr;
+    assert_eq!(vr.horizon, Horizon::Level);
+    assert_eq!(vr.test_head, TestHead::Off);
+    assert_eq!(vr.test_yaw_deg, TestYawDeg::try_from(20.0).expect("in range"));
+    assert_eq!(parse("[vr]\n"), Ok(DevFlags::default()));
+}
+
+#[test]
+fn each_vr_flag_parses_from_the_value_it_logs_under() {
+    let text = "[vr]\nhorizon = \"camera\"\ntest_head = \"sweep\"\ntest_yaw_deg = -45\n";
+    let vr = VrFlags {
+        horizon: Horizon::Camera,
+        test_head: TestHead::Sweep,
+        test_yaw_deg: TestYawDeg::try_from(-45.0).expect("in range"),
+    };
+    assert_eq!(parse(text), Ok(DevFlags { vr, ..DevFlags::default() }));
+    for test_head in [TestHead::Off, TestHead::Yaw, TestHead::Sweep] {
+        let parsed = parse(&format!("[vr]\ntest_head = \"{}\"\n", test_head.as_str()));
+        assert_eq!(parsed.map(|flags| flags.vr.test_head), Ok(test_head));
+    }
+    for horizon in [Horizon::Level, Horizon::Camera] {
+        let parsed = parse(&format!("[vr]\nhorizon = \"{}\"\n", horizon.as_str()));
+        assert_eq!(parsed.map(|flags| flags.vr.horizon), Ok(horizon));
+    }
+    assert_eq!(TestYawDeg::try_from(180.0).map(TestYawDeg::degrees), Ok(180.0));
+}
+
+#[test]
+fn an_unknown_horizon_or_a_test_yaw_past_180_degrees_rejects_the_file() {
+    let reason = "unknown variant `up`, expected `level` or `camera`";
+    assert_eq!(parse("[vr]\nhorizon = \"up\"\n"), Err(rejection(reason, 2, 11)));
+    let range = "test_yaw_deg must be from -180 to 180 degrees, got 200";
+    assert_eq!(parse("[vr]\ntest_yaw_deg = 200\n"), Err(rejection(range, 2, 16)));
 }

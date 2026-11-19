@@ -13,6 +13,7 @@ use std::time::Duration;
 use game_bindings::camera::Camera;
 use gfx::nearest::Nearest;
 use gfx::pointer::{Pointed, Probe};
+use ipc_layout::launch_token::Mode;
 use settings::player::StereoSettings;
 use stereo_core::eye::EyeScale;
 
@@ -36,9 +37,6 @@ const RISE_PER_SECOND: f32 = 0.5;
 /// The divisor that turns a percentage into a share.
 const PERCENT: f32 = 100.0;
 
-/// The millimeters in one meter, the unit of the eye distance.
-const MILLIMETERS_PER_METER: f32 = 1000.0;
-
 /// A UI texel under the pointer covers the scene when its alpha is above this value, as `COVERING`
 /// in `shaders/nearest.slang` decides for the nearest read.
 const COVERING: f32 = 0.25;
@@ -56,8 +54,28 @@ impl Depth {
     pub(crate) const FLAT: Self = Self { disparity: 0.0, eye_scale: EyeScale::FULL };
 }
 
-/// What turns a nearest distance into a disparity: the main view's lens, the full eye distance and
-/// the depth offset.
+/// Whether the eye distance shrinks past the UI disparity's limit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EyeDistance {
+    /// The eye scale shrinks so a nearer scene stays behind the UI, in the launch mode
+    /// `desktop-stereo`.
+    Shrinks,
+    /// The eyes stay at the full distance, in the launch mode `vr`, where the headset's eye
+    /// distance keeps the world at its true scale.
+    Fixed,
+}
+
+impl EyeDistance {
+    const fn of(mode: Mode) -> Self {
+        match mode {
+            Mode::DesktopStereo => Self::Shrinks,
+            Mode::Vr => Self::Fixed,
+        }
+    }
+}
+
+/// What turns a nearest distance into a disparity: the main view's lens, the full eye distance, the
+/// depth offset and whether the eye distance shrinks.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct View {
     /// `1 / (aspect * tan(fov_y / 2))`.
@@ -65,15 +83,18 @@ pub(crate) struct View {
     pub(crate) eye_m: f32,
     /// The depth offset as a share.
     pub(crate) offset: f32,
+    pub(crate) eye_distance: EyeDistance,
 }
 
 impl View {
-    /// The view of the main view's `camera` and the player's `stereo` settings.
-    pub(crate) fn of(camera: &Camera, stereo: StereoSettings) -> Self {
+    /// The view of the main view's `camera` and the player's `stereo` settings in the launch mode
+    /// `mode`.
+    pub(crate) fn of(camera: &Camera, stereo: StereoSettings, mode: Mode) -> Self {
         Self {
             lens: (camera.aspect * (camera.fov_y_rad / 2.0).tan()).recip(),
-            eye_m: stereo.ipd_mm.millimeters() / MILLIMETERS_PER_METER,
+            eye_m: stereo.ipd_mm.meters(),
             offset: offset(stereo),
+            eye_distance: EyeDistance::of(mode),
         }
     }
 }
@@ -96,7 +117,8 @@ pub(crate) fn after(in_use: Depth, found: Nearest, view: View, elapsed: Duration
 
 /// The targets that `nearest` asks for in `view`. A UI over no scene or over a hidden scene, a
 /// distance that is not above 0 and a lens that gives no finite disparity above 0 all ask for
-/// [`Depth::FLAT`].
+/// [`Depth::FLAT`]. Past [`LIMIT`] the UI disparity stays at the limit, and the eye scale shrinks
+/// only while the view's eye distance [`EyeDistance::Shrinks`].
 pub(crate) fn targets(nearest: Nearest, view: View) -> Depth {
     let Nearest::At(distance) = nearest else { return Depth::FLAT };
     if !distance.is_finite() || distance <= 0.0 {
@@ -112,6 +134,9 @@ pub(crate) fn targets(nearest: Nearest, view: View) -> Depth {
     }
     if needed <= LIMIT {
         return Depth { disparity: needed, eye_scale: EyeScale::FULL };
+    }
+    if view.eye_distance == EyeDistance::Fixed {
+        return Depth { disparity: LIMIT, eye_scale: EyeScale::FULL };
     }
     let eye_scale = EyeScale::clamped((LIMIT + view.offset - MARGIN) / crossed);
     Depth { disparity: LIMIT, eye_scale }

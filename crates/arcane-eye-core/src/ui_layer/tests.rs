@@ -18,7 +18,7 @@ use game_bindings::state::arm_alloc_guard;
 use game_bindings::texture_table::TextureKey;
 use game_mem::GameAddr;
 use settings::dev::{DevFlags, MainViewEye, SecondView, StereoFlags};
-use settings::player::{DepthOffsetPercent, Settings};
+use settings::player::DepthOffsetPercent;
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 use windows::core::Interface as _;
@@ -352,7 +352,7 @@ fn a_flat_frame_and_a_side_by_side_frame_make_no_heap_allocation() {
 
 fn config(second_view: SecondView) -> Config {
     let stereo = StereoFlags { main_view_eye: MainViewEye::Center, second_view };
-    Config { settings: Settings::default(), dev: DevFlags { stereo, ..DevFlags::default() } }
+    Config::of_dev(DevFlags { stereo, ..DevFlags::default() })
 }
 
 #[test]
