@@ -7,7 +7,7 @@ use crate::raw::test_support::TestMapping;
 use crate::reload::Published;
 use crate::{logged, test_dir};
 use diag::health::{Feature, FeatureState};
-use diag::logging::{LogError, LogName};
+use diag::logging::LogError;
 use diag::root::{Root, RootError};
 use game_bindings::state::{self, StateError};
 use ipc_layout::launch_token::{Mode, Status, UnknownMode};
@@ -117,13 +117,7 @@ fn an_unknown_mode_fails_with_code_6_and_starts_nothing() {
 
 #[test]
 fn failed_init_logs_its_code_and_cause_through_the_current_subscriber() {
-    let dir = test_dir("failure-line");
-    let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
-    let code =
-        dispatcher::with_default(&logging.dispatch, || guarded(|| Err(InitError::AlreadyRunning)));
-    let file_path = logging.handle.file_path().to_path_buf();
-    logging.handle.shutdown().expect("the writer ends cleanly");
-    let text = fs::read_to_string(&file_path).expect("read the session log");
+    let (code, text) = logged("failure-line", || guarded(|| Err(InitError::AlreadyRunning)));
     assert_eq!(code, 1);
     let line = text.lines().next().expect("the failure line");
     assert!(line.contains(" WARN  "), "{line}");
@@ -135,14 +129,8 @@ fn failed_init_logs_its_code_and_cause_through_the_current_subscriber() {
 
 #[test]
 fn a_token_that_fails_to_open_reports_no_status_and_logs_its_cause() {
-    let dir = test_dir("status-open-failure");
-    let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
-    let status = dispatcher::with_default(&logging.dispatch, || {
-        open_status(r"NoSuchNamespace\arcane-eye-vr-launch")
-    });
-    let file_path = logging.handle.file_path().to_path_buf();
-    logging.handle.shutdown().expect("the writer ends cleanly");
-    let text = fs::read_to_string(&file_path).expect("read the session log");
+    let (status, text) =
+        logged("status-open-failure", || open_status(r"NoSuchNamespace\arcane-eye-vr-launch"));
     assert!(status.is_none(), "a token that failed to open");
     let line = text.lines().next().expect("the failure line");
     assert!(line.contains(" WARN  "), "{line}");

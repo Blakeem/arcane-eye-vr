@@ -1,10 +1,7 @@
 //! The choice of the main view and the eye view and their camera reads against views and
 //! controllers built in test memory.
 
-use std::fs;
-
 use diag::health::{Feature, FeatureState, Health};
-use diag::logging::LogName;
 use game_bindings::camera::PerCamera;
 use game_mem::{GameAddr, try_read, try_write};
 use stereo_core::eye::Eye;
@@ -16,9 +13,9 @@ use crate::eye_camera::proxy;
 use crate::eye_camera::test_support::{HEAD_POSITION, HeadController, eye_state, target_state};
 use crate::eye_view::Layout;
 use crate::install::GameCode;
+use crate::logged;
 use crate::raw::SharedPages;
 use crate::raw::test_support::PAGE_SIZE;
-use crate::test_dir;
 
 /// A slot 9 function of another controller type. No code runs there.
 const OTHER_FUNCTION: GameAddr = GameAddr::new(0x7FF6_0000_2000);
@@ -52,15 +49,7 @@ fn x_of(camera: Option<FrameCamera>) -> Option<f32> {
 
 /// The lines of the session log that `install` writes, and whether it installed a hook.
 fn install_log(health: &Health, name: &str) -> (bool, String) {
-    let dir = test_dir(name);
-    let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
-    let installed = tracing::dispatcher::with_default(&logging.dispatch, || {
-        install(health, &GameCode::copy()).is_some()
-    });
-    let file_path = logging.handle.file_path().to_path_buf();
-    logging.handle.shutdown().expect("the writer ends cleanly");
-    let text = fs::read_to_string(&file_path).expect("read the session log");
-    (installed, text)
+    logged(name, || install(health, &GameCode::copy()).is_some())
 }
 
 /// The one failure line of `text`, which must end with ` error="<cause>"`.

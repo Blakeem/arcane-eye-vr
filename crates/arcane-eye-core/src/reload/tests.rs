@@ -6,14 +6,13 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use diag::logging::{self, LogName, Logging};
 use settings::dev::{DevFlags, SecondView};
 use settings::player::{DepthOffsetPercent, IpdMm, Settings};
-use tracing::dispatcher;
+use tracing::{Dispatch, dispatcher};
 
 use super::{Published, Reload, StartError, apply, run, start};
 use crate::raw::reload_event::{self, Event, EventError};
-use crate::test_dir;
+use crate::{logged, messages, test_dir};
 
 /// Long enough for the settings thread to apply a request on a loaded test machine.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -28,22 +27,11 @@ fn with_ipd(millimeters: f32) -> Settings {
     settings
 }
 
-/// Runs one reload of the files in `root` and returns the messages it logged.
-fn apply_logged(root: &Path, published: &Published, log_dir: &Path) -> Vec<String> {
-    let logging = logging::start(log_dir, LogName::Core).expect("start logging");
-    dispatcher::with_default(&logging.dispatch, || apply(root, DevFlags::default(), published));
-    messages(logging)
-}
-
-/// Stops `logging` and returns the messages of its session log.
-fn messages(logging: Logging) -> Vec<String> {
-    let file_path = logging.handle.file_path().to_path_buf();
-    logging.handle.shutdown().expect("the writer ends cleanly");
-    let text = fs::read_to_string(file_path).expect("read the session log");
-    let messages = text
-        .lines()
-        .map(|line| line.split_once(" msg=").map_or(line, |(_, message)| message).to_owned());
-    messages.collect()
+/// Runs one reload of the files in `root` and returns the messages it logged under the session log
+/// of test folder `log_name`.
+fn apply_logged(root: &Path, published: &Published, log_name: &str) -> Vec<String> {
+    let ((), text) = logged(log_name, || apply(root, DevFlags::default(), published));
+    messages(&text)
 }
 
 /// Waits until `published` holds `expected` or the request timeout passes.
@@ -78,14 +66,14 @@ fn a_player_file_that_parses_becomes_the_published_settings_and_logs_its_values(
     fs::write(root.join("settings.toml"), player).expect("write");
     let mut changed = with_ipd(72.5);
     changed.stereo.depth_offset_percent = DepthOffsetPercent::try_from(4.0).expect("in range");
-    let lines = apply_logged(root, &published, &root.join("logs-1"));
+    let lines = apply_logged(root, &published, "reload-parsed-log-1");
     assert_eq!(published.get(), changed);
     let expected = [
         "\"unknown settings key ignored\" file=settings.toml key=stereo.ipd",
         "\"settings reloaded\" ipd_mm=72.5 depth_offset_percent=4.0",
     ];
     assert_eq!(lines, expected);
-    let again = apply_logged(root, &published, &root.join("logs-2"));
+    let again = apply_logged(root, &published, "reload-parsed-log-2");
     assert_eq!(published.get(), changed);
     assert_eq!(again, expected, "an unchanged file is read and logged again");
 }
@@ -95,7 +83,7 @@ fn a_missing_player_file_publishes_the_defaults() {
     let dir = test_dir("reload-missing");
     let root = dir.path();
     let published = Published::new(with_ipd(58.0));
-    let lines = apply_logged(root, &published, &root.join("logs"));
+    let lines = apply_logged(root, &published, "reload-missing-log");
     assert_eq!(published.get(), Settings::default());
     assert_eq!(lines, ["\"settings reloaded\" ipd_mm=65.0 depth_offset_percent=1.5"]);
 }
@@ -106,7 +94,7 @@ fn a_rejected_player_file_keeps_the_settings_in_use_and_logs_the_rejection() {
     let root = dir.path();
     let published = Published::new(with_ipd(58.0));
     fs::write(root.join("settings.toml"), "[stereo]\nipd_mm = 500\n").expect("write");
-    let lines = apply_logged(root, &published, &root.join("logs"));
+    let lines = apply_logged(root, &published, "reload-rejected-log");
     assert_eq!(published.get(), with_ipd(58.0));
     let [line] = lines.as_slice() else { panic!("one warning: {lines:?}") };
     let message = "\"settings file gave no values, so the settings in use stay\"";
@@ -120,7 +108,7 @@ fn dev_flags_that_differ_from_the_start_change_no_setting_and_wait_for_the_next_
     let root = dir.path();
     let published = Published::new(Settings::default());
     fs::write(root.join("dev.toml"), "[stereo]\nsecond_view = false\n").expect("write");
-    let lines = apply_logged(root, &published, &root.join("logs-1"));
+    let lines = apply_logged(root, &published, "reload-dev-log-1");
     assert_eq!(published.get(), Settings::default());
     let expected = [
         "\"settings reloaded\" ipd_mm=65.0 depth_offset_percent=1.5",
@@ -130,12 +118,12 @@ fn dev_flags_that_differ_from_the_start_change_no_setting_and_wait_for_the_next_
     assert_eq!(lines, expected);
     assert_eq!(DevFlags::default().stereo.second_view, SecondView::On);
     fs::write(root.join("dev.toml"), "[stereo]\nmain_view_eye = \"up\"\n").expect("write");
-    let rejected = apply_logged(root, &published, &root.join("logs-2"));
+    let rejected = apply_logged(root, &published, "reload-dev-log-2");
     let [_, warning] = rejected.as_slice() else { panic!("two lines: {rejected:?}") };
     let message = "\"dev file gave no values, and the flags read at start stay\"";
     assert!(warning.starts_with(message), "{warning}");
     fs::write(root.join("dev.toml"), "").expect("write");
-    let back = apply_logged(root, &published, &root.join("logs-3"));
+    let back = apply_logged(root, &published, "reload-dev-log-3");
     assert_eq!(
         back,
         ["\"settings reloaded\" ipd_mm=65.0 depth_offset_percent=1.5"],
@@ -171,29 +159,30 @@ fn the_thread_reads_the_files_once_per_request_and_never_without_one() {
     let reload = Event::named(&name).expect("create the reload event");
     let stop = Arc::new(Event::unnamed().expect("create the stop event"));
     let published = Arc::new(Published::new(Settings::default()));
-    let logging = logging::start(&root.join("logs"), LogName::Core).expect("start logging");
     let (stopped, shared, folder) = (Arc::clone(&stop), Arc::clone(&published), root.to_path_buf());
-    let dispatch = logging.dispatch.clone();
-    let thread = thread::spawn(move || {
-        let flags = DevFlags::default();
-        dispatcher::with_default(&dispatch, || run(&stopped, &reload, &folder, flags, &shared));
+    let ((), text) = logged("reload-run-log", || {
+        let dispatch = dispatcher::get_default(Dispatch::clone);
+        let thread = thread::spawn(move || {
+            let flags = DevFlags::default();
+            dispatcher::with_default(&dispatch, || run(&stopped, &reload, &folder, flags, &shared));
+        });
+        fs::write(root.join("settings.toml"), "[stereo]\nipd_mm = 61\n").expect("write");
+        wait_quietly();
+        assert_eq!(published.get(), Settings::default(), "a file read with no request");
+        reload_event::signal(&name).expect("signal the reload event");
+        wait_for(&published, with_ipd(61.0));
+        fs::write(root.join("settings.toml"), "[stereo]\nipd_mm = 63\n").expect("write");
+        reload_event::signal(&name).expect("signal the reload event");
+        wait_for(&published, with_ipd(63.0));
+        stop.set().expect("signal the stop event");
+        thread.join().expect("the settings thread ends without a panic");
     });
-    fs::write(root.join("settings.toml"), "[stereo]\nipd_mm = 61\n").expect("write");
-    wait_quietly();
-    assert_eq!(published.get(), Settings::default(), "a file read with no request");
-    reload_event::signal(&name).expect("signal the reload event");
-    wait_for(&published, with_ipd(61.0));
-    fs::write(root.join("settings.toml"), "[stereo]\nipd_mm = 63\n").expect("write");
-    reload_event::signal(&name).expect("signal the reload event");
-    wait_for(&published, with_ipd(63.0));
-    stop.set().expect("signal the stop event");
-    thread.join().expect("the settings thread ends without a panic");
     assert_eq!(published.get(), with_ipd(63.0));
     let reloads = [
         "\"settings reloaded\" ipd_mm=61.0 depth_offset_percent=1.5",
         "\"settings reloaded\" ipd_mm=63.0 depth_offset_percent=1.5",
     ];
-    assert_eq!(messages(logging), reloads, "one read for each request and none without one");
+    assert_eq!(messages(&text), reloads, "one read for each request and none without one");
 }
 
 #[test]

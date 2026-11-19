@@ -74,31 +74,23 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use diag::logging::{self, LogName};
     use settings::dev::{DevFlags, MainViewEye, SecondView};
     use settings::player::{DepthOffsetPercent, IpdMm, Settings};
-    use tracing::dispatcher;
 
     use super::{Config, load};
-    use crate::test_dir;
+    use crate::{logged, messages, test_dir};
 
-    /// Loads the settings in `root` and returns them with the lines they logged.
-    fn load_logged(root: &Path, log_dir: &Path) -> (Config, Vec<String>) {
-        let logging = logging::start(log_dir, LogName::Core).expect("start logging");
-        let config = dispatcher::with_default(&logging.dispatch, || load(root));
-        let file_path = logging.handle.file_path().to_path_buf();
-        logging.handle.shutdown().expect("the writer ends cleanly");
-        let text = fs::read_to_string(file_path).expect("read the session log");
-        let messages = text
-            .lines()
-            .map(|line| line.split_once(" msg=").map_or(line, |(_, message)| message).to_owned());
-        (config, messages.collect())
+    /// Loads the settings in `root` and returns them with the messages they logged under the
+    /// session log of test folder `log_name`.
+    fn load_logged(root: &Path, log_name: &str) -> (Config, Vec<String>) {
+        let (config, text) = logged(log_name, || load(root));
+        (config, messages(&text))
     }
 
     #[test]
     fn missing_files_give_the_defaults_with_the_second_view_on() {
         let dir = test_dir("config-missing");
-        let (config, lines) = load_logged(&dir.path().join("home"), &dir.path().join("logs"));
+        let (config, lines) = load_logged(&dir.path().join("home"), "config-missing-log");
         assert_eq!(config, Config { settings: Settings::default(), dev: DevFlags::default() });
         assert_eq!(config.dev.stereo.second_view, SecondView::On);
         assert_eq!(
@@ -117,7 +109,7 @@ mod tests {
         let dev = "[stereo]\nmain_view_eye = \"left\"\nsecond_view = false\n\
                    [viewer]\nsource = \"ui\"\n";
         fs::write(root.join("dev.toml"), dev).expect("write");
-        let (config, lines) = load_logged(root, &root.join("logs"));
+        let (config, lines) = load_logged(root, "config-valid-log");
         let ipd_mm = IpdMm::try_from(58.5).expect("in range");
         assert_eq!(config.settings.stereo.ipd_mm, ipd_mm);
         let depth_offset = DepthOffsetPercent::try_from(3.0).expect("in range");
@@ -138,7 +130,7 @@ mod tests {
         let root = dir.path();
         fs::write(root.join("settings.toml"), "[stereo]\nipd_mm = 58.5\n").expect("write");
         fs::write(root.join("dev.toml"), "[stereo]\nmain_view_eye = \"up\"\n").expect("write");
-        let (config, lines) = load_logged(root, &root.join("logs"));
+        let (config, lines) = load_logged(root, "config-rejected-log");
         assert_eq!(config.settings.stereo.ipd_mm, IpdMm::try_from(58.5).expect("in range"));
         assert_eq!(config.dev, DevFlags::default());
         let dev_path = root.join("dev.toml").display().to_string().replace('\\', "\\\\");

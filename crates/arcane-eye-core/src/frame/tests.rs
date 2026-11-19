@@ -4,11 +4,9 @@ mod camera;
 mod failed;
 mod source;
 
-use std::fs;
 use std::time::{Duration, Instant};
 
 use diag::health::{Feature, Health};
-use diag::logging::LogName;
 use game_bindings::state::arm_alloc_guard;
 use gfx::publish::ViewNames;
 use ipc_layout::perf_line::{self, PerfSummary};
@@ -19,11 +17,11 @@ use super::{
     skipped,
 };
 use crate::eye_view::Layout;
+use crate::logged;
 use crate::raw::{
     self,
     test_support::{FORMAT, TestCursor, TestSwapchain, TestViewer, display_count, test_view_names},
 };
-use crate::test_dir;
 use crate::ui_layer::cursor::Aim;
 use crate::ui_layer::cursor::place::{Pointer, spot};
 use crate::ui_layer::test_support::{hidden_cursor_layer, idle_layer};
@@ -39,12 +37,7 @@ fn test_state(test: &str) -> (FrameState, ViewNames) {
 
 /// Runs `frames` under a session log of its own and returns the log's lines.
 fn log_lines(name: &str, frames: impl FnOnce()) -> Vec<String> {
-    let dir = test_dir(name);
-    let logging = diag::logging::start(dir.path(), LogName::Core).expect("start logging");
-    tracing::dispatcher::with_default(&logging.dispatch, frames);
-    let file_path = logging.handle.file_path().to_path_buf();
-    logging.handle.shutdown().expect("the writer ends cleanly");
-    let text = fs::read_to_string(&file_path).expect("read the session log");
+    let ((), text) = logged(name, frames);
     text.lines().map(str::to_owned).collect()
 }
 

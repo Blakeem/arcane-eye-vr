@@ -6,7 +6,8 @@
 //! rendered, the main view's first, each from that view's newest camera. The two cameras can come
 //! from different frames of the window, so each line's `eye` field names its eye, and its place in
 //! the window does not. The lines come just before the perf summary line of the same window, so a
-//! reader pairs each camera line with the next perf summary line. A window with no camera has no camera line. The parser skips a field it does not know.
+//! reader pairs each camera line with the next perf summary line. A window with no camera has no
+//! camera line. The parser skips a field it does not know.
 
 use core::fmt;
 use core::num::ParseFloatError;

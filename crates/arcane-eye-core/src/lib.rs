@@ -40,3 +40,12 @@ fn logged<R>(name: &str, run: impl FnOnce() -> R) -> (R, String) {
     logging.handle.shutdown().expect("the writer ends cleanly");
     (result, std::fs::read_to_string(&file_path).expect("read the session log"))
 }
+
+/// The part of each line of session log `text` from its message on, or the entire line when it has
+/// no message.
+#[cfg(test)]
+fn messages(text: &str) -> Vec<String> {
+    let messages =
+        text.lines().map(|line| line.split_once(" msg=").map_or(line, |(_, message)| message));
+    messages.map(str::to_owned).collect()
+}
