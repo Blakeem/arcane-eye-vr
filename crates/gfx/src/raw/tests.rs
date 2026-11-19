@@ -22,6 +22,7 @@ use windows::core::{HSTRING, Interface as _};
 use super::{HeaderView, adapter_luid, texture_desc};
 use crate::publish::{Outcome, Publisher, ViewNames};
 
+mod canvas;
 mod failures;
 mod layer;
 mod nearest;

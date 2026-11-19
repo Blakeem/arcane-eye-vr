@@ -16,7 +16,7 @@ use windows::core::HRESULT;
 use crate::raw::layer::{Blend, Pass, Pipeline, Region, TargetCopy};
 use crate::raw::texture_desc;
 
-/// A rectangle of the target texture, in pixels from its top left corner.
+/// A rectangle of the target texture or of a pixel canvas, in pixels from its top left corner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rect {
     pub x: u16,

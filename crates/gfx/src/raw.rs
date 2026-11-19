@@ -1,7 +1,7 @@
 //! The gfx crate's unsafe edge: the viewer header mapping, the D3D11 and DXGI calls of the
 //! publisher, the layer draw's calls in `layer`, the nearest read's calls in `nearest`, the pointer
-//! read's calls in `pointer`, the calls both reads share in `row` and the region draw's calls in
-//! `region`.
+//! read's calls in `pointer`, the calls both reads share in `row`, the region draw's calls in
+//! `region` and the pixel canvas's GDI calls in `canvas`.
 
 #![expect(
     unsafe_code,
@@ -33,6 +33,7 @@ use windows::core::{HRESULT, HSTRING, Interface as _};
 
 use crate::publish::{PublishError, SetupError, Step};
 
+pub(crate) mod canvas;
 pub(crate) mod layer;
 pub(crate) mod nearest;
 pub(crate) mod pointer;
