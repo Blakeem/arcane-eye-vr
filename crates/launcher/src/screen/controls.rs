@@ -3,8 +3,9 @@
 //! in the frame before and in that frame.
 //!
 //! A press is the change from released to pressed, so a held button logs once. The log counts
-//! `select` as pressed above [`SELECT_PRESS`]. The menu counts `select` as pressed from the frame
-//! it rises to [`SELECT_PRESS`] or above until the frame it falls to [`SELECT_RELEASE`] or below.
+//! `select` as pressed above [`SELECT_PRESS`]. The menu and the game pointer count `select` as
+//! pressed from the frame it rises to [`SELECT_PRESS`] or above until the frame it falls to
+//! [`SELECT_RELEASE`] or below.
 
 use std::env;
 use std::path::Path;
@@ -24,11 +25,12 @@ use xr::session::{FrameTiming, Session};
 const PROFILES_FOLDER: &str = "profiles";
 
 /// The `select` amount above which the log counts `select` as pressed, and at or above which the
-/// menu counts a released `select` as pressed.
+/// menu and the game pointer count a released `select` as pressed.
 const SELECT_PRESS: f32 = 0.7;
 
-/// The `select` amount at or below which the menu counts a pressed `select` as released. The gap
-/// to [`SELECT_PRESS`] keeps a trigger that rests near one amount from pressing again and again.
+/// The `select` amount at or below which the menu and the game pointer count a pressed `select` as
+/// released. The gap to [`SELECT_PRESS`] keeps a trigger that rests near one amount from pressing
+/// again and again.
 const SELECT_RELEASE: f32 = 0.5;
 
 /// The shortest time between two warnings of a failed controller read.
@@ -110,11 +112,13 @@ impl Buttons {
     }
 }
 
-const fn rose(before: ButtonState, now: ButtonState) -> bool {
+/// Whether a button went from released in `before` to pressed in `now`.
+pub(crate) const fn rose(before: ButtonState, now: ButtonState) -> bool {
     matches!((before, now), (ButtonState::Released, ButtonState::Pressed))
 }
 
-/// Whether the menu counts `select` as pressed at `amount`, after it counted as `before`.
+/// Whether the menu and the game pointer count `select` as pressed at `amount`, after it counted as
+/// `before`.
 fn select_state(before: ButtonState, amount: f32) -> ButtonState {
     match before {
         ButtonState::Released if amount >= SELECT_PRESS => ButtonState::Pressed,
@@ -212,12 +216,12 @@ enum Tracking {
 pub(crate) struct HandState {
     aim: Tracking,
     pub(crate) menu: ButtonState,
-    /// `select` as the menu counts it, by [`select_state`].
+    /// `select` as the menu and the game pointer count it, by [`select_state`].
     pub(crate) select: ButtonState,
     /// `select` as the log counts it: pressed above [`SELECT_PRESS`].
     logged_select: ButtonState,
-    secondary: ButtonState,
-    middle: ButtonState,
+    pub(crate) secondary: ButtonState,
+    pub(crate) middle: ButtonState,
 }
 
 impl HandState {

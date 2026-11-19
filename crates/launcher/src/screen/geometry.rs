@@ -107,6 +107,11 @@ pub(crate) fn facing(up: Vector3f, front: Vector3f) -> Quaternionf {
     from_axes(cross(up, front), up, front)
 }
 
+/// The head's place: the position of `head`, or the LOCAL origin while its pose is unknown.
+pub(crate) fn head_position(head: Option<Posef>) -> Vector3f {
+    head.map_or(Vector3f { x: 0.0, y: 0.0, z: 0.0 }, |head| head.position)
+}
+
 /// A ray: a start and a unit direction.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Ray {

@@ -21,6 +21,15 @@ pub enum Hand {
 impl Hand {
     pub const ALL: [Self; 2] = [Self::Left, Self::Right];
 
+    /// The hand that is not this one.
+    #[must_use]
+    pub const fn other(self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+
     /// The hand's name, which is also its table's name in a profile file.
     pub const fn as_str(self) -> &'static str {
         match self {

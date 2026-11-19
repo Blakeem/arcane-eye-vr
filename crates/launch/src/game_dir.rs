@@ -21,7 +21,7 @@ const LIBRARY_LIST: &str = "libraryfolders.vdf";
 const MANIFEST: &str = concat!("appmanifest_", steam_app_id!(), ".acf");
 
 const EXE_DIR: &str = "bin";
-const EXE_NAME: &str = "bg3_dx11.exe";
+pub(crate) const EXE_NAME: &str = "bg3_dx11.exe";
 
 /// Why the game's folder was not found.
 #[derive(Debug, thiserror::Error)]

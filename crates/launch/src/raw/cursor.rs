@@ -16,40 +16,48 @@ use crate::cursor::{ClientArea, CursorError};
 /// This thread's DPI awareness set to per monitor, so window rectangles and cursor positions are
 /// physical pixels. Dropping it restores the awareness the thread had.
 pub(crate) struct PhysicalPixels {
-    /// The awareness before the start, or `None` when the start left it unchanged.
-    before: Option<DPI_AWARENESS_CONTEXT>,
+    /// The awareness before the start.
+    before: DPI_AWARENESS_CONTEXT,
 }
 
 impl PhysicalPixels {
-    pub(crate) fn start() -> Self {
+    /// Sets the awareness, or returns `None` when the thread kept the one it had.
+    pub(crate) fn try_start() -> Option<Self> {
         // SAFETY: the context is one of the predefined awareness values.
         let before =
             unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
         // Only null means failure. `is_invalid` also rejects -1, the predefined unaware context.
-        if before.0.is_null() {
+        (!before.0.is_null()).then_some(Self { before })
+    }
+
+    /// [`Self::try_start`] that warns when the thread kept its awareness, for a caller that runs
+    /// once and goes on in the awareness it has.
+    pub(crate) fn start() -> Option<Self> {
+        let started = Self::try_start();
+        if started.is_none() {
             warn!("the thread kept its DPI awareness, so a scaled display may shift the cursor");
-            return Self { before: None };
         }
-        Self { before: Some(before) }
+        started
     }
 }
 
 impl Drop for PhysicalPixels {
     fn drop(&mut self) {
-        if let Some(before) = self.before {
-            // SAFETY: `before` is the awareness the thread had, which the start call returned.
-            unsafe { SetThreadDpiAwarenessContext(before) };
-        }
+        // SAFETY: `before` is the awareness the thread had, which the start call returned.
+        unsafe { SetThreadDpiAwarenessContext(self.before) };
     }
+}
+
+/// The foreground window, or `None` while no window is in the foreground.
+pub(crate) fn foreground_window() -> Option<HWND> {
+    // SAFETY: GetForegroundWindow has no arguments.
+    let window = unsafe { GetForegroundWindow() };
+    (!window.is_invalid()).then_some(window)
 }
 
 /// The foreground window when process `pid` owns it.
 pub(crate) fn foreground_window_of(pid: u32) -> Option<HWND> {
-    // SAFETY: GetForegroundWindow has no arguments.
-    let window = unsafe { GetForegroundWindow() };
-    if window.is_invalid() {
-        return None;
-    }
+    let window = foreground_window()?;
     let mut owner = 0u32;
     // SAFETY: `window` is a window handle, and `owner` is a writable local. A window gone since the
     // read leaves `owner` at 0.

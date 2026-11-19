@@ -64,7 +64,7 @@ fn window_title(window: HWND) -> String {
 
 /// The program file of the process that owns `window`. `None` when the process cannot be opened,
 /// such as a process of another user, since such a window is not the one the caller looks for.
-fn program_of(window: HWND) -> Option<PathBuf> {
+pub(crate) fn program_of(window: HWND) -> Option<PathBuf> {
     let mut pid = 0_u32;
     // SAFETY: `window` is a window handle, and `pid` is a writable local. A window gone since the
     // search leaves `pid` at 0.

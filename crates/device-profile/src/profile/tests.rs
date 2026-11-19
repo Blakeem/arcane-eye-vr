@@ -11,6 +11,12 @@ fn with(extra: &str) -> String {
 }
 
 #[test]
+fn the_other_hand_of_each_hand_is_the_opposite_hand() {
+    assert_eq!(Hand::Left.other(), Hand::Right);
+    assert_eq!(Hand::Right.other(), Hand::Left);
+}
+
+#[test]
 fn a_file_with_the_three_required_keys_and_one_binding_is_valid() {
     let profile = parse(&with("[right]\nmenu = \"/user/hand/right/input/menu/click\"\n"))
         .expect("a valid file");

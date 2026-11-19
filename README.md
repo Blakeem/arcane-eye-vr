@@ -4,14 +4,14 @@ An unofficial stereo 3D and VR mod for Baldur's Gate 3.
 
 **Version 0.0.1 Beta.** The game is playable in stereo 3D on a flat screen in a headset, with keyboard and mouse. The [changelog](CHANGELOG.md) lists each version.
 
-The goal is to play Baldur's Gate 3 in a headset without changing how the game plays. The immersive headset mode and controller input are not built yet.
+The goal is to play Baldur's Gate 3 in a headset without changing how the game plays. The immersive headset mode and keyboard keys on the controllers are not built yet.
 
 ## Requirements
 
 - Windows.
 - Baldur's Gate 3 on Steam. The mod works with the DirectX 11 version of the game.
 - SteamVR and a headset that SteamVR supports.
-- A keyboard and a mouse.
+- A keyboard.
 
 This version was tested only with a Steam Frame.
 
@@ -43,14 +43,16 @@ The screen appears in the headset once the game runs. It closes when the game en
 
 The menu button of a controller opens a menu above that controller, and a second press closes it. On a Steam Frame, the menu button of the left controller is the View button. Point the other controller at a button of the menu and press its trigger. The buttons set the distance and the size of the screen, and the launch app keeps the values for the next start.
 
-- The game window on the PC takes the keyboard and the mouse, so it must stay the active window.
+A controller that points at the screen moves the mouse pointer to the place it points at. The trigger is the left mouse button, and the grip is the right mouse button. A press of the thumbstick is the middle mouse button, and the thumbstick's up and down is the mouse wheel. On an HTC Vive controller, the trackpad takes the place of the thumbstick. The controller whose trigger was pressed last points, and the right controller points before the first press. While the menu is open, the other controller points. A trigger press of the controller that holds the open menu does not change which controller points.
+
+- The game window on the PC takes the keyboard, the mouse and the input of the controllers, so it must stay the active window.
 - SteamVR must be the active OpenXR runtime.
 - The screen sits in front of the seated position that SteamVR holds.
 - The game renders at the resolution in its video options, and each eye gets half of that width. A higher resolution gives a sharper picture and a lower frame rate.
 
 ## Play in Bigscreen or another viewer app
 
-A viewer app with a side by side 3D mode can show the game from the monitor. This route is untested, and the menu names below come from older versions of Bigscreen.
+A viewer app with a side by side 3D mode can show the game from the monitor. This route is untested, and the menu names below come from older versions of Bigscreen. This route needs a mouse, since the launch app reads the controllers only in `--mode screen`.
 
 1. Add a second library entry for `arcane-eye-vr.exe` with the Launch Options `--mode desktop-stereo`.
 2. Start SteamVR and Bigscreen.

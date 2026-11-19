@@ -4,10 +4,11 @@
 //! `picture.rs` reads the newest published frame from the viewer link, and `eyes.rs` draws its
 //! halves into the swapchains of the `xr` crate's session. `controls.rs` reads the device profiles
 //! and logs what the controllers do in each frame. `menu.rs` shows the menu that sets the screen's
-//! distance and width, and `geometry.rs` holds the vector math of its quads and rays. The screen
-//! runs until Steam reports that the game ended, the runtime ends the session or the game's frames
-//! are of a kind it cannot show. The game window keeps the keyboard and the mouse, since the screen
-//! has no window.
+//! distance and width, `pointer.rs` sends the game the mouse input of the controller that points at
+//! the screen, and `geometry.rs` holds the vector math of the quads and rays. The screen runs until
+//! Steam reports that the game ended, the runtime ends the session or the game's frames are of a
+//! kind it cannot show. The game window keeps the keyboard, since the screen has no window, and the
+//! pointer's input reaches the game only while the game window is in the foreground.
 
 mod controls;
 mod eyes;
@@ -15,6 +16,7 @@ pub(crate) mod failure;
 mod geometry;
 mod menu;
 mod picture;
+mod pointer;
 
 use std::path::Path;
 use std::thread;
@@ -43,6 +45,7 @@ use self::eyes::{Eyes, EyesError};
 use self::failure::ScreenFailure;
 use self::menu::{Gpu, PlayerFile, ScreenMenu};
 use self::picture::{Link, Unshowable};
+use self::pointer::{PanelAim, Pointer, Sight};
 
 /// The wait between two event polls while the session is not begun.
 const IDLE_WAIT: Duration = Duration::from_millis(50);
@@ -156,6 +159,7 @@ pub(crate) fn run(manifest: &Path, root: &Path) -> Result<(), ScreenFailure> {
     let mut screen = Screen {
         eyes: None,
         menu: ScreenMenu::new(settings, file, root),
+        pointer: Pointer::new(),
         link: Link::new(names),
         session,
         draw,
@@ -164,6 +168,7 @@ pub(crate) fn run(manifest: &Path, root: &Path) -> Result<(), ScreenFailure> {
         first_shown: Once::new(),
     };
     let shown = screen.show_until_end(&mut GameWatch::new(Instant::now()));
+    screen.pointer.finish();
     screen.menu.finish();
     shown
 }
@@ -196,6 +201,7 @@ impl FrameError {
 struct Screen {
     eyes: Option<Eyes>,
     menu: ScreenMenu,
+    pointer: Pointer,
     link: Link,
     session: Session,
     draw: RegionDraw,
@@ -237,14 +243,15 @@ impl Screen {
     }
 
     /// Waits for the session's next frame, reads the controllers, updates the menu, draws the newest
-    /// published frame into it when the runtime shows the frame, and ends it with the screen, then
-    /// the menu's panels.
+    /// published frame into it when the runtime shows the frame, sends the game the pointer's mouse
+    /// input, draws the menu's quads and the laser, and ends the frame with the screen, then the
+    /// menu's panels.
     fn frame(&mut self) -> Result<(), FrameError> {
         let timing = self.session.wait_frame()?;
         let controls = self.controllers.read(&self.session, timing)?;
-        let Self { eyes, menu, link, session, draw, device, first_shown, .. } = self;
-        let gpu = Gpu { session, draw, context: device.context() };
-        menu.update(&controls, Instant::now(), &gpu);
+        let now = Instant::now();
+        let Self { eyes, menu, pointer, link, session, draw, device, first_shown, .. } = self;
+        let mut menu_shown = menu.update(&controls, now);
         let drawn =
             if timing.should_render { show(eyes, link, session, draw, device)? } else { None };
         let settings = menu.screen();
@@ -252,6 +259,12 @@ impl Screen {
         let shown = drawn.and_then(|drawn| {
             quad::screen(distance_m, width_m, drawn.frame).map(|quad| (drawn.swapchains, quad))
         });
+        let panel = if menu_shown.points_at_panel() { PanelAim::Met } else { PanelAim::Missed };
+        let sight = Sight { menu: menu.hand(), panel, screen: shown.map(|(_, quad)| quad) };
+        if let Some(laser) = pointer.update(&controls, sight, now) {
+            menu_shown.laser = Some(laser);
+        }
+        menu.draw(menu_shown, &Gpu { session, draw, context: device.context() });
         if let Some((swapchains, _quad)) = shown {
             let (width, height) = swapchains.size();
             once!(*first_shown, Level::INFO, width, height, "first frame shown in the headset");

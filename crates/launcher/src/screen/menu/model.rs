@@ -8,7 +8,7 @@
 use std::time::{Duration, Instant};
 
 use device_profile::profile::Hand;
-use openxr::{Posef, Vector3f};
+use openxr::Posef;
 use overlay::layout::{self, Hit, PanelPoint};
 use overlay::menu::TooManyRows;
 use overlay::painter::Press;
@@ -26,9 +26,6 @@ const REPEAT_DELAY: Duration = Duration::from_millis(400);
 /// The time between two repeats of a held press.
 const REPEAT_PERIOD: Duration = Duration::from_millis(100);
 
-/// The head's place while its pose is unknown: the LOCAL origin.
-const ORIGIN: Vector3f = Vector3f { x: 0.0, y: 0.0, z: 0.0 };
-
 /// Where the menu is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Place {
@@ -42,13 +39,6 @@ pub(crate) fn toggled(place: Place, hand: Hand) -> Place {
     match place {
         Place::On(on) if on == hand => Place::Closed,
         Place::Closed | Place::On(_) => Place::On(hand),
-    }
-}
-
-const fn other(hand: Hand) -> Hand {
-    match hand {
-        Hand::Left => Hand::Right,
-        Hand::Right => Hand::Left,
     }
 }
 
@@ -104,6 +94,13 @@ pub(crate) struct Shown {
     pub(crate) laser: Option<Laser>,
 }
 
+impl Shown {
+    /// Whether the pointing hand's ray meets the open menu's panel.
+    pub(crate) const fn points_at_panel(&self) -> bool {
+        matches!(self.panel, Some(PanelView { point: Some(_), .. }))
+    }
+}
+
 /// The menu across frames.
 #[derive(Debug)]
 pub(crate) struct Model {
@@ -123,6 +120,14 @@ impl Model {
 
     pub(crate) const fn screen(&self) -> ScreenSettings {
         self.screen
+    }
+
+    /// The hand the open menu is on, or `None` while the menu is closed.
+    pub(crate) const fn hand(&self) -> Option<Hand> {
+        match self.place {
+            Place::On(hand) => Some(hand),
+            Place::Closed => None,
+        }
     }
 
     /// Closes the menu and returns the hand it was on, or `None` when it was closed.
@@ -157,11 +162,11 @@ impl Model {
         };
         let layout = layout::layout(&rows::menu(self.screen)?);
         let input = &frame.input;
-        let head = input.head.map_or(ORIGIN, |head| head.position);
+        let head = geometry::head_position(input.head);
         if let Some(grip) = input.hand(menu_hand).grip {
             self.panel = Some(panel_pose(grip.position, head));
         }
-        let pointer = other(menu_hand);
+        let pointer = menu_hand.other();
         let ray = input.hand(pointer).aim.and_then(Ray::of);
         let met =
             ray.zip(self.panel).and_then(|(aimed, pose)| geometry::hit(aimed, pose, PANEL_SIZE));

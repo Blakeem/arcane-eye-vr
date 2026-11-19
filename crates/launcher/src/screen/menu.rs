@@ -1,11 +1,13 @@
 //! The screen menu: a panel above one controller whose buttons set the screen's distance and
-//! width, and the laser of the other controller that points at them.
+//! width, and the laser of the other controller that points at them. The caller replaces the laser
+//! of [`Shown`] with the laser of the game's pointer while that pointer's ray hits the screen.
 //!
 //! `model.rs` decides what the menu does in each frame, `rows.rs` holds its rows and their steps,
 //! `place.rs` places its two quads and `save.rs` decides when the player file is written. This
 //! module paints the panel with the `overlay` crate's painter, draws the panel's pixels and the
 //! laser's color into their swapchains, writes the player file and logs what the menu did. A
-//! failure of the painter or of a swapchain leaves the screen with no menu for the session.
+//! failure of the painter or of a swapchain leaves the screen with no menu and no laser for the
+//! session, the game pointer's laser included.
 
 mod model;
 mod place;
@@ -15,6 +17,7 @@ mod save;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use device_profile::profile::Hand;
 use diag::error_chain;
 use gfx::canvas::CanvasError;
 use gfx::region::{Placement, RegionDraw, RegionError};
@@ -34,8 +37,10 @@ use xr::format::{Sampling, SwapchainFormat};
 use xr::panel::Panel;
 use xr::session::Session;
 
-use self::model::{Event, Model, Shown};
+pub(crate) use self::model::Shown;
+use self::model::{Event, Model};
 use self::place::PANEL_SIZE;
+pub(crate) use self::place::{Laser, laser};
 pub(crate) use self::save::PlayerFile;
 use self::save::{Saver, Saving};
 use super::controls::Frame;
@@ -85,7 +90,8 @@ pub(crate) struct ScreenMenu {
     model: Model,
     saver: Saver,
     root: PathBuf,
-    /// `None` once the menu failed or its painter could not be made, so the screen has no menu.
+    /// `None` once the menu failed or its painter could not be made, so the screen has no menu and
+    /// no laser.
     drawing: Option<Drawing>,
 }
 
@@ -109,13 +115,33 @@ impl ScreenMenu {
         self.model.screen()
     }
 
-    /// Takes the controllers' `frame` at `now` and draws the menu's quads with `gpu`.
-    pub(crate) fn update(&mut self, frame: &Frame, now: Instant, gpu: &Gpu<'_>) {
+    /// The hand the open menu is on, or `None` while the menu is closed or gone.
+    pub(crate) const fn hand(&self) -> Option<Hand> {
+        self.model.hand()
+    }
+
+    /// Takes the controllers' `frame` at `now` and returns what the menu shows. A menu that is gone
+    /// shows nothing.
+    pub(crate) fn update(&mut self, frame: &Frame, now: Instant) -> Shown {
         if self.drawing.is_none() {
-            return;
+            return Shown::default();
         }
-        let drawn = self.take(frame, now).and_then(|shown| self.draw(shown, gpu));
-        if let Err(error) = drawn {
+        match self.take(frame, now) {
+            Ok(shown) => shown,
+            Err(error) => {
+                self.fail(&error);
+                Shown::default()
+            }
+        }
+    }
+
+    /// Draws the quads of `shown` with `gpu`.
+    pub(crate) fn draw(&mut self, shown: Shown, gpu: &Gpu<'_>) {
+        let screen = self.model.screen();
+        let Some(drawing) = &mut self.drawing else {
+            return;
+        };
+        if let Err(error) = drawing.draw(shown, screen, gpu) {
             self.fail(&error);
         }
     }
@@ -132,14 +158,6 @@ impl ScreenMenu {
             self.save();
         }
         Ok(shown?)
-    }
-
-    fn draw(&mut self, shown: Shown, gpu: &Gpu<'_>) -> Result<(), MenuError> {
-        let screen = self.model.screen();
-        match &mut self.drawing {
-            Some(drawing) => drawing.draw(shown, screen, gpu),
-            None => Ok(()),
-        }
     }
 
     /// The panels the frame shows, the menu panel before the laser.
@@ -195,7 +213,7 @@ impl ScreenMenu {
 
 fn warn_failure(error: &MenuError) {
     let error = error_chain::chain(error);
-    warn!(error = %error, "the screen menu failed, so the screen runs on with no menu");
+    warn!(error = %error, "the screen menu failed, so the screen runs on with no menu and no laser");
 }
 
 /// Logs `event` as one line. A plain `info!` fits the frame loop here, since an event comes from a
