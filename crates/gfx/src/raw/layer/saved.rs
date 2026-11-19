@@ -1,4 +1,5 @@
-//! The context state the layer draw changes, saved before the draw and restored after it.
+//! The context state the layer draw and the nearest read's draw change, saved before the draw and
+//! restored after it.
 //!
 //! The saved state holds no shader class instances and no unordered-access view above slot 7.
 
@@ -19,15 +20,18 @@ const VIEWPORT_SLOTS: usize = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PI
 /// The initial count that keeps an unordered-access view's hidden counter.
 const KEEP_COUNTER: u32 = u32::MAX;
 
+/// The pixel shader's resource slots a draw binds: the layer draw's one and the nearest read's two.
+const RESOURCE_SLOTS: usize = 2;
+
 /// The context state the draw changes.
-pub(super) struct Saved {
+pub(in crate::raw) struct Saved {
     stages: Stages,
     raster: Raster,
     output: Output,
 }
 
 impl Saved {
-    pub(super) fn take(context: &ID3D11DeviceContext) -> Self {
+    pub(in crate::raw) fn take(context: &ID3D11DeviceContext) -> Self {
         Self {
             stages: Stages::take(context),
             raster: Raster::take(context),
@@ -36,7 +40,7 @@ impl Saved {
     }
 
     /// Unbinds the draw's target first, so a saved shader resource of that texture binds again.
-    pub(super) fn restore(self, context: &ID3D11DeviceContext) {
+    pub(in crate::raw) fn restore(self, context: &ID3D11DeviceContext) {
         // SAFETY: no view is passed.
         unsafe { context.OMSetRenderTargetsAndUnorderedAccessViews(None, None, 0, 0, None, None) };
         self.stages.restore(context);
@@ -45,7 +49,8 @@ impl Saved {
     }
 }
 
-/// The input assembler state, the five shaders and the pixel shader's first resource and sampler.
+/// The input assembler state, the five shaders, the pixel shader's first resources and its first
+/// sampler.
 struct Stages {
     topology: D3D_PRIMITIVE_TOPOLOGY,
     layout: Option<ID3D11InputLayout>,
@@ -54,7 +59,7 @@ struct Stages {
     geometry: Option<ID3D11GeometryShader>,
     hull: Option<ID3D11HullShader>,
     domain: Option<ID3D11DomainShader>,
-    resource: [Option<ID3D11ShaderResourceView>; 1],
+    resources: [Option<ID3D11ShaderResourceView>; RESOURCE_SLOTS],
     sampler: [Option<ID3D11SamplerState>; 1],
 }
 
@@ -62,7 +67,7 @@ impl Stages {
     fn take(context: &ID3D11DeviceContext) -> Self {
         let (mut vertex, mut pixel, mut geometry, mut hull, mut domain) =
             (None, None, None, None, None);
-        let (mut resource, mut sampler) = ([None], [None]);
+        let (mut resources, mut sampler) = ([const { None }; RESOURCE_SLOTS], [None]);
         // SAFETY: the context is live. The call returns the topology by value.
         let topology = unsafe { context.IAGetPrimitiveTopology() };
         // SAFETY: the context is live. An unbound layout comes back as an error, which is `None`.
@@ -77,11 +82,11 @@ impl Stages {
         unsafe { context.HSGetShader(&raw mut hull, None, None) };
         // SAFETY: the out slot is live for the call, and no class instance is asked for.
         unsafe { context.DSGetShader(&raw mut domain, None, None) };
-        // SAFETY: the slice holds one slot and lives for the call.
-        unsafe { context.PSGetShaderResources(0, Some(&mut resource)) };
+        // SAFETY: the slice holds `RESOURCE_SLOTS` slots and lives for the call.
+        unsafe { context.PSGetShaderResources(0, Some(&mut resources)) };
         // SAFETY: the slice holds one slot and lives for the call.
         unsafe { context.PSGetSamplers(0, Some(&mut sampler)) };
-        Self { topology, layout, vertex, pixel, geometry, hull, domain, resource, sampler }
+        Self { topology, layout, vertex, pixel, geometry, hull, domain, resources, sampler }
     }
 
     fn restore(self, context: &ID3D11DeviceContext) {
@@ -99,8 +104,8 @@ impl Stages {
         unsafe { context.HSSetShader(self.hull.as_ref(), None) };
         // SAFETY: the shader is the one the context held, or none.
         unsafe { context.DSSetShader(self.domain.as_ref(), None) };
-        // SAFETY: the slice holds the view the context held, or none.
-        unsafe { context.PSSetShaderResources(0, Some(&self.resource)) };
+        // SAFETY: the slice holds the views the context held, or none.
+        unsafe { context.PSSetShaderResources(0, Some(&self.resources)) };
         // SAFETY: the slice holds the sampler the context held, or none.
         unsafe { context.PSSetSamplers(0, Some(&self.sampler)) };
     }

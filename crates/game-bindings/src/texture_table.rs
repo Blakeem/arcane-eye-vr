@@ -25,6 +25,12 @@ impl TextureKey {
 
     /// The finished scene of every view, which the game's composite draws under the UI.
     pub const SCENE: Self = Self(0x684E_E890);
+
+    /// The scene's view distance divided by the camera's far plane distance, one `R32_FLOAT` per
+    /// texel, 1.0 where no geometry is. In a side by side frame its left half holds the main view's
+    /// distances and its right half the eye view's. It still holds the presented frame's values at
+    /// the Present call site.
+    pub const DISTANCE: Self = Self(0xFF19_3183);
 }
 
 /// A pipeline's texture table, by its address in the game process.

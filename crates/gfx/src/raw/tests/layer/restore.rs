@@ -1,34 +1,39 @@
-//! The context state the layer draw finds is the state it leaves, against a WARP device.
+//! The context state the layer draw finds is the state it leaves, against a WARP device. The
+//! nearest read's test binds and reads the same state.
 
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D::D3D11_PRIMITIVE_TOPOLOGY_LINELIST;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CULL_NONE, D3D11_FILL_SOLID, D3D11_RASTERIZER_DESC, D3D11_VIEWPORT,
-    ID3D11RasterizerState, ID3D11RenderTargetView, ID3D11ShaderResourceView,
+    ID3D11RasterizerState, ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D,
 };
 
 use super::super::{Gpu, warp};
-use super::{BLUE, HALF_RED, HALF_RED_OVER_BLUE, RED, area, assert_near, filled, halves, pixels};
+use super::{
+    BLUE, GREEN, HALF_RED, HALF_RED_OVER_BLUE, RED, area, assert_near, filled, fitted, halves,
+    pixels,
+};
 use crate::layer::{LayerDraw, Placement, Rect};
 
-/// The state the restore test binds before the draw and reads after it.
+/// The state the restore tests bind before the draw and read after it.
 #[derive(Debug, PartialEq)]
-struct Bound {
+pub(in crate::raw::tests) struct Bound {
     viewport: [f32; 4],
     scissor: [i32; 4],
     raster: Option<ID3D11RasterizerState>,
     target: Option<ID3D11RenderTargetView>,
-    resource: Option<ID3D11ShaderResourceView>,
+    /// The pixel shader's first two resources, which the nearest read binds.
+    resources: [Option<ID3D11ShaderResourceView>; 2],
     topology: i32,
     blend_factor: [f32; 4],
     sample_mask: u32,
 }
 
-fn bound(gpu: &Gpu) -> Bound {
+pub(in crate::raw::tests) fn bound(gpu: &Gpu) -> Bound {
     let context = &gpu.context;
     let (mut viewport, mut count) = (D3D11_VIEWPORT::default(), 1);
     let (mut scissor, mut scissor_count) = (RECT::default(), 1);
-    let (mut targets, mut resources) = ([None], [None]);
+    let (mut targets, mut resources) = ([None], [None, None]);
     let (mut blend_factor, mut sample_mask) = ([0.0; 4], 0);
     // SAFETY: the count names the one viewport slot, and both live for the call.
     unsafe { context.RSGetViewports(&raw mut count, Some(&raw mut viewport)) };
@@ -45,13 +50,12 @@ fn bound(gpu: &Gpu) -> Bound {
     // SAFETY: the context is live.
     let topology = unsafe { context.IAGetPrimitiveTopology() }.0;
     let [target] = targets;
-    let [resource] = resources;
     Bound {
         viewport: [viewport.TopLeftX, viewport.TopLeftY, viewport.Width, viewport.Height],
         scissor: [scissor.left, scissor.top, scissor.right, scissor.bottom],
         raster,
         target,
-        resource,
+        resources,
         topology,
         blend_factor,
         sample_mask,
@@ -73,12 +77,23 @@ fn other_raster(gpu: &Gpu) -> ID3D11RasterizerState {
     state.expect("the rasterizer state")
 }
 
-/// Binds a viewport, a scissor rectangle, a rasterizer state, a target, a pixel shader resource, a
-/// topology and blend values that differ from the layer draw's, and returns what the context then
-/// holds.
-fn bind_other_state(gpu: &Gpu) -> Bound {
-    let (other_target, other_layer) = (filled(gpu, 4, 4, BLUE), filled(gpu, 2, 2, RED));
-    let (mut target_view, mut layer_view) = (None, None);
+/// A view of `texture` to sample.
+fn sampled_view(gpu: &Gpu, texture: &ID3D11Texture2D) -> Option<ID3D11ShaderResourceView> {
+    let mut view = None;
+    // SAFETY: the texture and the out slot live for the call.
+    unsafe { gpu.device.CreateShaderResourceView(texture, None, Some(&raw mut view)) }
+        .expect("a sampled view");
+    view
+}
+
+/// Binds a viewport, a scissor rectangle, a rasterizer state, a target, two pixel shader
+/// resources, a topology and blend values that differ from the draws', and returns what the context
+/// then holds.
+pub(in crate::raw::tests) fn bind_other_state(gpu: &Gpu) -> Bound {
+    let other_target = filled(gpu, 4, 4, BLUE);
+    let views =
+        [filled(gpu, 2, 2, RED), filled(gpu, 2, 2, GREEN)].map(|view| sampled_view(gpu, &view));
+    let mut target_view = None;
     let raster = other_raster(gpu);
     let viewport = D3D11_VIEWPORT {
         TopLeftX: 1.0,
@@ -90,9 +105,6 @@ fn bind_other_state(gpu: &Gpu) -> Bound {
     // SAFETY: the texture and the out slot live for the call.
     unsafe { gpu.device.CreateRenderTargetView(&other_target, None, Some(&raw mut target_view)) }
         .expect("a target view");
-    // SAFETY: the texture and the out slot live for the call.
-    unsafe { gpu.device.CreateShaderResourceView(&other_layer, None, Some(&raw mut layer_view)) }
-        .expect("a layer view");
     // SAFETY: the slice lives for the call.
     unsafe { gpu.context.RSSetViewports(Some(&[viewport])) };
     let scissor = RECT { left: 1, top: 1, right: 3, bottom: 2 };
@@ -103,14 +115,14 @@ fn bind_other_state(gpu: &Gpu) -> Bound {
     // SAFETY: the slice lives for the call.
     unsafe { gpu.context.OMSetRenderTargets(Some(&[target_view.clone()]), None) };
     // SAFETY: the slice lives for the call.
-    unsafe { gpu.context.PSSetShaderResources(0, Some(&[layer_view.clone()])) };
+    unsafe { gpu.context.PSSetShaderResources(0, Some(&views)) };
     // SAFETY: the topology is a plain value.
     unsafe { gpu.context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST) };
     // SAFETY: the blend factor lives for the call.
     unsafe { gpu.context.OMSetBlendState(None, Some(&[0.1, 0.2, 0.3, 0.4]), 0x0F) };
     let state = bound(gpu);
     assert_eq!(state.target, target_view, "the test bound its target");
-    assert_eq!(state.resource, layer_view, "the test bound its resource");
+    assert_eq!(state.resources, views, "the test bound its resources");
     assert_eq!(state.raster, Some(raster), "the test bound its rasterizer state");
     assert_eq!(state.topology, D3D11_PRIMITIVE_TOPOLOGY_LINELIST.0);
     assert_eq!(state.viewport, [1.0, 2.0, 3.0, 4.0]);
@@ -125,8 +137,8 @@ fn the_draw_leaves_the_context_state_as_it_found_it() {
     let (target, layer) = (filled(&gpu, 4, 4, BLUE), filled(&gpu, 2, 2, HALF_RED));
     let before = bind_other_state(&gpu);
 
-    draw.draw(&gpu.context, &target, &layer, &[Rect { x: 0, y: 0, width: 4, height: 4 }])
-        .expect("the draw");
+    let entire = fitted(Rect { x: 0, y: 0, width: 4, height: 4 });
+    draw.draw_placed(&gpu.context, &target, &layer, &[entire]).expect("the draw");
     assert_eq!(bound(&gpu), before);
     draw.draw_copy(&gpu.context, &target, &halves(4, 4)).expect("the copy draw");
     assert_eq!(bound(&gpu), before);

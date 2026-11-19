@@ -8,7 +8,8 @@
 //!   [aim]       the pointer in the window's client area and the calling thread's cursor
 //!   [image]     the cursor's bitmaps as pixels and a texture, made again only when its handle changes,
 //!               through row and pixel buffers reserved once for the largest cursor
-//!   [draw]      the texture with its hotspot at the pointer's place in each half, clipped to the half
+//!   [draw]      the texture with its hotspot at the pointer's place in each half, moved by the
+//!               columns of the UI disparity in use as the UI is, clipped to the half
 //!   [counter]   one ShowCursor(FALSE) when a frame draws the cursor and hides the Windows cursor.
 //!               One ShowCursor(TRUE) when a frame shows it again, such as a frame with no drawn
 //!               cursor or a frame the frame handler skips, or after the feature stops
@@ -32,6 +33,7 @@ use self::counter::{Counter, Marked, Owner, WindowsCursor, owner, wanted};
 use self::image::{Buffers, ConvertError, Image};
 use self::place::{Spot, Sprite, place, spot};
 use super::LOG_PERIOD;
+use super::decide::shifted;
 use crate::raw::cursor::{
     self as raw_cursor, CursorBitmaps, CursorHandle, ReadFault, ReleaseLogs, Window,
 };
@@ -43,13 +45,15 @@ pub(crate) struct Aim {
     pub(crate) spot: Spot,
 }
 
-/// The frame the cursor is drawn into: the back buffer, its device's immediate context and the
-/// back buffer's halves.
+/// The frame the cursor is drawn into: the back buffer, its device's immediate context, the back
+/// buffer's halves and the columns the UI of the frame moves in each half.
 #[derive(Clone, Copy)]
 pub(crate) struct Canvas<'frame> {
     pub(crate) context: &'frame ID3D11DeviceContext,
     pub(crate) back_buffer: &'frame ID3D11Texture2D,
     pub(crate) halves: &'frame [Rect; 2],
+    /// The columns of the UI disparity in use, 0 in a frame with none.
+    pub(crate) columns: u16,
 }
 
 /// Why a cursor is skipped until its handle changes.
@@ -109,11 +113,12 @@ impl Cursor {
         Some(Aim { handle, spot })
     }
 
-    /// Draws the cursor of `aim` into each half of `canvas` with `layer`. A cursor that cannot be
-    /// converted or drawn is logged and skipped until its handle changes.
+    /// Draws the cursor of `aim` into each half of `canvas` with `layer`, moved as the frame's UI
+    /// is. A cursor that cannot be converted or drawn is logged and skipped until its handle
+    /// changes.
     pub(crate) fn draw(&mut self, layer: &LayerDraw, canvas: &Canvas<'_>, aim: Aim) -> Marked {
         let Some(drawn) = self.drawn(layer, aim.handle) else { return Marked::Nothing };
-        let placements = place(aim.spot, drawn.sprite, canvas.halves);
+        let placements = shifted(place(aim.spot, drawn.sprite, canvas.halves), canvas.columns);
         let Canvas { context, back_buffer, .. } = *canvas;
         if let Err(error) = layer.draw_placed(context, back_buffer, &drawn.texture, &placements) {
             self.skip(aim.handle, error.into());

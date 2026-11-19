@@ -36,7 +36,7 @@ use game_mem::{GameAddr, WriteDest};
 use hooks::{MidHook, Registers, RenderThread, Runs};
 use settings::dev::MainViewEye;
 use settings::player::StereoSettings;
-use stereo_core::eye::{self, Eye, PerEye};
+use stereo_core::eye::{self, Eye, EyeScale, PerEye};
 use tracing::{Level, info, warn};
 
 use self::lane::Lane;
@@ -149,7 +149,7 @@ pub(crate) fn install(health: &Health, code: &GameCode, config: Config) -> Optio
     if target == Target::StereoPair && stereo.main_view_eye != MainViewEye::Center {
         warn!(main_view_eye, "main_view_eye is ignored while second_view is on");
     }
-    match hook_view_begin(health, code, target, offsets_m(config.settings.stereo)) {
+    match hook_view_begin(health, code, target, offsets_m(config.settings.stereo, EyeScale::FULL)) {
         Ok((site, installed)) => {
             health.install_ok(Feature::EyeCamera);
             info!(
@@ -168,9 +168,9 @@ pub(crate) fn install(health: &Health, code: &GameCode, config: Config) -> Optio
     }
 }
 
-/// Each eye's signed offset from the head in meters, for the eye distance of `stereo`.
-fn offsets_m(stereo: StereoSettings) -> PerEye<f32> {
-    eye::offsets_m(stereo.ipd_mm.millimeters() / MILLIMETERS_PER_METER)
+/// Each eye's signed offset from the head in meters, for the eye distance of `stereo` times `scale`.
+fn offsets_m(stereo: StereoSettings, scale: EyeScale) -> PerEye<f32> {
+    eye::offsets_m(scale.of(stereo.ipd_mm.millimeters() / MILLIMETERS_PER_METER))
 }
 
 /// Resolves both signatures and commits the proxy pages before the hook goes in, so a failure leaves
@@ -210,16 +210,18 @@ fn on_view_begin(context: &CoreContext, thread: &RenderThread, registers: &mut R
 }
 
 /// Ends the frame of the eye camera, so the next frame's views are chosen afresh in `layout` and
-/// render at the eye distance of `stereo`, the player settings in effect.
+/// render at the eye distance of `stereo`, the player settings in effect, times `scale`, the eye
+/// scale the UI layer holds in use.
 pub(crate) fn end_frame(
     context: &CoreContext,
     thread: &RenderThread,
     layout: Layout,
     stereo: StereoSettings,
+    scale: EyeScale,
 ) {
     context.eye_camera.with(thread, |state| {
         if let Some(state) = state {
-            state.set_offsets(offsets_m(stereo));
+            state.set_offsets(offsets_m(stereo, scale));
             state.end_frame(layout);
         }
     });

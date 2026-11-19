@@ -5,8 +5,8 @@
 //! game source when the dev flag `viewer.source` names one. Before that hand-over the UI layer draws
 //! into the back buffer. It logs once which feature's failure made the stereo pair flat. It times
 //! each call and logs the perf summary line once per window of frames, after the camera lines of the
-//! window's newest main view camera and newest eye view camera. [`on_failed_present_call`] is its
-//! work after `present-hook` failed.
+//! window's newest main view camera and newest eye view camera and the UI layer's `ui depth` line.
+//! [`on_failed_present_call`] is its work after `present-hook` failed.
 //!
 //! It keeps no back-buffer reference and no swapchain reference. An extra swapchain reference keeps a
 //! swapchain the game released alive, and DXGI then refuses a new swapchain on the same window.
@@ -19,11 +19,12 @@ use diag::health::Health;
 use diag::perf::{FrameWindow, SUMMARY_FRAMES};
 use diag::rate::{Once, RateLimit};
 use diag::{error_every, once, warn_every};
+use game_bindings::camera::Camera;
 use hooks::Registers;
 use ipc_layout::camera_line::{self, CameraEye};
 use ipc_layout::perf_line;
-use settings::player::DepthOffsetPercent;
-use stereo_core::eye::Eye;
+use settings::player::StereoSettings;
+use stereo_core::eye::{Eye, EyeScale};
 use tracing::Level;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 use windows::core::HRESULT;
@@ -32,12 +33,16 @@ use crate::eye_view::Layout;
 use crate::game_source::GameSource;
 use crate::pair::PairState;
 use crate::raw::{self, BackBuffer, Devices};
+use crate::ui_layer::ui_depth::{DepthInput, DepthReport};
 use crate::ui_layer::{Target, UiLayer};
 use crate::view_camera::{FrameCamera, FrameCameras, Viewpoint};
 use crate::viewer::ViewerLink;
 
 /// The shortest time between two lines of one rate-limited call site.
 const LOG_PERIOD: Duration = Duration::from_secs(10);
+
+/// The `ui depth` line's nearest distance for a UI over no scene or no result.
+const NO_NEAREST_M: f32 = -1.0;
 
 /// What a frame did, for the status the handler reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,16 +90,22 @@ impl FrameState {
     pub(crate) fn new(game_source: Option<GameSource>, ui_layer: Option<UiLayer>) -> Self {
         Self { game_source, ui_layer, ..Self::default() }
     }
+
+    /// The eye scale the UI layer holds in use, or the full eye distance with no UI layer.
+    pub(crate) fn eye_scale(&self) -> EyeScale {
+        self.ui_layer.as_ref().map_or(EyeScale::FULL, UiLayer::eye_scale)
+    }
 }
 
 /// What the UI layer takes from the Present call-site handler: the health registry, which also
-/// tells the frame handler whether the pair is flat, the layout of the next frame and the player's
-/// depth offset in the frame's copy of the settings.
+/// tells the frame handler whether the pair is flat, the layout of the next frame, the frame's copy
+/// of the player's stereo settings and the main view's camera of the frame.
 #[derive(Clone, Copy)]
 pub(crate) struct UiFrame<'frame> {
     pub(crate) health: &'frame Health,
     pub(crate) next: Layout,
-    pub(crate) depth_offset: DepthOffsetPercent,
+    pub(crate) stereo: StereoSettings,
+    pub(crate) camera: Option<Camera>,
 }
 
 /// The rate-limit state of each log call site of the frame handler.
@@ -130,7 +141,7 @@ pub(crate) fn on_present_call(
     keep_cameras(state, cameras);
     log_flat(&mut state.logs, ui.health);
     let frame = raw::with_present_swapchain(registers, |address, swapchain| {
-        on_frame(state, address, swapchain, ui)
+        on_frame(state, address, swapchain, ui, now)
     });
     let report = frame.unwrap_or_else(|| {
         error_every!(
@@ -194,8 +205,8 @@ fn keep_cameras(state: &mut FrameState, cameras: FrameCameras) {
 }
 
 /// Adds the time since the previous Present call to the frame-time window. When that interval fills
-/// the window, logs the camera lines that `ipc_layout::camera_line` describes, then the perf summary
-/// line.
+/// the window, logs the camera lines that `ipc_layout::camera_line` describes, the UI layer's
+/// `ui depth` line, then the perf summary line.
 fn record_interval(state: &mut FrameState, now: Instant) {
     let Some(previous) = state.last_call.replace(now) else {
         return;
@@ -206,6 +217,9 @@ fn record_interval(state: &mut FrameState, now: Instant) {
     let cameras = mem::take(&mut state.cameras);
     for camera in [cameras.main, cameras.eye_view].iter().flatten() {
         log_camera(camera);
+    }
+    if let Some(layer) = &state.ui_layer {
+        log_depth(layer.depth_report());
     }
     let back_buffer = state.last.map(|snapshot| snapshot.back_buffer);
     // The window limits this line to one per SUMMARY_FRAMES frames, so it needs no rate-limit macro.
@@ -251,6 +265,19 @@ fn log_camera(frame: &FrameCamera) {
     );
 }
 
+/// Logs the UI depth's line: the newest nearest distance in meters, -1 for a UI over no scene or no
+/// result, the columns per half of the UI disparity in use and the eye scale in use.
+fn log_depth(report: DepthReport) {
+    // The perf window limits this line to one per SUMMARY_FRAMES frames, so it needs no rate-limit
+    // macro.
+    tracing::info!(
+        nearest_m = ?report.nearest_m.unwrap_or(NO_NEAREST_M),
+        ui_columns = report.columns,
+        eye_scale = ?report.eye_scale.share(),
+        "ui depth"
+    );
+}
+
 /// The camera line's name for the position a view rendered from.
 const fn camera_eye(viewpoint: Viewpoint) -> CameraEye {
     match viewpoint {
@@ -260,12 +287,13 @@ const fn camera_eye(viewpoint: Viewpoint) -> CameraEye {
     }
 }
 
-/// Runs the frame work for `swapchain`, which lives at `address`.
+/// Runs the frame work for `swapchain`, which lives at `address`, at the Present call of `now`.
 fn on_frame(
     state: &mut FrameState,
     address: usize,
     swapchain: &IDXGISwapChain,
     ui: UiFrame<'_>,
+    now: Instant,
 ) -> FrameReport {
     let (back_buffer, window) = match raw::swapchain_desc(swapchain) {
         Ok(desc) => desc,
@@ -305,7 +333,8 @@ fn on_frame(
     if let Some(devices) = &state.devices {
         if let Some(layer) = &mut state.ui_layer {
             let target = Target { swapchain, devices, size: back_buffer, window };
-            layer.on_frame(ui.health, ui.next, ui.depth_offset, &target);
+            let input = DepthInput { stereo: ui.stereo, camera: ui.camera, now };
+            layer.on_frame(ui.health, ui.next, &input, &target);
         }
         state.viewer.on_frame(swapchain, devices, state.game_source.as_mut());
     }

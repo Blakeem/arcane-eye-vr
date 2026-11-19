@@ -1,5 +1,6 @@
 //! The gfx crate's unsafe edge: the viewer header mapping, the D3D11 and DXGI calls of the
-//! publisher, the layer draw's calls in `layer` and the region draw's calls in `region`.
+//! publisher, the layer draw's calls in `layer`, the nearest read's calls in `nearest` and the
+//! region draw's calls in `region`.
 
 #![expect(
     unsafe_code,
@@ -32,6 +33,7 @@ use windows::core::{HRESULT, HSTRING, Interface as _};
 use crate::publish::{PublishError, SetupError, Step};
 
 pub(crate) mod layer;
+pub(crate) mod nearest;
 pub(crate) mod region;
 
 /// The header's size as `CreateFileMappingW` takes it.

@@ -125,22 +125,6 @@ impl LayerDraw {
         self.pipeline.image(width, height, pixels)
     }
 
-    /// Draws `layer`, stretched to each of `rects`, over `target` through `context`, the immediate
-    /// context of the draw's device. `layer` can be sampled and `target` can be drawn into.
-    ///
-    /// # Errors
-    ///
-    /// Returns the view that could not be created. The draw then changed nothing.
-    pub fn draw(
-        &self,
-        context: &ID3D11DeviceContext,
-        target: &ID3D11Texture2D,
-        layer: &ID3D11Texture2D,
-        rects: &[Rect],
-    ) -> Result<(), LayerError> {
-        self.draw_regions(context, target, layer, rect_regions(rects))
-    }
-
     /// Draws `layer` over `target` through `context`, the immediate context of the draw's device, at
     /// each of `placements`: stretched to its area and clipped to its rectangle. `layer` can be
     /// sampled and `target` can be drawn into.
@@ -155,7 +139,11 @@ impl LayerDraw {
         layer: &ID3D11Texture2D,
         placements: &[Placement],
     ) -> Result<(), LayerError> {
-        self.draw_regions(context, target, layer, placed_regions(placements))
+        let target_view = self.pipeline.target_view(target)?;
+        let layer_view = self.pipeline.layer_view(layer)?;
+        let pass = Pass { target: &target_view, layer: &layer_view, blend: Blend::Premultiplied };
+        self.pipeline.draw(context, &pass, placed_regions(placements));
+        Ok(())
     }
 
     /// Draws black over `target` through `context`, the immediate context of the draw's device, at
@@ -174,20 +162,6 @@ impl LayerDraw {
         let target_view = self.pipeline.target_view(target)?;
         let pass = Pass { target: &target_view, layer: &self.black, blend: Blend::Replace };
         self.pipeline.draw(context, &pass, placed_regions(placements));
-        Ok(())
-    }
-
-    fn draw_regions(
-        &self,
-        context: &ID3D11DeviceContext,
-        target: &ID3D11Texture2D,
-        layer: &ID3D11Texture2D,
-        regions: impl IntoIterator<Item = Region>,
-    ) -> Result<(), LayerError> {
-        let target_view = self.pipeline.target_view(target)?;
-        let layer_view = self.pipeline.layer_view(layer)?;
-        let pass = Pass { target: &target_view, layer: &layer_view, blend: Blend::Premultiplied };
-        self.pipeline.draw(context, &pass, regions);
         Ok(())
     }
 

@@ -12,7 +12,7 @@ use diag::logging::LogName;
 use game_bindings::state::arm_alloc_guard;
 use gfx::publish::ViewNames;
 use ipc_layout::perf_line::{self, PerfSummary};
-use settings::player::DepthOffsetPercent;
+use settings::player::StereoSettings;
 
 use super::{
     FrameLogs, FrameReport, FrameState, UiFrame, keep_cameras, log_flat, on_frame, record_interval,
@@ -26,7 +26,7 @@ use crate::raw::{
 use crate::test_dir;
 use crate::ui_layer::cursor::Aim;
 use crate::ui_layer::cursor::place::{Pointer, spot};
-use crate::ui_layer::test_support::hidden_cursor_layer;
+use crate::ui_layer::test_support::{hidden_cursor_layer, idle_layer};
 use crate::view_camera::FrameCameras;
 use crate::viewer::ViewerLink;
 
@@ -48,15 +48,16 @@ fn log_lines(name: &str, frames: impl FnOnce()) -> Vec<String> {
     text.lines().map(str::to_owned).collect()
 }
 
-/// The UI layer's part of a flat frame's handler state, with the default depth offset.
+/// The UI layer's part of a flat frame's handler state, with the default settings and no camera.
 fn flat_ui(health: &Health) -> UiFrame<'_> {
-    UiFrame { health, next: Layout::MainOnly, depth_offset: DepthOffsetPercent::default() }
+    UiFrame { health, next: Layout::MainOnly, stereo: StereoSettings::default(), camera: None }
 }
 
 fn frame(state: &mut FrameState, test: &TestSwapchain) -> FrameReport {
     let health = Health::new();
     let ui = flat_ui(&health);
-    test.with(|address, swapchain| on_frame(state, address, swapchain, ui)).expect("a swapchain")
+    test.with(|address, swapchain| on_frame(state, address, swapchain, ui, Instant::now()))
+        .expect("a swapchain")
 }
 
 /// A frame as `on_present_call` runs it, with the call's time given as `now` and the cameras the
@@ -156,6 +157,25 @@ fn the_601st_frame_logs_one_perf_summary_that_the_parser_reads() {
     let fields = " arcane_eye_core::frame msg=\"perf summary\" frames=600 mean_us=10300 \
                   p50_us=10300 p95_us=10570 p99_us=10594 max_us=10600 width=320 height=200";
     assert!(line.ends_with(fields), "the parsed numbers are the logged ones: {line}");
+}
+
+#[test]
+fn a_perf_window_with_a_ui_layer_logs_one_ui_depth_line_before_the_perf_summary() {
+    let test = TestSwapchain::new(320, 200);
+    let (mut state, _names) = test_state("ui-depth-line");
+    state.ui_layer = Some(idle_layer());
+    let lines = log_lines("ui-depth-line", || {
+        for now in call_times() {
+            timed_frame(&mut state, &test, now, FrameCameras::default());
+        }
+    });
+    let position = |message: &str| lines.iter().position(|line| line.contains(message));
+    let depth: Vec<&String> = lines.iter().filter(|line| line.contains("\"ui depth\"")).collect();
+    let [line] = depth.as_slice() else { panic!("one ui depth line: {lines:#?}") };
+    let fields =
+        " arcane_eye_core::frame msg=\"ui depth\" nearest_m=-1.0 ui_columns=0 eye_scale=1.0";
+    assert!(line.ends_with(fields), "no result, no UI disparity and the full eye distance: {line}");
+    assert!(position("\"ui depth\"") < position("\"perf summary\""), "{lines:#?}");
 }
 
 /// The counting allocator counts only in debug builds.
@@ -326,9 +346,11 @@ fn a_new_device_at_a_reused_swapchain_address_replaces_the_held_devices() {
     let (mut state, _names) = test_state("reused-address");
     let reused = first.address();
     let health = Health::new();
-    let ui = flat_ui(&health);
-    first.with(|_, swapchain| on_frame(&mut state, reused, swapchain, ui)).expect("a swapchain");
-    let report = second.with(|_, swapchain| on_frame(&mut state, reused, swapchain, ui));
+    let (ui, now) = (flat_ui(&health), Instant::now());
+    first
+        .with(|_, swapchain| on_frame(&mut state, reused, swapchain, ui, now))
+        .expect("a swapchain");
+    let report = second.with(|_, swapchain| on_frame(&mut state, reused, swapchain, ui, now));
     assert_eq!(report, Some(FrameReport::Later));
     let (held_device, held_context) = state.devices.as_ref().expect("the held devices");
     let expected = raw::device(&second.swapchain).expect("the second swapchain's device");

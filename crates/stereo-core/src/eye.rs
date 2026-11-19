@@ -35,9 +35,35 @@ pub fn offsets_m(ipd_m: f32) -> PerEye<f32> {
     PerEye { left: -half, right: half }
 }
 
+/// The share of the full eye distance that the eye cameras render at, from 0 to 1.
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+pub struct EyeScale(f32);
+
+impl EyeScale {
+    /// The full eye distance.
+    pub const FULL: Self = Self(1.0);
+
+    /// `share` limited to 0 to 1. A NaN gives [`EyeScale::FULL`].
+    pub fn clamped(share: f32) -> Self {
+        if share.is_nan() {
+            return Self::FULL;
+        }
+        Self(share.clamp(0.0, 1.0))
+    }
+
+    pub const fn share(self) -> f32 {
+        self.0
+    }
+
+    /// `ipd_m` scaled by this share.
+    pub fn of(self, ipd_m: f32) -> f32 {
+        ipd_m * self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Eye, PerEye, offsets_m};
+    use super::{Eye, EyeScale, PerEye, offsets_m};
 
     #[test]
     fn the_left_eye_is_minus_half_and_the_right_eye_plus_half_of_the_distance() {
@@ -45,5 +71,14 @@ mod tests {
         assert_eq!(offsets, PerEye { left: -0.0315, right: 0.0315 });
         assert_eq!(offsets[Eye::Left], -0.0315);
         assert_eq!(offsets[Eye::Right], 0.0315);
+    }
+
+    #[test]
+    fn an_eye_scale_stays_between_0_and_1_and_a_nan_is_the_full_distance() {
+        assert_eq!(EyeScale::clamped(0.5).share(), 0.5);
+        assert_eq!(EyeScale::clamped(-0.5).share(), 0.0);
+        assert_eq!(EyeScale::clamped(1.5), EyeScale::FULL);
+        assert_eq!(EyeScale::clamped(f32::NAN), EyeScale::FULL);
+        assert_eq!(EyeScale::clamped(0.5).of(0.064), 0.032);
     }
 }

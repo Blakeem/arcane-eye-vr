@@ -1,5 +1,7 @@
 //! A pipeline, a main view and a texture table in test memory, for tests of the game source.
 
+use std::iter;
+
 use game_bindings::offsets::{
     PIPELINE_MAIN_VIEW, TEXTURE_NODE_RECORD, TEXTURE_RECORD_TEXTURE, TEXTURE_TABLE_BUCKET_COUNT,
     TEXTURE_TABLE_BUCKETS, TEXTURE_TABLE_ENTRY_COUNT, TEXTURE_TABLE_KEYS, TEXTURE_TABLE_NEXT,
@@ -34,15 +36,19 @@ impl Block {
     }
 }
 
-/// A pipeline whose main view holds a table of one bucket and one entry, whose record names a
-/// texture.
+/// A pipeline whose main view holds a table of one bucket and one chain of entries, whose records
+/// name textures.
 pub(crate) struct World {
     pub(crate) global: Block,
     pub(crate) pipeline: Block,
     pub(crate) view: Block,
+    /// The record of the first entry.
     pub(crate) record: Block,
     table: Block,
-    arrays: [Block; 5],
+    arrays: [Block; 4],
+    /// The node of each entry and the record of each entry after the first.
+    nodes: Vec<Block>,
+    records: Vec<Block>,
 }
 
 impl World {
@@ -53,29 +59,46 @@ impl World {
 
     /// A world whose `key` names the object at `texture`.
     pub(crate) fn with_key(key: TextureKey, texture: usize) -> Self {
+        Self::with_keys(&[(key, texture)])
+    }
+
+    /// A world whose table holds one entry for each `(key, texture)` of `entries`, in one chain.
+    pub(crate) fn with_keys(entries: &[(TextureKey, usize)]) -> Self {
+        let count = entries.len();
+        let bytes = |each: usize| each.checked_mul(count).expect("a test size").max(8);
         let world = Self {
             global: Block::new(8),
             pipeline: Block::new(0x100),
             view: Block::new(0x40),
             record: Block::new(0x10),
             table: Block::new(0xB0),
-            arrays: [8, 8, 8, 8, 0x40].map(Block::new),
+            arrays: [8, bytes(4), bytes(4), bytes(8)].map(Block::new),
+            nodes: entries.iter().map(|_| Block::new(0x40)).collect(),
+            records: entries.iter().skip(1).map(|_| Block::new(0x10)).collect(),
         };
-        let [buckets, next, keys, values, node] = &world.arrays;
+        let [buckets, next, keys, values] = &world.arrays;
         world.global.set(0, world.pipeline.address().get());
         world.pipeline.set(PIPELINE_MAIN_VIEW, world.view.address().get());
         world.view.set(VIEW_TEXTURE_TABLE, world.table.address().get());
         world.table.set(TEXTURE_TABLE_BUCKET_COUNT, 1_i32);
-        world.table.set(TEXTURE_TABLE_ENTRY_COUNT, 1_i32);
+        world.table.set(TEXTURE_TABLE_ENTRY_COUNT, i32::try_from(count).expect("a test count"));
         world.table.set(TEXTURE_TABLE_BUCKETS, buckets.address().get());
         world.table.set(TEXTURE_TABLE_NEXT, next.address().get());
         world.table.set(TEXTURE_TABLE_KEYS, keys.address().get());
         world.table.set(TEXTURE_TABLE_VALUES, values.address().get());
-        next.set(0, -1_i32);
-        keys.set(0, key.0);
-        values.set(0, node.address().get());
-        node.set(TEXTURE_NODE_RECORD, world.record.address().get());
-        world.record.set(TEXTURE_RECORD_TEXTURE, texture);
+        let records = iter::once(&world.record).chain(&world.records);
+        for (index, (((key, texture), node), record)) in
+            entries.iter().zip(&world.nodes).zip(records).enumerate()
+        {
+            let at = |size: usize| index.checked_mul(size).expect("a test offset");
+            let following = index.checked_add(1).filter(|following| *following < count);
+            let following = following.map_or(-1, |entry| i32::try_from(entry).expect("an entry"));
+            next.set(at(4), following);
+            keys.set(at(4), key.0);
+            values.set(at(8), node.address().get());
+            node.set(TEXTURE_NODE_RECORD, record.address().get());
+            record.set(TEXTURE_RECORD_TEXTURE, *texture);
+        }
         world
     }
 

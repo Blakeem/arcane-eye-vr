@@ -72,6 +72,8 @@ A file with an invalid value is rejected as an entire file and its defaults appl
 
 A larger `depth_offset_percent` sets the scene further behind the screen.
 
+The game's interface sits on the screen surface. When the scene under the interface is nearer than the surface, such as in a dialogue close-up, the interface and the cursor come forward to stay in front of it. Past a limit, the distance between the eyes shrinks so that the scene stays behind the interface.
+
 While the game runs, `arcane-eye-vr.exe --reload-settings` makes the mod read both files again and exits. A saved change to `settings.toml` then applies at once. An invalid change keeps the settings in use. A change to `dev.toml` applies at the next start. The mod reads the files at no other time while the game runs. When no running game accepts the request, the command shows a message that says so. The launch app reads `[screen]` once, when the headset screen starts.
 
 The environment variable `ARCANE_EYE_VR_HOME` sets a different root folder when its value is an absolute path. The game reads it from the environment it inherits. The launch app starts the game through Steam, so the game gets Steam's environment and not the launch app's. A user variable reaches the game when Steam starts after the variable is set. `trial.exe` sets it on the game it starts.

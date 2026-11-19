@@ -2,9 +2,10 @@
 //!
 //! The install resolves the `dx11_present_call` signature in the game exe's code and puts a mid hook
 //! on the match. The handler reads the eye view's layout for the next frame, ends the frames of the
-//! eye camera, the shadow cache and the view camera, runs the frame work with the UI layer before the
-//! engine's `Present` call, reports the first frame through the launch token, reads the game state and runs the eye
-//! view's create. It copies the published player settings once, so a frame uses one set of values.
+//! eye camera at the eye scale the UI layer holds in use, then of the shadow cache, the object slot
+//! and the view camera, runs the frame work with the UI layer before the engine's `Present` call,
+//! reports the first frame through the launch token, reads the game state and runs the eye view's
+//! create. It copies the published player settings once, so a frame uses one set of values.
 //! After the hook's feature failed, the handler runs only [`give_back`].
 
 use std::mem::ManuallyDrop;
@@ -16,6 +17,7 @@ use game_bindings::state;
 use game_mem::GameAddr;
 use hooks::{MidHook, Registers, RenderThread, Runs};
 use ipc_layout::launch_token::Status;
+use stereo_core::eye::EyeScale;
 use tracing::{info, warn};
 
 use crate::context::CoreContext;
@@ -100,12 +102,13 @@ fn on_present_call(context: &CoreContext, thread: &RenderThread, registers: &mut
     }
     let layout = eye_view::frame_layout(context, thread);
     let settings = context.settings.get();
-    eye_camera::end_frame(context, thread, layout, settings.stereo);
+    let eye_scale = context.frame.with(thread, |state| state.eye_scale()).unwrap_or(EyeScale::FULL);
+    eye_camera::end_frame(context, thread, layout, settings.stereo, eye_scale);
     shadow_cache::end_frame(context, thread, layout);
     object_slot::end_frame(context, thread, layout);
     let cameras = view_camera::end_frame(context, thread, layout);
-    let depth_offset = settings.stereo.depth_offset_percent;
-    let ui = UiFrame { health: &context.health, next: layout, depth_offset };
+    let camera = cameras.main.map(|main| main.camera);
+    let ui = UiFrame { health: &context.health, next: layout, stereo: settings.stereo, camera };
     let frame =
         context.frame.with(thread, |state| frame::on_present_call(state, registers, cameras, ui));
     if frame == Some(FrameReport::FirstPresent) {
@@ -142,7 +145,7 @@ fn give_back(context: &CoreContext, thread: &RenderThread, layout: Layout) {
     let stereo = context.settings.get().stereo;
     context.frame.with(thread, |state| {
         frame::on_failed_present_call(state, || {
-            eye_camera::end_frame(context, thread, layout, stereo);
+            eye_camera::end_frame(context, thread, layout, stereo, EyeScale::FULL);
         });
     });
 }

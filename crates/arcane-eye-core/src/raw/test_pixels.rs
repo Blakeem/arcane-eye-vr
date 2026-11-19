@@ -1,12 +1,12 @@
-//! Pixel fixtures for the core's tests: a texture with given pixels, and the pixels written into and
-//! read from a test swapchain's back buffer.
+//! Pixel fixtures for the core's tests: a texture with given pixels, a distance texture, the flush
+//! of a test swapchain's context, and the pixels written into and read from its back buffer.
 
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
     D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
     ID3D11Texture2D,
 };
-use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32_FLOAT, DXGI_SAMPLE_DESC};
 
 use super::test_support::{FORMAT, TestSwapchain};
 
@@ -52,6 +52,42 @@ pub(crate) fn texture_of(test: &TestSwapchain, width: u32, pixels: &[Pixel]) -> 
     }
     .expect("create the test texture");
     texture.expect("the test texture")
+}
+
+/// An `R32_FLOAT` shader resource texture of `test`'s device, `width` by `height` texels, that
+/// holds `value` in every texel, as the game's distance texture holds a share of the far plane.
+pub(crate) fn distances_of(
+    test: &TestSwapchain,
+    width: u32,
+    height: u32,
+    value: f32,
+) -> ID3D11Texture2D {
+    let device = super::device(&test.swapchain).expect("the swapchain's device");
+    let texels = (width as usize).checked_mul(height as usize).expect("a test texel count");
+    let values = vec![value; texels];
+    let data = D3D11_SUBRESOURCE_DATA {
+        pSysMem: values.as_ptr().cast(),
+        SysMemPitch: u32::try_from(row_len(width)).expect("a test pitch"),
+        SysMemSlicePitch: 0,
+    };
+    let desc = D3D11_TEXTURE2D_DESC { Format: DXGI_FORMAT_R32_FLOAT, ..desc(width, height) };
+    let mut texture = None;
+    // SAFETY: `data` points at `height` rows of one pitch of four-byte values each, which outlive
+    // the call.
+    unsafe {
+        device.CreateTexture2D(&raw const desc, Some(&raw const data), Some(&raw mut texture))
+    }
+    .expect("create the test distance texture");
+    texture.expect("the test distance texture")
+}
+
+/// Sends the commands of `test`'s immediate context to its device, so a read the core started can
+/// finish.
+pub(crate) fn flush(test: &TestSwapchain) {
+    let device = super::device(&test.swapchain).expect("the swapchain's device");
+    let context = super::immediate_context(&device).expect("the immediate context");
+    // SAFETY: the context is live.
+    unsafe { context.Flush() };
 }
 
 /// Copies `pixels`, in row order, into `test`'s back buffer, as the engine fills it before the

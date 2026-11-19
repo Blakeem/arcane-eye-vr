@@ -1,6 +1,6 @@
 //! The D3D11 calls of the layer draw: its device objects, the copy of a target it draws back over
 //! that target, a layer texture made from pixels, and the draw. The context state the draw saves
-//! and restores is in `saved`.
+//! and restores is in `saved`, which the nearest read's draw uses too.
 //!
 //! The draw leaves the sampler unset. Direct3D's default sampler filters linearly and clamps, which
 //! is what the layer shader needs. Its rasterizer state is the default state with the scissor test
@@ -8,7 +8,7 @@
 //! depth-stencil view bound, the depth and stencil tests pass, so the draw leaves the depth-stencil
 //! state as it is.
 
-mod saved;
+pub(super) mod saved;
 
 use windows::Win32::Foundation::{E_INVALIDARG, RECT};
 use windows::Win32::Graphics::Direct3D::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;

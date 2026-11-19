@@ -22,7 +22,7 @@ use crate::ui_layer::cursor::image::{Buffers, Image};
 use crate::ui_layer::cursor::place::{Pointer, spot};
 use crate::ui_layer::cursor::{Aim, Canvas, Cursor, read};
 use crate::ui_layer::decide::{Draw, halves};
-use crate::ui_layer::test_support::{cursor_frame, target_parts};
+use crate::ui_layer::test_support::{cursor_frame, draw_step, target_parts};
 
 const BLUE: Pixel = [0, 0, 255, 255];
 const BLACK: Pixel = [0, 0, 0, 255];
@@ -30,10 +30,10 @@ const WHITE: Pixel = [255, 255, 255, 255];
 const CLEAR: Pixel = [0, 0, 0, 0];
 
 /// The AND mask and the XOR mask of a cursor that is black in every pixel.
-const ALL_BLACK: ([u8; 128], [u8; 128]) = ([0; 128], [0; 128]);
+pub(super) const ALL_BLACK: ([u8; 128], [u8; 128]) = ([0; 128], [0; 128]);
 
 /// An aim at column `x` and row `y` of a client area the back buffer's size.
-fn aim(cursor: &TestCursor, x: i32, y: i32) -> Aim {
+pub(super) fn aim(cursor: &TestCursor, x: i32, y: i32) -> Aim {
     let width = i32::try_from(WIDTH).expect("a client width");
     let height = i32::try_from(HEIGHT).expect("a client height");
     let pointer = Pointer { x, y, width, height };
@@ -63,7 +63,8 @@ fn draw_into(
     let device = raw::device(&test.swapchain).expect("the swapchain's device");
     let context = raw::immediate_context(&device).expect("the immediate context");
     let rects = halves(WIDTH, HEIGHT).expect("the halves");
-    cursor.draw(layer, &Canvas { context: &context, back_buffer: target, halves: &rects }, aim);
+    let canvas = Canvas { context: &context, back_buffer: target, halves: &rects, columns: 0 };
+    cursor.draw(layer, &canvas, aim);
 }
 
 fn layer_draw(test: &TestSwapchain) -> LayerDraw {
@@ -205,7 +206,8 @@ fn a_frame_that_draws_nothing_else_draws_the_cursor_into_each_half() {
     let target = Target { swapchain: &test.swapchain, devices: &devices, size, window };
 
     let aimed = Some(aim(&test_cursor, 10, 4));
-    layer.draw(Draw::Nothing, WindowsCursor::Hidden, aimed, &target).expect("the frame draws");
+    draw_step(&mut layer, Draw::Nothing, WindowsCursor::Hidden, aimed, &target)
+        .expect("the frame draws");
 
     let pixels = back_buffer_pixels(&test);
     for (index, pixel) in pixels.iter().enumerate() {
@@ -236,11 +238,12 @@ fn a_fault_of_a_frame_that_draws_only_the_cursor_skips_the_cursor_and_keeps_the_
     let hidden = display_count();
 
     let (results, log) = logged("cursor-only-fault", || {
-        let mut fault_frame = || layer.draw(Draw::Nothing, WindowsCursor::Hidden, aimed, &target);
+        let mut fault_frame =
+            || draw_step(&mut layer, Draw::Nothing, WindowsCursor::Hidden, aimed, &target);
         [fault_frame(), fault_frame()]
     });
     let shown = display_count();
-    let ui = layer.draw(Draw::Ui, WindowsCursor::Hidden, aimed, &target);
+    let ui = draw_step(&mut layer, Draw::Ui, WindowsCursor::Hidden, aimed, &target);
 
     assert_eq!(
         results,
@@ -288,7 +291,8 @@ fn a_cursor_frame_with_an_unchanged_handle_makes_no_heap_allocation() {
     let context = raw::immediate_context(&device).expect("the immediate context");
     let back_buffer = raw::back_buffer_texture(&test.swapchain).expect("the back buffer");
     let rects = halves(WIDTH, HEIGHT).expect("the halves");
-    let canvas = Canvas { context: &context, back_buffer: &back_buffer, halves: &rects };
+    let canvas =
+        Canvas { context: &context, back_buffer: &back_buffer, halves: &rects, columns: 0 };
     let moved = aim(&test_cursor, 20, 12);
 
     let guard = arm_alloc_guard().expect("arm the allocation guard");
@@ -319,7 +323,8 @@ fn cursor_frames_whose_handle_changes_make_no_heap_allocation() {
     let context = raw::immediate_context(&device).expect("the immediate context");
     let back_buffer = raw::back_buffer_texture(&test.swapchain).expect("the back buffer");
     let rects = halves(WIDTH, HEIGHT).expect("the halves");
-    let canvas = Canvas { context: &context, back_buffer: &back_buffer, halves: &rects };
+    let canvas =
+        Canvas { context: &context, back_buffer: &back_buffer, halves: &rects, columns: 0 };
 
     let mut guarded_draw = |test_cursor: &TestCursor, x, y| {
         let guard = arm_alloc_guard().expect("arm the allocation guard");

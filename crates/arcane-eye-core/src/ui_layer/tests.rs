@@ -6,6 +6,7 @@ mod decide;
 mod depth;
 mod flat;
 mod pair;
+mod ui_depth;
 
 use diag::health::{Feature, FeatureState, Health};
 use game_bindings::offsets::{
@@ -21,6 +22,8 @@ use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 use windows::core::Interface as _;
 
+use super::test_support::no_camera;
+use super::ui_depth::DepthInput;
 use super::{Target, UiLayer, install};
 use crate::config::Config;
 use crate::eye_view::Layout;
@@ -73,7 +76,11 @@ impl Game {
 
     /// A game whose UI key names the object at `texture`.
     fn with_ui_texture(texture: usize) -> Self {
-        let world = World::with_key(TextureKey::UI, texture);
+        Self::with_world(World::with_key(TextureKey::UI, texture))
+    }
+
+    /// A game whose pipeline and texture table are `world`'s.
+    fn with_world(world: World) -> Self {
         let (special, array) = (Block::new(0x40), Block::new(8));
         let stage = composite_stage(1);
         world.pipeline.set(PIPELINE_SPECIAL_VIEW, special.address().get());
@@ -118,7 +125,7 @@ fn frame(layer: &mut UiLayer, health: &Health, swapchain: &IDXGISwapChain, next:
     offset_frame(layer, health, swapchain, next, depth(0.0));
 }
 
-/// One frame as `frame` runs it, with `depth_offset`.
+/// One frame as `frame` runs it, with `depth_offset` and no camera.
 fn offset_frame(
     layer: &mut UiLayer,
     health: &Health,
@@ -126,12 +133,25 @@ fn offset_frame(
     next: Layout,
     depth_offset: DepthOffsetPercent,
 ) {
+    let mut input = no_camera();
+    input.stereo.depth_offset_percent = depth_offset;
+    input_frame(layer, health, swapchain, next, &input);
+}
+
+/// One frame as `frame` runs it, with the UI depth's `input`.
+fn input_frame(
+    layer: &mut UiLayer,
+    health: &Health,
+    swapchain: &IDXGISwapChain,
+    next: Layout,
+    input: &DepthInput,
+) {
     let device = raw::device(swapchain).expect("the swapchain's device");
     let context = raw::immediate_context(&device).expect("the immediate context");
     let (size, window) = raw::swapchain_desc(swapchain).expect("the swapchain's description");
     let devices = (device, context);
     let target = Target { swapchain, devices: &devices, size, window };
-    layer.on_frame(health, next, depth_offset, &target);
+    layer.on_frame(health, next, input, &target);
 }
 
 /// The indices in the back buffer's pixels of row 16, the middle row, at the columns 8, 24, 40 and
@@ -314,12 +334,13 @@ fn a_flat_frame_and_a_side_by_side_frame_make_no_heap_allocation() {
     let target = Target { swapchain: &test.swapchain, devices: &devices, size, window };
 
     // 5 percent of a 32-column half moves it 2 columns.
-    let offset = depth(5.0);
+    let mut input = no_camera();
+    input.stereo.depth_offset_percent = depth(5.0);
 
     let guard = arm_alloc_guard().expect("arm the allocation guard");
-    layer.on_frame(&health, SIDE_BY_SIDE, offset, &target);
+    layer.on_frame(&health, SIDE_BY_SIDE, &input, &target);
     let flat = guard.count();
-    layer.on_frame(&health, SIDE_BY_SIDE, offset, &target);
+    layer.on_frame(&health, SIDE_BY_SIDE, &input, &target);
     let side_by_side = guard.count();
     drop(guard);
 

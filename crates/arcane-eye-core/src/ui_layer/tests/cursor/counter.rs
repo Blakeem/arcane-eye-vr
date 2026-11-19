@@ -15,7 +15,7 @@ use crate::raw::test_support::{TestCursor, TestSwapchain, display_count};
 use crate::ui_layer::Target;
 use crate::ui_layer::cursor::counter::WindowsCursor;
 use crate::ui_layer::decide::Draw;
-use crate::ui_layer::test_support::{cursor_frame, target_parts};
+use crate::ui_layer::test_support::{cursor_frame, draw_step, target_parts};
 
 #[test]
 fn a_drawn_cursor_lowers_the_windows_thread_counter_once_and_a_stopped_layer_raises_it() {
@@ -142,7 +142,7 @@ fn a_cursor_frame_after_a_skipped_frame_makes_no_heap_allocation() {
     let target = Target { swapchain: &test.swapchain, devices: &devices, size, window };
 
     let guard = arm_alloc_guard().expect("arm the allocation guard");
-    let drawn = layer.draw(Draw::Nothing, WindowsCursor::Hidden, aimed, &target);
+    let drawn = draw_step(&mut layer, Draw::Nothing, WindowsCursor::Hidden, aimed, &target);
     let count = guard.count();
     drop(guard);
 

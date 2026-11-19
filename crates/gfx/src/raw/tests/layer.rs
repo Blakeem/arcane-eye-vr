@@ -1,7 +1,7 @@
 //! The layer draw against a WARP device, with the shaders the build script compiled.
 
 mod placed_copy;
-mod restore;
+pub(super) mod restore;
 
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ,
@@ -23,12 +23,18 @@ const GREEN: [u8; 4] = [0, 255, 0, 255];
 const WHITE: [u8; 4] = [255, 255, 255, 255];
 
 /// The number of pixels of a `width` by `height` texture.
-fn texels(width: u32, height: u32) -> usize {
+pub(super) fn texels(width: u32, height: u32) -> usize {
     (width as usize).checked_mul(height as usize).expect("a test texture size")
 }
 
 /// A texture of `width` by `height` pixels with `bind` flags that holds `pixels` in row order.
-fn texture(gpu: &Gpu, width: u32, height: u32, bind: i32, pixels: &[[u8; 4]]) -> ID3D11Texture2D {
+pub(super) fn texture(
+    gpu: &Gpu,
+    width: u32,
+    height: u32,
+    bind: i32,
+    pixels: &[[u8; 4]],
+) -> ID3D11Texture2D {
     assert_eq!(pixels.len(), texels(width, height), "one pixel per texel");
     let bytes = pixels.concat();
     let data = D3D11_SUBRESOURCE_DATA {
@@ -82,6 +88,12 @@ fn pixels(gpu: &Gpu, texture: &ID3D11Texture2D) -> Vec<[u8; 4]> {
     pixels
 }
 
+/// The placement that stretches a layer to `rect` and clips it to `rect`.
+pub(super) fn fitted(rect: Rect) -> Placement {
+    let area = area(rect.x.into(), rect.y.into(), rect.width.into(), rect.height.into());
+    Placement { area, clip: rect }
+}
+
 fn assert_near(actual: [u8; 4], expected: [u8; 4], place: &str) {
     for (channel, (a, e)) in actual.iter().zip(expected).enumerate() {
         assert!(a.abs_diff(e) <= 1, "{place}, channel {channel}: {actual:?} against {expected:?}");
@@ -96,7 +108,7 @@ fn a_layer_blends_over_its_rect_with_premultiplied_alpha_and_leaves_the_rest() {
     let layer = filled(&gpu, 2, 2, HALF_RED);
     let right_half = Rect { x: 4, y: 0, width: 4, height: 4 };
 
-    draw.draw(&gpu.context, &target, &layer, &[right_half]).expect("the draw");
+    draw.draw_placed(&gpu.context, &target, &layer, &[fitted(right_half)]).expect("the draw");
 
     for (index, pixel) in pixels(&gpu, &target).into_iter().enumerate() {
         let expected = if index % 8 < 4 { BLUE } else { HALF_RED_OVER_BLUE };
@@ -114,7 +126,7 @@ fn each_rect_gets_the_entire_layer_in_the_layers_orientation() {
     let halves =
         [Rect { x: 0, y: 0, width: 2, height: 2 }, Rect { x: 2, y: 0, width: 2, height: 2 }];
 
-    draw.draw(&gpu.context, &target, &layer, &halves).expect("the draw");
+    draw.draw_placed(&gpu.context, &target, &layer, &halves.map(fitted)).expect("the draw");
 
     let rows = [[RED, GREEN, RED, GREEN], [WHITE, HALF_RED_OVER_BLUE, WHITE, HALF_RED_OVER_BLUE]];
     for (pixel, expected) in pixels(&gpu, &target).into_iter().zip(rows.as_flattened()) {
@@ -129,10 +141,12 @@ fn a_texture_without_the_needed_bind_flag_is_an_error_that_names_its_view() {
     let both = filled(&gpu, 2, 2, BLUE);
     let sample_only = texture(&gpu, 2, 2, D3D11_BIND_SHADER_RESOURCE.0, &[BLUE; 4]);
     let target_only = texture(&gpu, 2, 2, D3D11_BIND_RENDER_TARGET.0, &[BLUE; 4]);
-    let rect = [Rect { x: 0, y: 0, width: 2, height: 2 }];
+    let placed = [fitted(Rect { x: 0, y: 0, width: 2, height: 2 })];
 
-    let no_target = draw.draw(&gpu.context, &sample_only, &both, &rect).expect_err("no target");
-    let no_layer = draw.draw(&gpu.context, &both, &target_only, &rect).expect_err("no layer");
+    let no_target =
+        draw.draw_placed(&gpu.context, &sample_only, &both, &placed).expect_err("no target");
+    let no_layer =
+        draw.draw_placed(&gpu.context, &both, &target_only, &placed).expect_err("no layer");
 
     assert_eq!(no_target.step, LayerStep::TargetView);
     assert_eq!(no_layer.step, LayerStep::LayerView);

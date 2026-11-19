@@ -11,12 +11,13 @@ use game_bindings::offsets::{
 use game_bindings::render_view::{CameraController, RenderView};
 use game_bindings::state::arm_alloc_guard;
 use game_mem::{GameAddr, WriteError, try_read, try_read_array, try_read_bytes, try_write};
-use stereo_core::eye::{Eye, PerEye};
+use settings::player::{IpdMm, StereoSettings};
+use stereo_core::eye::{Eye, EyeScale, PerEye};
 
 use super::lane::last_seen_fault;
 use super::proxy::{self, PROXY_SIZE, RING_LEN};
 use super::test_support::{HALF_IPD_M, HEAD_POSITION, HEAD_VIEW, HeadController, RIGHT, eye_state};
-use super::{EyeFault, EyeState, History, Outcome};
+use super::{EyeFault, EyeState, History, Outcome, offsets_m};
 use crate::eye_view::Layout;
 use crate::logged;
 use crate::raw::SharedPages;
@@ -104,6 +105,16 @@ fn new_offsets_move_the_eye_of_the_next_frames_proxy_and_keep_the_views_history(
     let proxy = proxied(begin(&mut camera, view.view()), History::Kept);
     let translate = call_world_translate(proxy::world_translate_fn(), proxy);
     assert_near(&floats::<3>(translate), &eye_position(0.04), "the right eye at the new offset");
+}
+
+#[test]
+fn the_eye_offsets_are_the_full_eye_distance_times_the_eye_scale_in_use() {
+    let ipd_mm = IpdMm::try_from(64.0).expect("an eye distance in range");
+    let stereo = StereoSettings { ipd_mm, ..StereoSettings::default() };
+
+    assert_eq!(offsets_m(stereo, EyeScale::FULL), PerEye { left: -0.032, right: 0.032 });
+    assert_eq!(offsets_m(stereo, EyeScale::clamped(0.5)), PerEye { left: -0.016, right: 0.016 });
+    assert_eq!(offsets_m(stereo, EyeScale::clamped(0.0)), PerEye { left: 0.0, right: 0.0 });
 }
 
 #[test]

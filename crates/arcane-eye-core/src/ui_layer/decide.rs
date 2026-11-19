@@ -1,6 +1,7 @@
 //! The UI layer's decisions: the pair, the move and the UI texture the core draws into a frame, what
 //! it writes to the composite stage's UI enable byte, whether Windows shows its cursor, the halves of
-//! the back buffer each draw covers, and the areas of the move.
+//! the back buffer each draw covers, the areas of the move, and the columns and places of a UI
+//! drawn with a crossed disparity.
 
 use gfx::layer::{Area, Placement, Rect};
 use settings::player::DepthOffsetPercent;
@@ -62,6 +63,12 @@ impl Draw {
 
     pub(crate) const fn draws_ui(self) -> bool {
         matches!(self, Self::Ui | Self::MoveThenUi(_) | Self::PairThenUi)
+    }
+
+    /// Whether the draw puts the UI texture into a side by side frame, the one draw whose UI sits
+    /// in front of the scene under it.
+    pub(crate) const fn draws_side_by_side_ui(self) -> bool {
+        matches!(self, Self::Ui | Self::MoveThenUi(_))
     }
 }
 
@@ -156,9 +163,8 @@ pub(crate) fn halves(width: u32, height: u32) -> Option<[Rect; 2]> {
 /// size holds no halves.
 pub(crate) fn depth_shift(width: u32, height: u32, offset: DepthOffsetPercent) -> Option<Shift> {
     let [left, right] = halves(width, height)?;
-    let rounded = (f32::from(right.width) * offset.percent() / PERCENT).round();
-    // A count up to the rounded value, since no lint-clean cast turns a float into an integer.
-    let columns = (0..=right.width).find(|column| f32::from(*column) >= rounded)?;
+    let columns =
+        rounded_columns(f32::from(right.width) * offset.percent() / PERCENT, right.width)?;
     if columns == 0 {
         return None;
     }
@@ -175,4 +181,46 @@ pub(crate) fn depth_shift(width: u32, height: u32, offset: DepthOffsetPercent) -
         picture: Placement { area: picture, clip: moved },
         uncovered: Placement { area: black, clip: uncovered },
     })
+}
+
+/// `columns` rounded to an integer from 0 to `max`, or `None` when it rounds above `max` or is NaN.
+/// A negative value rounds to 0.
+fn rounded_columns(columns: f32, max: u16) -> Option<u16> {
+    let rounded = columns.round();
+    // A count up to the rounded value, since no lint-clean cast turns a float into an integer.
+    (0..=max).find(|column| f32::from(*column) >= rounded)
+}
+
+/// The columns that a UI disparity of `disparity`, a share of a half's width, moves the UI in each
+/// half of `half_width` columns: half the disparity's columns, rounded. A disparity whose columns
+/// round above the half's width, or a NaN disparity, gives 0, which leaves the UI on the surface.
+pub(crate) fn ui_columns(disparity: f32, half_width: u16) -> u16 {
+    rounded_columns(disparity * f32::from(half_width) / 2.0, half_width).unwrap_or(0)
+}
+
+/// The places of a layer stretched over each of `halves`, drawn `columns` to the right in the left
+/// half and `columns` to the left in the right half, so it sits in front of the screen surface.
+/// Each place stays clipped to its own half.
+pub(crate) fn crossed(halves: &[Rect; 2], columns: u16) -> [Placement; 2] {
+    shifted(halves.map(|half| Placement { area: area_of(half), clip: half }), columns)
+}
+
+/// `placements` of the left half and the right half moved `columns` to the right in the left half
+/// and `columns` to the left in the right half. Each keeps its clip.
+pub(crate) fn shifted([left, right]: [Placement; 2], columns: u16) -> [Placement; 2] {
+    let shift = f32::from(columns);
+    let moved = |placement: Placement, by: f32| Placement {
+        area: Area { x: placement.area.x + by, ..placement.area },
+        ..placement
+    };
+    [moved(left, shift), moved(right, -shift)]
+}
+
+fn area_of(rect: Rect) -> Area {
+    Area {
+        x: f32::from(rect.x),
+        y: f32::from(rect.y),
+        width: f32::from(rect.width),
+        height: f32::from(rect.height),
+    }
 }

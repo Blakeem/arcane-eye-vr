@@ -11,12 +11,15 @@
 //!                       whether Windows shows its cursor over a drawn cursor, and what the core
 //!                       writes for the next frame
 //!   [aim]               the drawn cursor's pointer and cursor handle, in `cursor`
+//!   [ui depth]          the columns by which a side by side frame's UI and cursor move in front
+//!                       of the scene under the UI, in `ui_depth`. 0 in every other frame
 //!   [pair]              a flat frame's entire picture into each half of the back buffer
 //!   [move]              a side by side frame's right half moved right by the player's depth
 //!                       offset, black in the columns it uncovers, in a frame that holds no UI yet
-//!   [draw]              the UI key's texture over each half of the back buffer
+//!   [draw]              the UI key's texture over each half of the back buffer, moved by those
+//!                       columns
 //!   [cursor]            the game's cursor over each half of the back buffer, in each frame whose
-//!                       pointer is in the game window's client area
+//!                       pointer is in the game window's client area, moved by those columns
 //!   [counter]           the Windows cursor hidden under a drawn cursor as decided, and shown in a
 //!                       frame with no drawn cursor, in `cursor`
 //!   [write]             0 while the feature runs, the game's value when it stops
@@ -36,6 +39,8 @@
 
 pub(crate) mod cursor;
 mod decide;
+mod target;
+pub(crate) mod ui_depth;
 
 use std::mem;
 use std::time::Duration;
@@ -49,25 +54,24 @@ use game_bindings::render_view::RenderView;
 use game_bindings::signatures::{G_PIPELINE, VT_COMPOSITE_STAGE};
 use game_bindings::texture_table::TextureKey;
 use game_mem::{GameAddr, try_read};
-use gfx::layer::{LayerDraw, LayerError};
+use gfx::layer::LayerDraw;
 use settings::dev::SecondView;
-use settings::player::DepthOffsetPercent;
+use stereo_core::eye::EyeScale;
 use tracing::{info, warn};
-use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
-use windows::core::HRESULT;
 
-use self::cursor::counter::{Marked, WindowsCursor};
+use self::cursor::counter::Marked;
 use self::cursor::{Aim, Canvas, Cursor};
-use self::decide::{Draw, Picture, Seen, Write, depth_shift, halves, step};
+use self::decide::{Draw, Picture, Seen, Step, Write, crossed, depth_shift, halves, step};
+pub(crate) use self::target::{DrawFault, Target};
+use self::ui_depth::{DepthInput, DepthReport, UiDepth};
 use crate::config::Config;
 use crate::eye_view::Layout;
-use crate::game_source::{GameSource, SourceFault};
+use crate::game_source::GameSource;
 use crate::install::{GameCode, LocateError};
 use crate::pair::PairState;
 use crate::present;
 use crate::raw::composite_stage::stage_writes;
-use crate::raw::cursor::Window;
-use crate::raw::{self, BackBuffer, Devices};
+use crate::raw::{self, BackBuffer};
 
 /// The shortest time between two warnings of one call site.
 pub(crate) const LOG_PERIOD: Duration = Duration::from_secs(10);
@@ -82,30 +86,6 @@ enum UiLayerError {
     NoFrameEnd,
     #[error(transparent)]
     Locate(#[from] LocateError),
-}
-
-/// Why a frame's pair, move, UI texture or cursor was not drawn: a fault of the back buffer, of the
-/// UI texture's read or of the layer draw. It stops the UI layer only in a frame that draws the
-/// pair, the move or the UI texture. A fault of the cursor's own read, conversion or placed draw
-/// skips only the cursor and is not one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum DrawFault {
-    #[error("the back buffer's size {width} by {height} holds no rectangle")]
-    Size { width: u32, height: u32 },
-    #[error(transparent)]
-    Source(#[from] SourceFault),
-    #[error("the back buffer could not be taken: {code}")]
-    BackBuffer { code: HRESULT },
-    #[error(transparent)]
-    Layer(#[from] LayerError),
-}
-
-/// The back buffer of the frame at the Present call site, and the swapchain's output window.
-pub(crate) struct Target<'frame> {
-    pub(crate) swapchain: &'frame IDXGISwapChain,
-    pub(crate) devices: &'frame Devices,
-    pub(crate) size: BackBuffer,
-    pub(crate) window: Window,
 }
 
 /// A composite stage whose UI enable byte the core holds at 0, and the value the game had there.
@@ -128,6 +108,7 @@ pub(crate) struct UiLayer {
     next: Layout,
     cleared: Option<Cleared>,
     cursor: Cursor,
+    depth: UiDepth,
     stage_log: RateLimit,
     write_log: RateLimit,
     cursor_log: RateLimit,
@@ -174,6 +155,7 @@ impl UiLayer {
             next: Layout::MainOnly,
             cleared: None,
             cursor: Cursor::default(),
+            depth: UiDepth::new(pipeline),
             stage_log: RateLimit::default(),
             write_log: RateLimit::default(),
             cursor_log: RateLimit::default(),
@@ -181,15 +163,15 @@ impl UiLayer {
     }
 
     /// Runs the feature for the frame whose back buffer is `target`, with the right half of a side
-    /// by side frame moved by `depth_offset`. `next` is the layout of the frame after it, which the
-    /// eye view feature read at this Present call site. The work runs inside its own
+    /// by side frame moved by the depth offset of `input`. `next` is the layout of the frame after
+    /// it, which the eye view feature read at this Present call site. The work runs inside its own
     /// `catch_unwind`, so a panic latches `ui-layer` off and leaves the frame handler running. A flat
     /// pair draws and writes nothing but the game's values back.
     pub(crate) fn on_frame(
         &mut self,
         health: &Health,
         next: Layout,
-        depth_offset: DepthOffsetPercent,
+        input: &DepthInput,
         target: &Target<'_>,
     ) {
         let layout = mem::replace(&mut self.next, next);
@@ -198,7 +180,7 @@ impl UiLayer {
             return;
         }
         present::guarded(health, Feature::UiLayer, || {
-            if let Err(fault) = self.run(layout, depth_offset, target) {
+            if let Err(fault) = self.run(layout, input, target) {
                 // The failed check switches the feature off, so this line appears once.
                 warn!(
                     fault = %fault,
@@ -219,21 +201,31 @@ impl UiLayer {
         self.cursor.show();
     }
 
+    /// The eye scale in use, which the eye cameras render at from their next proxies.
+    pub(crate) const fn eye_scale(&self) -> EyeScale {
+        self.depth.eye_scale()
+    }
+
+    pub(crate) fn depth_report(&self) -> DepthReport {
+        self.depth.report()
+    }
+
     /// One frame of `layout`: reads the composite stage's UI enable byte, draws a flat frame's
-    /// entire picture into each half, moves a side by side frame's right half by `depth_offset`,
-    /// draws the UI texture into each half when the game's composite job left it out, draws the
-    /// cursor into each half, and writes the byte for the next frame.
+    /// entire picture into each half, moves a side by side frame's right half by the depth offset
+    /// of `input`, draws the UI texture into each half when the game's composite job left it out,
+    /// draws the cursor into each half, and writes the byte for the next frame.
     fn run(
         &mut self,
         layout: Layout,
-        depth_offset: DepthOffsetPercent,
+        input: &DepthInput,
         target: &Target<'_>,
     ) -> Result<(), DrawFault> {
         let picture = match layout {
             Layout::SideBySide { .. } => Picture::SideBySide,
             Layout::MainOnly => Picture::Flat,
         };
-        let shift = depth_shift(target.size.width, target.size.height, depth_offset);
+        let offset = input.stereo.depth_offset_percent;
+        let shift = depth_shift(target.size.width, target.size.height, offset);
         let read = self.stage().and_then(|stage| Some((stage, stage.ui_enabled()?)));
         let seen = read.map(|(stage, enabled)| self.see(stage, enabled));
         if seen.is_none() && picture == Picture::SideBySide {
@@ -244,8 +236,11 @@ impl UiLayer {
             );
         }
         let step = step(picture, seen, shift);
+        if !step.draw.draws_side_by_side_ui() {
+            self.depth.reset();
+        }
         let aim = self.cursor.aim(target.window);
-        self.draw(step.draw, step.windows_cursor, aim, target)?;
+        self.draw(step, aim, target, input)?;
         if let (Write::Clear, Some((stage, enabled))) = (step.write, read) {
             self.write(stage, UI_OFF);
             self.cleared = Some(Cleared { stage, game_value: enabled });
@@ -276,22 +271,23 @@ impl UiLayer {
         CompositeStage::of(RenderView::new(views.special), self.vtable)
     }
 
-    /// Runs `draw` and then the cursor of `aim` on each half of the back buffer, then hides the
-    /// Windows cursor under a drawn cursor when `want` asks, and shows it otherwise. A fault of a
-    /// frame that draws only the cursor skips that frame's cursor.
+    /// Runs the draw of `step` and then the cursor of `aim` on each half of the back buffer, then
+    /// hides the Windows cursor under a drawn cursor when `step` asks, and shows it otherwise. A
+    /// fault of a frame that draws only the cursor skips that frame's cursor.
     fn draw(
         &mut self,
-        draw: Draw,
-        want: WindowsCursor,
+        step: Step,
         aim: Option<Aim>,
         target: &Target<'_>,
+        input: &DepthInput,
     ) -> Result<(), DrawFault> {
+        let draw = step.draw;
         let marked = match (draw, aim) {
             (Draw::Nothing, None) => Marked::Nothing,
             (Draw::Nothing, Some(_)) => {
                 // Only the cursor needed the back buffer and the layer draw, and a cursor fault never
                 // stops the UI layer.
-                self.draw_halves(draw, aim, target).unwrap_or_else(|fault| {
+                self.draw_halves(draw, aim, target, input).unwrap_or_else(|fault| {
                     warn_every!(
                         self.cursor_log,
                         LOG_PERIOD,
@@ -301,22 +297,23 @@ impl UiLayer {
                     Marked::Nothing
                 })
             }
-            _ => self.draw_halves(draw, aim, target)?,
+            _ => self.draw_halves(draw, aim, target, input)?,
         };
-        self.cursor.mark(want, marked);
+        self.cursor.mark(step.windows_cursor, marked);
         Ok(())
     }
 
     /// Runs `draw` on the back buffer: the pair or the move first, then the UI key's texture of this
-    /// frame into each half, then the cursor of `aim` into each half. The UI texture is read before
-    /// the pair and the move, so a failed read leaves the frame as the game drew it. A fault of the
-    /// cursor's read, conversion or placed draw skips only the cursor. Returns whether the cursor
-    /// was drawn.
+    /// frame into each half, then the cursor of `aim` into each half, both moved by the columns the
+    /// UI depth gives a side by side frame's UI. The UI texture is read before the pair and the
+    /// move, so a failed read leaves the frame as the game drew it. A fault of the cursor's read,
+    /// conversion or placed draw skips only the cursor. Returns whether the cursor was drawn.
     fn draw_halves(
         &mut self,
         draw: Draw,
         aim: Option<Aim>,
         target: &Target<'_>,
+        input: &DepthInput,
     ) -> Result<Marked, DrawFault> {
         let (device, context) = target.devices;
         let BackBuffer { width, height, .. } = target.size;
@@ -330,6 +327,13 @@ impl UiLayer {
             LayerDraw::create(device)?
         };
         let layer = self.layer.insert(layer);
+        let columns = match &ui {
+            Some(ui) if draw.draws_side_by_side_ui() => {
+                let [left, _] = rects;
+                self.depth.on_frame(target.devices, ui, input, left.width)
+            }
+            _ => 0,
+        };
         let back_buffer = match raw::back_buffer_texture(target.swapchain) {
             Ok(texture) => texture,
             Err(code) => return Err(DrawFault::BackBuffer { code }),
@@ -342,10 +346,10 @@ impl UiLayer {
             layer.draw_black(context, &back_buffer, &[shift.uncovered])?;
         }
         if let Some(ui) = ui {
-            layer.draw(context, &back_buffer, &ui, &rects)?;
+            layer.draw_placed(context, &back_buffer, &ui, &crossed(&rects, columns))?;
         }
         let Some(aim) = aim else { return Ok(Marked::Nothing) };
-        let canvas = Canvas { context, back_buffer: &back_buffer, halves: &rects };
+        let canvas = Canvas { context, back_buffer: &back_buffer, halves: &rects, columns };
         Ok(self.cursor.draw(layer, &canvas, aim))
     }
 
@@ -362,12 +366,14 @@ impl UiLayer {
         }
     }
 
-    /// Drops the layer draw, whose copy of the back buffer holds video memory, and the cursor's
-    /// texture, gives the cursor display counter the game's value back, and gives the UI enable byte
-    /// the game's value back when the core still holds it at 0 in the stage the pipeline holds now.
-    /// The frame handler also runs it after the Present call-site hook failed.
+    /// Drops the layer draw, whose copy of the back buffer holds video memory, the cursor's texture
+    /// and the UI depth's read, sets the UI depth's values in use to no UI disparity and the full
+    /// eye distance, gives the cursor display counter the game's value back, and gives the UI enable
+    /// byte the game's value back when the core still holds it at 0 in the stage the pipeline holds
+    /// now. The frame handler also runs it after the Present call-site hook failed.
     pub(crate) fn release(&mut self) {
         self.layer = None;
+        self.depth.release();
         self.cursor.release();
         let Some(cleared) = self.cleared.take() else { return };
         if self.stage() == Some(cleared.stage) && cleared.stage.ui_enabled() == Some(UI_OFF) {
