@@ -41,6 +41,8 @@ The launch app shows the game in 3D on a flat screen in the headset.
 
 The screen appears in the headset once the game runs. It closes when the game ends.
 
+The menu button of a controller opens a menu above that controller, and a second press closes it. On a Steam Frame, the menu button of the left controller is the View button. Point the other controller at a button of the menu and press its trigger. The buttons set the distance and the size of the screen, and the launch app keeps the values for the next start.
+
 - The game window on the PC takes the keyboard and the mouse, so it must stay the active window.
 - SteamVR must be the active OpenXR runtime.
 - The screen sits in front of the seated position that SteamVR holds.
@@ -62,7 +64,7 @@ Use only one of the two modes at a time. In `--mode screen` the launch app shows
 
 ## Settings
 
-The mod reads `settings.toml` from the folder `%LOCALAPPDATA%\arcane-eye-vr\`. The file holds only the values that differ from the defaults, so the mod works with no file.
+The mod reads `settings.toml` from the folder `%LOCALAPPDATA%\arcane-eye-vr\`. The file needs only the values that differ from the defaults, so the mod works with no file.
 
 ```toml
 # settings.toml
@@ -80,8 +82,9 @@ width_m = 3.0       # width of the headset screen in meters, 0.5 to 10
 - A larger `ipd_mm` gives a stronger 3D effect.
 - A larger `depth_offset_percent` sets the scene further behind the screen.
 - `arcane-eye-vr.exe --reload-settings` applies a saved change to `[stereo]` while the game runs.
-- A change to `[screen]` applies at the next start of the headset screen.
-- A file with an invalid value is rejected as an entire file, and the defaults apply.
+- A change to `[screen]` in the file applies at the next start of the headset screen.
+- The menu of the headset screen writes `distance_m` and `width_m` into the file when it closes after a change. Its values replace a change to `[screen]` made in the file while the headset screen runs.
+- A file with an invalid value is rejected as an entire file, and the defaults apply. The menu of the headset screen never writes a file that was rejected when the headset screen started.
 
 ## What to expect
 

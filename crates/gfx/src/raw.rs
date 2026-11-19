@@ -14,13 +14,17 @@ use std::ptr;
 use ipc_layout::viewer_header::{
     self, AdapterLuid, MUTEX_KEY, SHARED_ACCESS, SIZE, WORD_SIZE, WORDS,
 };
-use windows::Win32::Foundation::{E_POINTER, INVALID_HANDLE_VALUE, WAIT_ABANDONED, WAIT_TIMEOUT};
+use windows::Win32::Foundation::{
+    E_INVALIDARG, E_POINTER, INVALID_HANDLE_VALUE, WAIT_ABANDONED, WAIT_TIMEOUT,
+};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_SHADER_RESOURCE, D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX,
-    D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, ID3D11Device,
-    ID3D11DeviceContext, ID3D11Texture2D,
+    D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_DEFAULT, D3D11_USAGE_IMMUTABLE, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC,
+};
 use windows::Win32::Graphics::Dxgi::{
     DXGI_SHARED_RESOURCE_READ, DXGI_SHARED_RESOURCE_WRITE, IDXGIDevice, IDXGIKeyedMutex,
     IDXGIResource1,
@@ -292,6 +296,47 @@ pub(crate) fn made<S: CreateStep, T>(
         (Ok(()), None) => Err(step.failed(E_POINTER)),
         (Err(error), _) => Err(step.failed(error.code())),
     }
+}
+
+/// An immutable `R8G8B8A8_UNORM` texture of `device` that can be sampled, `width` by `height`
+/// pixels, which holds `pixels` in row order. `step` names a failure, which is `E_INVALIDARG` when
+/// `pixels` does not hold one pixel per texel.
+pub(crate) fn image<S: CreateStep + Copy>(
+    device: &ID3D11Device,
+    step: S,
+    width: u16,
+    height: u16,
+    pixels: &[[u8; 4]],
+) -> Result<ID3D11Texture2D, S::Error> {
+    let texels = usize::from(width).checked_mul(usize::from(height));
+    if width == 0 || height == 0 || texels != Some(pixels.len()) {
+        return Err(step.failed(E_INVALIDARG));
+    }
+    let pitch = u32::from(width).saturating_mul(4);
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: u32::from(width),
+        Height: u32::from(height),
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        Usage: D3D11_USAGE_IMMUTABLE,
+        BindFlags: D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned(),
+        CPUAccessFlags: 0,
+        MiscFlags: 0,
+    };
+    let data = D3D11_SUBRESOURCE_DATA {
+        pSysMem: pixels.as_ptr().cast(),
+        SysMemPitch: pitch,
+        SysMemSlicePitch: 0,
+    };
+    let mut texture = None;
+    // SAFETY: `data` points at `height` rows of `pitch` bytes each, since `pixels` holds one
+    // four-byte pixel per texel, and `desc`, `data` and the out slot are live for the call.
+    let created = unsafe {
+        device.CreateTexture2D(&raw const desc, Some(&raw const data), Some(&raw mut texture))
+    };
+    made(step, created, texture)
 }
 
 #[cfg(test)]

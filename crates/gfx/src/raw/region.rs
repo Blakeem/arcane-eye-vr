@@ -1,5 +1,5 @@
-//! The D3D11 calls of the region draw: its shaders, the views of its source and its target, and the
-//! draw.
+//! The D3D11 calls of the region draw: its shaders, a source texture made from pixels, the views of
+//! its source and its target, and the draw.
 //!
 //! The draw sets no rasterizer state, blend state or sampler. Direct3D's default rasterizer state
 //! draws a clockwise triangle with no scissor test, its default blend state writes the shader's
@@ -51,6 +51,15 @@ impl Pipeline {
         let created =
             unsafe { self.device.CreateShaderResourceView(source, None, Some(&raw mut view)) };
         made(RegionStep::SourceView, created, view)
+    }
+
+    pub(crate) fn image(
+        &self,
+        width: u16,
+        height: u16,
+        pixels: &[[u8; 4]],
+    ) -> Result<ID3D11Texture2D, RegionError> {
+        super::image(&self.device, RegionStep::Image, width, height, pixels)
     }
 
     pub(crate) fn target_view(

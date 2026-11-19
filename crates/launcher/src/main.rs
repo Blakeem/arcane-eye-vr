@@ -101,7 +101,7 @@ fn launch(mode: LaunchMode, root: &Root) -> Result<(), Failure> {
                 }
                 GameChoice::Start => start_game(SCREEN_GAME_MODE)?,
             }
-            Ok(screen::run(&manifest, screen::settings(root.path()))?)
+            Ok(screen::run(&manifest, root.path())?)
         }
     }
 }

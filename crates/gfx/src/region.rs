@@ -1,5 +1,5 @@
 //! The region draw: one rectangle of a source texture drawn into an entire target texture, one
-//! source texel to one target pixel.
+//! source texel to one target pixel. It also makes a source texture from pixels.
 //!
 //! A shader reads each texel and writes it, so the target's view may have another format than the
 //! source, such as an 8-bit view of a target for a 10-bit source. The draw binds its state on the
@@ -22,6 +22,7 @@ pub enum RegionStep {
     PixelShader,
     TargetView,
     SourceView,
+    Image,
 }
 
 impl RegionStep {
@@ -31,6 +32,7 @@ impl RegionStep {
             Self::PixelShader => "creating the region pixel shader",
             Self::TargetView => "creating a view of the region target",
             Self::SourceView => "creating a view of the region source",
+            Self::Image => "creating a region source from pixels",
         }
     }
 }
@@ -100,6 +102,22 @@ impl RegionDraw {
         source: &ID3D11Texture2D,
     ) -> Result<ID3D11ShaderResourceView, RegionError> {
         self.pipeline.source_view(source)
+    }
+
+    /// A source texture of the draw's device, `width` by `height` pixels, that holds `pixels` in row
+    /// order. Each pixel is red, green, blue and alpha, which a draw writes as they are stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionStep::Image`] when `pixels` does not hold one pixel per texel or the device
+    /// cannot create the texture.
+    pub fn image(
+        &self,
+        width: u16,
+        height: u16,
+        pixels: &[[u8; 4]],
+    ) -> Result<ID3D11Texture2D, RegionError> {
+        self.pipeline.image(width, height, pixels)
     }
 
     /// A `format` view of `target`, a texture of the draw's device that can be drawn into.

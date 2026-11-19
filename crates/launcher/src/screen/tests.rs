@@ -27,6 +27,7 @@ use windows::core::HSTRING;
 use xr::error::{XrError, XrStep};
 
 use super::eyes::{EyesError, draw_half};
+use super::menu::PlayerFile;
 use super::picture::{Link, Picture, Unshowable};
 use super::{
     FrameError, GAME_CHECK_INTERVAL, GameChoice, GameWatch, Header, SteamReport, choose_game,
@@ -198,8 +199,9 @@ fn a_bgra_8_bit_pair_reaches_each_eye_with_its_stored_values() {
     assert_within_one(&shown.right, [7, 6, 5, 8], "the right eye");
 }
 
-/// The screen settings read from `root` and the log lines the read wrote.
-fn settings_logged(root: &Path) -> (ScreenSettings, Vec<String>) {
+/// The screen settings read from `root`, whether the file gave them, and the log lines the read
+/// wrote.
+fn settings_logged(root: &Path) -> ((ScreenSettings, PlayerFile), Vec<String>) {
     let logging = logging::start(&root.join("logs"), LogName::Launcher).expect("start logging");
     let read = dispatcher::with_default(&logging.dispatch, || settings(root));
     let file_path = logging.handle.file_path().to_path_buf();
@@ -219,9 +221,10 @@ fn the_screen_settings_come_from_the_player_file() {
     let dir = test_dir("settings-valid");
     fs::write(dir.path().join("settings.toml"), "[screen]\ndistance_m = 4.0\nwidth_m = 6\n")
         .expect("write");
-    let (read, lines) = settings_logged(dir.path());
+    let ((read, file), lines) = settings_logged(dir.path());
     assert_eq!(read.distance_m, ScreenDistanceM::try_from(4.0).expect("in range"));
     assert_eq!(read.width_m, ScreenWidthM::try_from(6.0).expect("in range"));
+    assert_eq!(file, PlayerFile::Read);
     assert_eq!(lines, ["\"screen settings loaded\" distance_m=4.0 width_m=6.0"]);
 }
 
@@ -231,7 +234,7 @@ fn a_rejected_player_file_gives_the_default_screen_and_a_warning() {
     let path = dir.path().join("settings.toml");
     fs::write(&path, "[screen]\nwidth_m = 11\n").expect("write");
     let (read, lines) = settings_logged(dir.path());
-    assert_eq!(read, ScreenSettings::default());
+    assert_eq!(read, (ScreenSettings::default(), PlayerFile::Unread));
     let shown_path = path.display().to_string().replace('\\', "\\\\");
     let warning = format!(
         "\"settings file gave no values, so its defaults apply\" error=\"{shown_path} is rejected: \

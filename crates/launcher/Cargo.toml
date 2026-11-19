@@ -17,6 +17,8 @@ diag = { path = "../diag" }
 gfx = { path = "../gfx" }
 ipc-layout = { path = "../ipc-layout" }
 launch = { path = "../launch" }
+openxr.workspace = true
+overlay = { path = "../overlay" }
 settings = { path = "../settings" }
 stereo-core = { path = "../stereo-core" }
 thiserror.workspace = true
@@ -33,7 +35,6 @@ features = [
 ]
 
 [dev-dependencies]
-openxr.workspace = true
 test-support = { path = "../test-support" }
 viewer-client = { path = "../viewer-client", features = ["fixture"] }
 

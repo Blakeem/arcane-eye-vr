@@ -10,17 +10,16 @@
 
 pub(super) mod saved;
 
-use windows::Win32::Foundation::{E_INVALIDARG, RECT};
+use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_SHADER_RESOURCE, D3D11_BLEND_DESC, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_ONE,
-    D3D11_BLEND_OP_ADD, D3D11_BOX, D3D11_COLOR_WRITE_ENABLE_ALL, D3D11_CULL_BACK, D3D11_FILL_SOLID,
-    D3D11_RASTERIZER_DESC, D3D11_RENDER_TARGET_BLEND_DESC, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT,
-    D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC, D3D11_USAGE_IMMUTABLE, D3D11_VIEWPORT,
-    ID3D11BlendState, ID3D11Device, ID3D11DeviceContext, ID3D11PixelShader, ID3D11RasterizerState,
-    ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader,
+    D3D11_BLEND_DESC, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_ONE, D3D11_BLEND_OP_ADD, D3D11_BOX,
+    D3D11_COLOR_WRITE_ENABLE_ALL, D3D11_CULL_BACK, D3D11_FILL_SOLID, D3D11_RASTERIZER_DESC,
+    D3D11_RENDER_TARGET_BLEND_DESC, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, D3D11_TEXTURE2D_DESC,
+    D3D11_VIEWPORT, ID3D11BlendState, ID3D11Device, ID3D11DeviceContext, ID3D11PixelShader,
+    ID3D11RasterizerState, ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D,
+    ID3D11VertexShader,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::core::HRESULT;
 
 use self::saved::Saved;
@@ -144,40 +143,7 @@ impl Pipeline {
         height: u16,
         pixels: &[[u8; 4]],
     ) -> Result<ID3D11Texture2D, LayerError> {
-        let invalid = LayerError { step: LayerStep::Image, code: E_INVALIDARG };
-        let texels = usize::from(width).checked_mul(usize::from(height));
-        if width == 0 || height == 0 || texels != Some(pixels.len()) {
-            return Err(invalid);
-        }
-        let pitch = u32::from(width).checked_mul(4).ok_or(invalid)?;
-        let desc = D3D11_TEXTURE2D_DESC {
-            Width: u32::from(width),
-            Height: u32::from(height),
-            MipLevels: 1,
-            ArraySize: 1,
-            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
-            Usage: D3D11_USAGE_IMMUTABLE,
-            BindFlags: D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned(),
-            CPUAccessFlags: 0,
-            MiscFlags: 0,
-        };
-        let data = D3D11_SUBRESOURCE_DATA {
-            pSysMem: pixels.as_ptr().cast(),
-            SysMemPitch: pitch,
-            SysMemSlicePitch: 0,
-        };
-        let mut texture = None;
-        // SAFETY: `data` points at `height` rows of `pitch` bytes each, since `pixels` holds one
-        // four-byte pixel per texel, and `desc`, `data` and the out slot are live for the call.
-        let created = unsafe {
-            self.device.CreateTexture2D(
-                &raw const desc,
-                Some(&raw const data),
-                Some(&raw mut texture),
-            )
-        };
-        made(LayerStep::Image, created, texture)
+        super::image(&self.device, LayerStep::Image, width, height, pixels)
     }
 
     /// Draws the layer of `pass` over each of `regions` of its target, and leaves the state of

@@ -8,7 +8,9 @@ use openxr::{Posef, Vector2f};
 use xr::error::{XrError, XrStep};
 use xr::input::{ButtonState, HandInput, Input};
 
-use super::{Change, Control, ControllerWatch, PROFILES_FOLDER, frame_input, read_profiles};
+use super::{
+    Change, Control, ControllerWatch, PROFILES_FOLDER, frame_input, read_profiles, select_state,
+};
 
 /// The deploy script, which stages the profiles folder beside the launch app.
 const DEPLOY_SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/deploy.ps1");
@@ -58,6 +60,23 @@ fn each_button_of_each_hand_gives_its_own_change() {
 }
 
 #[test]
+fn select_presses_at_0_7_and_releases_only_at_0_5_or_below() {
+    let amounts = [0.0, 0.6, 0.75, 0.6, 0.45, 0.6];
+    let mut state = ButtonState::Released;
+    let states: Vec<ButtonState> = amounts
+        .into_iter()
+        .map(|amount| {
+            state = select_state(state, amount);
+            state
+        })
+        .collect();
+    let (up, down) = (ButtonState::Pressed, ButtonState::Released);
+    assert_eq!(states, [down, down, up, up, down, down]);
+    assert_eq!(select_state(down, 0.7), up, "the press amount itself presses");
+    assert_eq!(select_state(up, 0.5), down, "the release amount itself releases");
+}
+
+#[test]
 fn select_that_stays_above_the_press_amount_gives_one_change() {
     let mut watch = ControllerWatch::default();
     let select = |amount| left(HandInput { select: amount, ..HandInput::default() });
@@ -67,6 +86,39 @@ fn select_that_stays_above_the_press_amount_gives_one_change() {
     assert_eq!(changes(&mut watch, &select(0.8)), []);
     assert_eq!(changes(&mut watch, &select(0.2)), []);
     assert_eq!(changes(&mut watch, &select(0.9)), [Change::Pressed(Hand::Left, Control::Select)]);
+}
+
+#[test]
+fn the_log_presses_select_again_after_a_dip_that_the_menu_still_counts_as_held() {
+    let mut watch = ControllerWatch::default();
+    let select = |amount| left(HandInput { select: amount, ..HandInput::default() });
+    let mut frame = |amount| {
+        let mut seen = Vec::new();
+        let (left_hand, _) = watch.update(&select(amount), |change| seen.push(change));
+        (seen, left_hand.select_pressed(), left_hand.now.select)
+    };
+    let logged = vec![Change::Pressed(Hand::Left, Control::Select)];
+    let (up, down) = (ButtonState::Pressed, ButtonState::Released);
+    assert_eq!(frame(0.8), (logged.clone(), true, up));
+    assert_eq!(frame(0.6), (vec![], false, up), "the dip stays above the release amount");
+    assert_eq!(frame(0.8), (logged, false, up), "the log presses again, the menu holds");
+    assert_eq!(frame(0.4), (vec![], false, down));
+}
+
+#[test]
+fn the_buttons_of_a_frame_tell_each_hand_s_presses() {
+    let mut watch = ControllerWatch::default();
+    let down = Input {
+        left: HandInput { select: 0.9, ..HandInput::default() },
+        right: pressed(ButtonState::Pressed),
+        head: None,
+    };
+    let (left_hand, right_hand) = watch.update(&down, |_| {});
+    assert!(left_hand.select_pressed() && !left_hand.menu_pressed());
+    assert!(right_hand.menu_pressed() && !right_hand.select_pressed());
+    let (held_left, held_right) = watch.update(&down, |_| {});
+    assert!(!held_left.select_pressed() && !held_right.menu_pressed(), "a held button");
+    assert_eq!(held_left.now.select, ButtonState::Pressed);
 }
 
 #[test]

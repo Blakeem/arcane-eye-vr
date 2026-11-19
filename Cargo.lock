@@ -219,6 +219,7 @@ dependencies = [
  "ipc-layout",
  "launch",
  "openxr",
+ "overlay",
  "settings",
  "stereo-core",
  "test-support",

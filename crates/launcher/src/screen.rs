@@ -3,13 +3,17 @@
 //!
 //! `picture.rs` reads the newest published frame from the viewer link, and `eyes.rs` draws its
 //! halves into the swapchains of the `xr` crate's session. `controls.rs` reads the device profiles
-//! and logs what the controllers do in each frame. The screen runs until Steam reports that the game
-//! ended, the runtime ends the session or the game's frames are of a kind it cannot show. The game
-//! window keeps the keyboard and the mouse, since the screen has no window.
+//! and logs what the controllers do in each frame. `menu.rs` shows the menu that sets the screen's
+//! distance and width, and `geometry.rs` holds the vector math of its quads and rays. The screen
+//! runs until Steam reports that the game ended, the runtime ends the session or the game's frames
+//! are of a kind it cannot show. The game window keeps the keyboard and the mouse, since the screen
+//! has no window.
 
 mod controls;
 mod eyes;
 pub(crate) mod failure;
+mod geometry;
+mod menu;
 mod picture;
 
 use std::path::Path;
@@ -37,6 +41,7 @@ use xr::swapchain::Swapchains;
 use self::controls::Controllers;
 use self::eyes::{Eyes, EyesError};
 use self::failure::ScreenFailure;
+use self::menu::{Gpu, PlayerFile, ScreenMenu};
 use self::picture::{Link, Unshowable};
 
 /// The wait between two event polls while the session is not begun.
@@ -103,34 +108,38 @@ const fn choose_game(steam: SteamReport, header: Header) -> GameChoice {
     }
 }
 
-/// The table `[screen]` of the player file in the root folder `root`. A file that cannot be read or
-/// is rejected gives the defaults and a warning, as it does in the core.
-pub(crate) fn settings(root: &Path) -> ScreenSettings {
-    let screen = match settings::file::read_settings(root) {
+/// The table `[screen]` of the player file in the root folder `root`, and whether the file gave it.
+/// A file that cannot be read or is rejected gives the defaults and a warning, as it does in the
+/// core.
+fn settings(root: &Path) -> (ScreenSettings, PlayerFile) {
+    let (screen, file) = match settings::file::read_settings(root) {
         Ok(parsed) => {
             for key in &parsed.unknown_keys {
                 warn!(file = SETTINGS_FILE, key = %key, "unknown settings key ignored");
             }
-            parsed.settings.screen
+            (parsed.settings.screen, PlayerFile::Read)
         }
         Err(error) => {
             let error = error_chain::chain(&error);
             warn!(error = %error, "settings file gave no values, so its defaults apply");
-            ScreenSettings::default()
+            (ScreenSettings::default(), PlayerFile::Unread)
         }
     };
     let (distance_m, width_m) = (screen.distance_m.meters(), screen.width_m.meters());
     info!(distance_m, width_m, "screen settings loaded");
-    screen
+    (screen, file)
 }
 
 /// Shows the game's frames in the headset until the game ends or the runtime ends the session.
-/// `manifest` is the active runtime's manifest.
+/// `manifest` is the active runtime's manifest, and `root` the root folder that holds the player
+/// file. Before it returns, the screen menu's unsaved changes are written to a player file that
+/// gave its values at the start.
 ///
 /// # Errors
 ///
 /// Returns the [`ScreenFailure`] of a step before the session runs, and of a session that failed.
-pub(crate) fn run(manifest: &Path, settings: ScreenSettings) -> Result<(), ScreenFailure> {
+pub(crate) fn run(manifest: &Path, root: &Path) -> Result<(), ScreenFailure> {
+    let (settings, file) = settings(root);
     let names = Names::default();
     if let Err(error) = heartbeat::spawn(names.mapping.clone()) {
         return Err(ScreenFailure::Heartbeat(error));
@@ -146,15 +155,17 @@ pub(crate) fn run(manifest: &Path, settings: ScreenSettings) -> Result<(), Scree
     let session = Session::open(&headset, device.d3d())?;
     let mut screen = Screen {
         eyes: None,
+        menu: ScreenMenu::new(settings, file, root),
         link: Link::new(names),
         session,
         draw,
         device,
-        settings,
         controllers: Controllers::new(),
         first_shown: Once::new(),
     };
-    screen.show_until_end(&mut GameWatch::new(Instant::now()))
+    let shown = screen.show_until_end(&mut GameWatch::new(Instant::now()));
+    screen.menu.finish();
+    shown
 }
 
 /// Why a session frame failed.
@@ -180,15 +191,15 @@ impl FrameError {
     }
 }
 
-/// Everything the screen opened. Fields drop in declaration order, so the swapchains go before the
-/// session and the device goes last.
+/// Everything the screen opened. Fields drop in declaration order, so the swapchains and the menu's
+/// panels go before the session and the device goes last.
 struct Screen {
     eyes: Option<Eyes>,
+    menu: ScreenMenu,
     link: Link,
     session: Session,
     draw: RegionDraw,
     device: Device,
-    settings: ScreenSettings,
     controllers: Controllers,
     first_shown: Once,
 }
@@ -225,14 +236,18 @@ impl Screen {
         }
     }
 
-    /// Waits for the session's next frame, reads the controllers, draws the newest published frame
-    /// into it when the runtime shows the frame, and ends it.
+    /// Waits for the session's next frame, reads the controllers, updates the menu, draws the newest
+    /// published frame into it when the runtime shows the frame, and ends it with the screen, then
+    /// the menu's panels.
     fn frame(&mut self) -> Result<(), FrameError> {
         let timing = self.session.wait_frame()?;
-        self.controllers.read(&self.session, timing)?;
-        let Self { eyes, link, session, draw, device, settings, first_shown, .. } = self;
+        let controls = self.controllers.read(&self.session, timing)?;
+        let Self { eyes, menu, link, session, draw, device, first_shown, .. } = self;
+        let gpu = Gpu { session, draw, context: device.context() };
+        menu.update(&controls, Instant::now(), &gpu);
         let drawn =
             if timing.should_render { show(eyes, link, session, draw, device)? } else { None };
+        let settings = menu.screen();
         let (distance_m, width_m) = (settings.distance_m.meters(), settings.width_m.meters());
         let shown = drawn.and_then(|drawn| {
             quad::screen(distance_m, width_m, drawn.frame).map(|quad| (drawn.swapchains, quad))
@@ -241,7 +256,7 @@ impl Screen {
             let (width, height) = swapchains.size();
             once!(*first_shown, Level::INFO, width, height, "first frame shown in the headset");
         }
-        session.end_frame(timing, shown, &[])?;
+        session.end_frame(timing, shown, &menu.panels())?;
         Ok(())
     }
 }
