@@ -8,13 +8,15 @@ use std::time::{Duration, Instant};
 
 use diag::health::{Feature, Health};
 use game_bindings::state::arm_alloc_guard;
+use gfx::nearest::Nearest;
 use gfx::publish::ViewNames;
 use ipc_layout::perf_line::{self, PerfSummary};
 use settings::player::StereoSettings;
+use stereo_core::eye::EyeScale;
 
 use super::{
-    FrameLogs, FrameReport, FrameState, UiFrame, keep_cameras, log_flat, on_frame, record_interval,
-    skipped,
+    FrameLogs, FrameReport, FrameState, UiFrame, keep_cameras, log_depth, log_flat, on_frame,
+    record_interval, skipped,
 };
 use crate::eye_view::Layout;
 use crate::logged;
@@ -25,6 +27,7 @@ use crate::raw::{
 use crate::ui_layer::cursor::Aim;
 use crate::ui_layer::cursor::place::{Pointer, spot};
 use crate::ui_layer::test_support::{hidden_cursor_layer, idle_layer};
+use crate::ui_layer::ui_depth::DepthReport;
 use crate::view_camera::FrameCameras;
 use crate::viewer::ViewerLink;
 
@@ -169,6 +172,19 @@ fn a_perf_window_with_a_ui_layer_logs_one_ui_depth_line_before_the_perf_summary(
         " arcane_eye_core::frame msg=\"ui depth\" nearest_m=-1.0 ui_columns=0 eye_scale=1.0";
     assert!(line.ends_with(fields), "no result, no UI disparity and the full eye distance: {line}");
     assert!(position("\"ui depth\"") < position("\"perf summary\""), "{lines:#?}");
+}
+
+#[test]
+fn the_ui_depth_line_of_a_ui_that_hides_the_scene_holds_the_nearest_distance_minus_2() {
+    let report =
+        DepthReport { nearest: Some(Nearest::Hidden), columns: 0, eye_scale: EyeScale::FULL };
+
+    let lines = log_lines("ui-depth-hidden", || log_depth(report));
+
+    let [line] = lines.as_slice() else { panic!("one ui depth line: {lines:#?}") };
+    let fields =
+        " arcane_eye_core::frame msg=\"ui depth\" nearest_m=-2.0 ui_columns=0 eye_scale=1.0";
+    assert!(line.ends_with(fields), "{line}");
 }
 
 /// The counting allocator counts only in debug builds.

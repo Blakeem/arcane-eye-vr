@@ -17,6 +17,8 @@ use crate::nearest::{DistanceFault, Nearest, NearestRead, check_distance};
 const OPAQUE: [u8; 4] = [255, 255, 255, 255];
 /// A UI texel with alpha 63 of 255, just below the covering share 0.25.
 const FAINT: [u8; 4] = [63, 63, 63, 63];
+/// A UI texel with alpha 128 of 255, which covers the scene and lets it show.
+const HALF: [u8; 4] = [128, 128, 128, 128];
 const CLEAR: [u8; 4] = [0, 0, 0, 0];
 
 /// The distance under every place no test names.
@@ -27,7 +29,12 @@ const SCALE: f32 = 10.0;
 
 /// A UI texture of `side` by `side` texels that is clear but at `marked`, each `(x, y, pixel)`.
 fn ui(gpu: &Gpu, side: u32, marked: &[(u32, u32, [u8; 4])]) -> ID3D11Texture2D {
-    let mut pixels = vec![CLEAR; texels(side, side)];
+    ui_over(gpu, side, CLEAR, marked)
+}
+
+/// A UI texture of `side` by `side` texels that holds `base` but at `marked`, each `(x, y, pixel)`.
+fn ui_over(gpu: &Gpu, side: u32, base: [u8; 4], marked: &[(u32, u32, [u8; 4])]) -> ID3D11Texture2D {
+    let mut pixels = vec![base; texels(side, side)];
     for (x, y, pixel) in marked {
         pixels[index(*x, *y, side)] = *pixel;
     }
@@ -130,6 +137,26 @@ fn a_ui_with_no_covering_texel_has_no_scene_under_it() {
     let distances = distances(&gpu, 8, 4, &[(0, 0, 0.1)]);
 
     assert_eq!(read_once(&gpu, &layer, &distances), Nearest::Uncovered);
+}
+
+#[test]
+fn a_ui_whose_every_texel_is_opaque_hides_the_scene_over_a_near_distance() {
+    let gpu = warp();
+    let layer = ui_over(&gpu, 16, OPAQUE, &[]);
+    let distances = distances(&gpu, 8, 4, &[(0, 0, 0.01), (6, 2, 0.01)]);
+
+    assert_eq!(read_once(&gpu, &layer, &distances), Nearest::Hidden);
+}
+
+#[test]
+fn an_opaque_ui_with_one_visited_texel_of_alpha_0_5_takes_the_smallest_value_under_it() {
+    let gpu = warp();
+    let layer = ui_over(&gpu, 16, OPAQUE, &[(8, 8, HALF)]);
+    let distances = distances(&gpu, 8, 4, &[(0, 0, 0.5), (6, 2, 0.1)]);
+
+    let found = read_once(&gpu, &layer, &distances);
+
+    assert_eq!(found, Nearest::At(1.0), "the half texel's 0.1 times the scale 10");
 }
 
 #[test]

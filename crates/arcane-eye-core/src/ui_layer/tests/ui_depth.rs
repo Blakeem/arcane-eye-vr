@@ -7,7 +7,7 @@ use diag::health::{Feature, Health};
 use game_bindings::camera::Camera;
 use game_bindings::state::arm_alloc_guard;
 use game_bindings::texture_table::TextureKey;
-use gfx::nearest::{NearestError, NearestStep};
+use gfx::nearest::{Nearest, NearestError, NearestStep};
 use settings::player::StereoSettings;
 use stereo_core::eye::EyeScale;
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
@@ -19,21 +19,29 @@ use super::{GREEN, Game, HEIGHT, RED, SIDE_BY_SIDE, UiLayer, WIDTH, depth, input
 use crate::eye_view::Layout;
 use crate::game_source::test_support::World;
 use crate::logged;
-use crate::raw::test_pixels::{Pixel, back_buffer_pixels, distances_of, flush, texture_of};
+use crate::raw::test_pixels::{
+    Pixel, back_buffer_pixels, distances_of, fill_texture, flush, texture_of,
+};
 use crate::raw::test_support::{TestCursor, TestSwapchain};
 use crate::ui_layer::Target;
 use crate::ui_layer::cursor::counter::WindowsCursor;
 use crate::ui_layer::decide::{Draw, Step, Write, depth_shift};
 use crate::ui_layer::test_support::target_parts;
-use crate::ui_layer::ui_depth::DepthInput;
+use crate::ui_layer::ui_depth::{DepthInput, DepthReport};
 
 const BLACK: Pixel = [0, 0, 0, 255];
 
 /// The UI texture's width, one texel per column of a 32-column half.
 const UI_WIDTH: u32 = 32;
 
-/// The UI texel column that is red. Every other texel is opaque green.
+/// The UI texel column that is red.
 const RED_COLUMN: usize = 10;
+
+/// A premultiplied half green UI texel, which covers the scene and lets it show.
+const SEE_THROUGH: Pixel = [0, 128, 0, 128];
+
+/// The UI texel of the first row that is `SEE_THROUGH`, at a grid point the nearest read visits.
+const SEE_THROUGH_TEXEL: usize = 24;
 
 /// The far plane distance of the test camera, in meters.
 const FAR_M: f32 = 10_000.0;
@@ -54,17 +62,25 @@ const CAMERA: Camera = Camera {
     far: FAR_M,
 };
 
-/// The UI texture: two rows of opaque green with red in `RED_COLUMN`.
-fn ui_pixels() -> Vec<Pixel> {
+/// A UI that hides the scene: two rows of opaque green with red in `RED_COLUMN`.
+fn hiding_pixels() -> Vec<Pixel> {
     let row: Vec<Pixel> =
         (0..UI_WIDTH as usize).map(|x| if x == RED_COLUMN { RED } else { GREEN }).collect();
     row.repeat(2)
 }
 
+/// The UI texture: the hiding UI with `SEE_THROUGH` at `SEE_THROUGH_TEXEL`, so the scene shows.
+fn ui_pixels() -> Vec<Pixel> {
+    let mut pixels = hiding_pixels();
+    pixels[SEE_THROUGH_TEXEL] = SEE_THROUGH;
+    pixels
+}
+
 /// A game whose table names the UI texture and `distances`, and the textures it holds.
 struct Scene {
     game: Game,
-    _textures: [ID3D11Texture2D; 2],
+    ui: ID3D11Texture2D,
+    _distances: ID3D11Texture2D,
 }
 
 impl Scene {
@@ -75,7 +91,7 @@ impl Scene {
             (TextureKey::UI, address(&ui)),
             (TextureKey::DISTANCE, address(&distances)),
         ]);
-        Self { game: Game::with_world(world), _textures: [ui, distances] }
+        Self { game: Game::with_world(world), ui, _distances: distances }
     }
 }
 
@@ -88,22 +104,41 @@ fn input(start: Instant, frame: u32) -> DepthInput {
     DepthInput { stereo, camera: Some(CAMERA), now }
 }
 
-/// Runs side by side frames until the UI depth draws the UI moved, and returns the frames run.
+/// Runs side by side frames from the frame `first` on until the UI depth's report meets `done`,
+/// and returns the frame whose report met it.
+fn frames_until(
+    layer: &mut UiLayer,
+    health: &Health,
+    test: &TestSwapchain,
+    (start, first): (Instant, u32),
+    done: impl Fn(&DepthReport) -> bool,
+) -> u32 {
+    for more in 0..MAX_FRAMES {
+        let frame = later(first, u32::try_from(more).expect("a test frame"));
+        input_frame(layer, health, &test.swapchain, SIDE_BY_SIDE, &input(start, frame));
+        if done(&layer.depth_report()) {
+            return frame;
+        }
+        flush(test);
+    }
+    panic!("no such read result in {MAX_FRAMES} frames");
+}
+
+/// Runs side by side frames until the UI depth draws the UI moved, and returns the frame that drew
+/// it moved.
 fn crossed_layer(
     layer: &mut UiLayer,
     health: &Health,
     test: &TestSwapchain,
     start: Instant,
 ) -> u32 {
-    for frame in 0..MAX_FRAMES {
-        let frame = u32::try_from(frame).expect("a test frame");
-        input_frame(layer, health, &test.swapchain, SIDE_BY_SIDE, &input(start, frame));
-        if layer.depth_report().columns > 0 {
-            return frame;
-        }
-        flush(test);
-    }
-    panic!("no read result in {MAX_FRAMES} frames");
+    frames_until(layer, health, test, (start, 0), |report| report.columns > 0)
+}
+
+/// The newest result in centimeters, or `None` for a result of no distance.
+fn centimeters(report: DepthReport) -> Option<f32> {
+    let Some(Nearest::At(meters)) = report.nearest else { return None };
+    Some((meters * 100.0).round())
 }
 
 /// The frame `more` frames after the frame `frames`.
@@ -145,7 +180,7 @@ fn a_near_scene_moves_the_ui_and_the_cursor_one_column_inward_in_each_half() {
     // 0.04 of a 32-column half, halved, rounds to 1 column.
     assert_eq!(report.columns, 1);
     assert!(report.eye_scale < EyeScale::FULL, "{report:?}");
-    assert_eq!(report.nearest_m.map(|meters| (meters * 100.0).round()), Some(50.0));
+    assert_eq!(centimeters(report), Some(50.0));
     let pixels = back_buffer_pixels(&test);
     assert_eq!(at(&pixels, 2, [10, 11]), [GREEN, RED], "the left half's UI moves right");
     assert_eq!(at(&pixels, 2, [41, 42]), [RED, GREEN], "the right half's UI moves left");
@@ -153,6 +188,42 @@ fn a_near_scene_moves_the_ui_and_the_cursor_one_column_inward_in_each_half() {
     assert_eq!(left_cursor, [GREEN, BLACK, BLACK, GREEN], "the left half's cursor moves right");
     let right_cursor = at(&pixels, 20, [35, 36, 51, 52]);
     assert_eq!(right_cursor, [GREEN, BLACK, BLACK, GREEN], "the right half's cursor moves left");
+}
+
+#[test]
+fn a_ui_that_hides_the_scene_draws_the_ui_and_the_cursor_with_no_columns_from_its_result_on() {
+    let test = TestSwapchain::new(WIDTH, HEIGHT);
+    let scene = Scene::new(&test, distances_of(&test, 8, 4, NEAR_SHARE));
+    let health = running();
+    let mut layer = scene.game.layer();
+    let start = Instant::now();
+    let crossed = crossed_layer(&mut layer, &health, &test, start);
+    fill_texture(&test, &scene.ui, UI_WIDTH, &hiding_pixels());
+    let first = later(crossed, 1);
+    let hidden = |report: &DepthReport| report.nearest == Some(Nearest::Hidden);
+    let frames = frames_until(&mut layer, &health, &test, (start, first), hidden);
+    let report = layer.depth_report();
+    let test_cursor = TestCursor::monochrome([0, 0], &ALL_BLACK.0, &ALL_BLACK.1);
+    let (size, devices, window) = target_parts(&test);
+    let target = Target { swapchain: &test.swapchain, devices: &devices, size, window };
+    let shift = depth_shift(WIDTH, HEIGHT, depth(5.0)).expect("a 2-column move");
+    let step = Step {
+        draw: Draw::MoveThenUi(shift),
+        write: Write::Keep,
+        windows_cursor: WindowsCursor::Hidden,
+    };
+
+    layer
+        .draw(step, Some(aim(&test_cursor, 10, 4)), &target, &input(start, later(frames, 1)))
+        .expect("the frame draws");
+
+    assert_eq!((report.columns, report.eye_scale), (0, EyeScale::FULL), "in the result's frame");
+    let pixels = back_buffer_pixels(&test);
+    assert_eq!(at(&pixels, 2, [10, 42]), [RED, RED], "the UI with no disparity");
+    let left_cursor = at(&pixels, 20, [4, 5, 20, 21]);
+    assert_eq!(left_cursor, [GREEN, BLACK, BLACK, GREEN], "the left half's cursor in place");
+    let right_cursor = at(&pixels, 20, [36, 37, 52, 53]);
+    assert_eq!(right_cursor, [GREEN, BLACK, BLACK, GREEN], "the right half's cursor in place");
 }
 
 #[test]
@@ -265,7 +336,7 @@ fn a_read_started_before_a_flat_frame_is_not_followed_after_it() {
     );
 
     let report = layer.depth_report();
-    assert_eq!((report.columns, report.nearest_m), (0, None), "{report:?}");
+    assert_eq!((report.columns, report.nearest), (0, None), "{report:?}");
     assert_eq!(report.eye_scale, EyeScale::FULL);
 }
 
@@ -299,5 +370,5 @@ fn a_frame_that_follows_a_result_and_starts_a_read_makes_no_heap_allocation() {
     assert_eq!(count, 0, "a side by side frame with the UI depth allocated");
     let report = layer.depth_report();
     assert_eq!(report.columns, 1, "a guarded frame followed a result read after the reset");
-    assert_eq!(report.nearest_m.map(|meters| (meters * 100.0).round()), Some(50.0));
+    assert_eq!(centimeters(report), Some(50.0));
 }

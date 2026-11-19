@@ -12,7 +12,8 @@
 //!                       writes for the next frame
 //!   [aim]               the drawn cursor's pointer and cursor handle, in `cursor`
 //!   [ui depth]          the columns by which a side by side frame's UI and cursor move in front
-//!                       of the scene under the UI, in `ui_depth`. 0 in every other frame
+//!                       of the scene under the UI, in `ui_depth`. 0 while the UI hides the
+//!                       scene and in every other frame
 //!   [pair]              a flat frame's entire picture into each half of the back buffer
 //!   [move]              a side by side frame's right half moved right by the player's depth
 //!                       offset, black in the columns it uncovers, in a frame that holds no UI yet

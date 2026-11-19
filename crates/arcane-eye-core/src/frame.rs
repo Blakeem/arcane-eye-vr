@@ -41,9 +41,6 @@ use crate::viewer::ViewerLink;
 /// The shortest time between two lines of one rate-limited call site.
 const LOG_PERIOD: Duration = Duration::from_secs(10);
 
-/// The `ui depth` line's nearest distance for a UI over no scene or no result.
-const NO_NEAREST_M: f32 = -1.0;
-
 /// What a frame did, for the status the handler reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FrameReport {
@@ -265,13 +262,13 @@ fn log_camera(frame: &FrameCamera) {
     );
 }
 
-/// Logs the UI depth's line: the newest nearest distance in meters, -1 for a UI over no scene or no
-/// result, the columns per half of the UI disparity in use and the eye scale in use.
+/// Logs the UI depth's line: the nearest distance of [`DepthReport::nearest_m`], the columns per
+/// half of the UI disparity in use and the eye scale in use.
 fn log_depth(report: DepthReport) {
     // The perf window limits this line to one per SUMMARY_FRAMES frames, so it needs no rate-limit
     // macro.
     tracing::info!(
-        nearest_m = ?report.nearest_m.unwrap_or(NO_NEAREST_M),
+        nearest_m = ?report.nearest_m(),
         ui_columns = report.columns,
         eye_scale = ?report.eye_scale.share(),
         "ui depth"

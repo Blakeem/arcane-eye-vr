@@ -16,13 +16,13 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_USAGE_STAGING, D3D11_VIEWPORT, ID3D11Device, ID3D11DeviceContext, ID3D11PixelShader,
     ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32_FLOAT, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32G32_FLOAT, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::DXGI_ERROR_WAS_STILL_DRAWING;
 use windows::core::{HRESULT, Interface as _};
 
 use super::layer::saved::Saved;
 use super::{CreateStep, made};
-use crate::nearest::{NearestError, NearestStep};
+use crate::nearest::{GridColumn, NearestError, NearestStep};
 
 const VERTEX_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nearest.vs.dxbc"));
 const PIXEL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nearest.ps.dxbc"));
@@ -34,7 +34,8 @@ pub(crate) struct Pipeline {
     device: ID3D11Device,
 }
 
-/// The row texture the draw writes one value per grid column into, and its view to draw into.
+/// The row texture the draw writes one [`GridColumn`] per grid column into, and its view to draw
+/// into.
 pub(crate) struct Columns {
     texture: ID3D11Texture2D,
     view: ID3D11RenderTargetView,
@@ -109,8 +110,8 @@ impl Pipeline {
         made(step, created, texture)
     }
 
-    /// Draws one value per grid column of `layer` over `distances` into `columns`, and leaves the
-    /// state of `context` as it found it.
+    /// Draws one [`GridColumn`] per grid column of `layer` over `distances` into `columns`, and
+    /// leaves the state of `context` as it found it.
     pub(crate) fn draw(
         &self,
         context: &ID3D11DeviceContext,
@@ -203,7 +204,7 @@ impl Staging {
     pub(crate) fn read<R>(
         &self,
         context: &ID3D11DeviceContext,
-        visit: impl FnOnce(&[f32]) -> R,
+        visit: impl FnOnce(&[GridColumn]) -> R,
     ) -> Result<Option<R>, NearestError> {
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         let map = context.vtable().Map;
@@ -221,9 +222,10 @@ impl Staging {
             return Err(NearestError { step: NearestStep::Map, code });
         }
         let len = usize::from(self.width);
-        // SAFETY: the mapped row holds `width` four-byte values, and `Map` aligns its data to at
-        // least 4 bytes, the alignment of an f32, on every feature level.
-        let values = unsafe { slice::from_raw_parts(mapped.pData.cast::<f32>(), len) };
+        // SAFETY: the mapped row holds `width` texels of two four-byte floats, the layout of the
+        // `repr(C)` `GridColumn`, and `Map` aligns its data to at least 4 bytes, the alignment of a
+        // `GridColumn`, on every feature level.
+        let values = unsafe { slice::from_raw_parts(mapped.pData.cast::<GridColumn>(), len) };
         let result = visit(values);
         // SAFETY: the staging texture was mapped above, and `visit` returned, so no reference to
         // `values` is left.
@@ -232,8 +234,8 @@ impl Staging {
     }
 }
 
-/// The description of a row texture of `width` `R32_FLOAT` texels for `usage`, and the width as a
-/// viewport side takes it. A width above 16-bit fails `step` with `E_INVALIDARG`.
+/// The description of a row texture of `width` `R32G32_FLOAT` texels for `usage`, and the width as
+/// a viewport side takes it. A width above 16-bit fails `step` with `E_INVALIDARG`.
 fn row_desc(
     step: NearestStep,
     width: u32,
@@ -247,7 +249,7 @@ fn row_desc(
         Height: 1,
         MipLevels: 1,
         ArraySize: 1,
-        Format: DXGI_FORMAT_R32_FLOAT,
+        Format: DXGI_FORMAT_R32G32_FLOAT,
         SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
         Usage: usage,
         BindFlags: if staging { 0 } else { D3D11_BIND_RENDER_TARGET.0.cast_unsigned() },

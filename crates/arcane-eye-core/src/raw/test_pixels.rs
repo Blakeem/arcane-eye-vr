@@ -93,13 +93,24 @@ pub(crate) fn flush(test: &TestSwapchain) {
 /// Copies `pixels`, in row order, into `test`'s back buffer, as the engine fills it before the
 /// Present call site.
 pub(crate) fn fill_back_buffer(test: &TestSwapchain, pixels: &[Pixel]) {
+    let (size, _) = super::swapchain_desc(&test.swapchain).expect("the swapchain's description");
+    let back_buffer = super::back_buffer_texture(&test.swapchain).expect("the back buffer");
+    fill_texture(test, &back_buffer, size.width, pixels);
+}
+
+/// Copies `pixels`, in row order, into `texture`, a texture of `test`'s device in the test format
+/// `width` pixels wide that the pixels fill.
+pub(crate) fn fill_texture(
+    test: &TestSwapchain,
+    texture: &ID3D11Texture2D,
+    width: u32,
+    pixels: &[Pixel],
+) {
     let device = super::device(&test.swapchain).expect("the swapchain's device");
     let context = super::immediate_context(&device).expect("the immediate context");
-    let (size, _) = super::swapchain_desc(&test.swapchain).expect("the swapchain's description");
-    let picture = texture_of(test, size.width, pixels);
-    let back_buffer = super::back_buffer_texture(&test.swapchain).expect("the back buffer");
-    // SAFETY: both textures belong to this device and have the back buffer's size and format.
-    unsafe { context.CopyResource(&back_buffer, &picture) };
+    let picture = texture_of(test, width, pixels);
+    // SAFETY: both textures belong to this device and have the same size and format.
+    unsafe { context.CopyResource(texture, &picture) };
 }
 
 /// The pixels of `test`'s back buffer in row order.

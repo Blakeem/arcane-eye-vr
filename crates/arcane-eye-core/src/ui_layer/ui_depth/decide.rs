@@ -1,5 +1,5 @@
 //! The UI depth's decisions: the UI disparity and the eye scale that a nearest distance asks for, and
-//! the values in use that follow them.
+//! the values in use that follow them or that a UI that hides the scene sets.
 //!
 //! Disparities are shares of a half's width. A scene point `z` meters away has the crossed disparity
 //! `lens * eye_m / (2 * z)` between the two halves at the eye distance `eye_m`, where `lens` is the
@@ -70,8 +70,20 @@ impl View {
     }
 }
 
-/// The targets that `nearest` asks for in `view`. A UI over no scene, a distance that is not above
-/// 0 and a lens that gives no finite disparity above 0 all ask for [`Depth::FLAT`].
+/// The values in use after a frame whose newest result is `found`, `elapsed` after the last step
+/// in `view`. A UI that hides the scene sets [`Depth::FLAT`] at once, with no hold and no rate,
+/// since a UI moved inward would leave a strip of the scene at the outer edge of each half. Every
+/// other result is followed as [`follow`] follows its [`targets`].
+pub(crate) fn after(in_use: Depth, found: Nearest, view: View, elapsed: Duration) -> Depth {
+    if found == Nearest::Hidden {
+        return Depth::FLAT;
+    }
+    follow(in_use, targets(found, view), elapsed)
+}
+
+/// The targets that `nearest` asks for in `view`. A UI over no scene or over a hidden scene, a
+/// distance that is not above 0 and a lens that gives no finite disparity above 0 all ask for
+/// [`Depth::FLAT`].
 pub(crate) fn targets(nearest: Nearest, view: View) -> Depth {
     let Nearest::At(distance) = nearest else { return Depth::FLAT };
     if !distance.is_finite() || distance <= 0.0 {

@@ -5,9 +5,11 @@
 //! ```text
 //! UI LAYER FRAME whose draw is Ui or MoveThenUi, render thread, before the UI draw
 //!   [inputs]    the main view's camera of the frame and the distance texture of TextureKey::DISTANCE
-//!   [result]    the newest read the GPU finished, the nearest distance in meters
+//!   [result]    the newest read the GPU finished, the nearest distance in meters or a UI that
+//!               hides the scene
 //!   [targets]   the UI disparity and the eye scale that distance asks for, in `decide`
-//!   [follow]    the values in use moved toward the targets, in `decide`
+//!   [follow]    the values in use moved toward the targets, or set to no UI disparity and the
+//!               full eye distance at once while the UI hides the scene, in `decide`
 //!   [start]     this frame's read of the distance texture under the UI texture, times the far plane
 //!   [columns]   the UI disparity in use as columns per half, by which the UI layer draws the UI and
 //!               the cursor crossed
@@ -36,7 +38,7 @@ use stereo_core::eye::EyeScale;
 use tracing::Level;
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 
-use self::decide::{Depth, View, follow, targets};
+use self::decide::{Depth, View, after};
 use super::LOG_PERIOD;
 use super::decide::ui_columns;
 use crate::game_source::{GameSource, SourceFault};
@@ -53,13 +55,31 @@ pub(crate) struct DepthInput {
     pub(crate) now: Instant,
 }
 
+/// The `ui depth` line's nearest distance for a UI over no scene or no result.
+const NO_NEAREST_M: f32 = -1.0;
+
+/// The `ui depth` line's nearest distance for a UI that hides the scene.
+const HIDDEN_M: f32 = -2.0;
+
 /// What the perf window's `ui depth` line shows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DepthReport {
-    /// The newest result in meters, or `None` for a UI over no scene or no result.
-    pub(crate) nearest_m: Option<f32>,
+    /// The newest result, or `None` when no result arrived since the last reset.
+    pub(crate) nearest: Option<Nearest>,
     pub(crate) columns: u16,
     pub(crate) eye_scale: EyeScale,
+}
+
+impl DepthReport {
+    /// The line's nearest distance: the newest result in meters, -1 for a UI over no scene or no
+    /// result, and -2 for a UI that hides the scene.
+    pub(crate) const fn nearest_m(&self) -> f32 {
+        match self.nearest {
+            Some(Nearest::At(meters)) => meters,
+            Some(Nearest::Hidden) => HIDDEN_M,
+            Some(Nearest::Uncovered) | None => NO_NEAREST_M,
+        }
+    }
 }
 
 /// Why a frame's distance texture was not read.
@@ -116,12 +136,9 @@ impl UiDepth {
         self.in_use.eye_scale
     }
 
-    pub(crate) fn report(&self) -> DepthReport {
-        let nearest_m = match self.newest {
-            Some(Nearest::At(meters)) => Some(meters),
-            Some(Nearest::Uncovered) | None => None,
-        };
-        DepthReport { nearest_m, columns: self.columns, eye_scale: self.in_use.eye_scale }
+    pub(crate) const fn report(&self) -> DepthReport {
+        let eye_scale = self.in_use.eye_scale;
+        DepthReport { nearest: self.newest, columns: self.columns, eye_scale }
     }
 
     /// A frame that draws `ui` into each half of a side by side frame through `devices`, whose
@@ -183,8 +200,7 @@ impl UiDepth {
             let elapsed = self
                 .stepped
                 .map_or(Duration::ZERO, |stepped| input.now.saturating_duration_since(stepped));
-            self.in_use =
-                follow(self.in_use, targets(found, View::of(&camera, input.stereo)), elapsed);
+            self.in_use = after(self.in_use, found, View::of(&camera, input.stereo), elapsed);
             self.stepped = Some(input.now);
             self.newest = Some(found);
         }

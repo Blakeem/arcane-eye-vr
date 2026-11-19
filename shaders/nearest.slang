@@ -1,4 +1,5 @@
-// The smallest distance under the covering texels of one column of a grid over a layer texture.
+// The smallest distance under the covering texels of one column of a grid over a layer texture, and
+// the smallest alpha of the column's visited texels.
 // The target is one row with one pixel per grid column, so the pixel's column names the grid column.
 // The layer spans an entire frame, and each half of the distance texture spans one eye's entire
 // picture, so a layer texel's place maps to the same place in each half.
@@ -13,8 +14,11 @@ static const uint SPACING = 8;
 // A layer texel covers the scene when its alpha is above this value.
 static const float COVERING = 0.25;
 
-// The column's value when no texel of it covers, below every distance.
+// The column's distance when no texel of it covers, below every distance.
 static const float NOTHING = -1.0;
+
+// The largest alpha of a layer texel, from which the column's smallest alpha falls.
+static const float OPAQUE = 1.0;
 
 // One triangle that covers the viewport, built from the vertex index, so the draw binds no vertex buffer.
 [shader("vertex")]
@@ -30,8 +34,10 @@ uint texel_at(float share, uint first, uint size)
     return first + min(uint(share * float(size)), size - 1);
 }
 
+// The red channel is the smallest distance and the green channel the smallest alpha, the layout of
+// `GridColumn` in crates/gfx/src/nearest.rs.
 [shader("pixel")]
-float pixel_main(float4 position : SV_Position) : SV_Target
+float2 pixel_main(float4 position : SV_Position) : SV_Target
 {
     uint layer_width;
     uint layer_height;
@@ -46,9 +52,12 @@ float pixel_main(float4 position : SV_Position) : SV_Target
     uint left_x = texel_at(across, 0, left_width);
     uint right_x = texel_at(across, left_width, right_width);
     float nearest = NOTHING;
+    float faintest = OPAQUE;
     for (uint y = 0; y < layer_height; y += SPACING)
     {
-        if (layer.Load(int3(x, y, 0)).a <= COVERING)
+        float alpha = layer.Load(int3(x, y, 0)).a;
+        faintest = min(faintest, alpha);
+        if (alpha <= COVERING)
         {
             continue;
         }
@@ -58,5 +67,5 @@ float pixel_main(float4 position : SV_Position) : SV_Target
         float pair = min(left, right);
         nearest = nearest < 0.0 ? pair : min(nearest, pair);
     }
-    return nearest;
+    return float2(nearest, faintest);
 }

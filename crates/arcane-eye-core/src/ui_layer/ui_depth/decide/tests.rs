@@ -7,7 +7,7 @@ use gfx::nearest::Nearest;
 use settings::player::{DepthOffsetPercent, IpdMm, StereoSettings};
 use stereo_core::eye::EyeScale;
 
-use super::{Depth, View, follow, targets};
+use super::{Depth, View, after, follow, targets};
 use crate::ui_layer::decide::ui_columns;
 
 /// The main view's camera in the measured dialogue close-up.
@@ -128,4 +128,32 @@ fn the_eye_scale_rises_by_at_most_0_5_per_second_up_to_its_target() {
     in_use = follow(in_use, target, Duration::from_secs(2));
 
     assert_eq!(in_use.eye_scale, EyeScale::FULL, "no rise past the target");
+}
+
+#[test]
+fn a_ui_that_hides_the_scene_sets_no_ui_disparity_and_the_full_eye_distance_in_one_step() {
+    let in_use = depth(0.03, 0.7);
+
+    let stepped = after(in_use, Nearest::Hidden, dialogue(), Duration::ZERO);
+
+    assert_eq!(stepped, depth(0.0, 1.0));
+}
+
+#[test]
+fn a_result_after_a_hidden_scene_is_followed_with_the_rise_at_once() {
+    let flat = after(depth(0.03, 0.7), Nearest::Hidden, dialogue(), Duration::ZERO);
+
+    let stepped = after(flat, at(1.0), dialogue(), Duration::ZERO);
+
+    assert_between(stepped.disparity, 0.04, 0.04, "the UI disparity");
+    assert_between(stepped.eye_scale.share(), 0.688, 0.691, "the eye scale");
+}
+
+#[test]
+fn a_scene_behind_the_screen_surface_lowers_the_ui_disparity_in_use_at_the_falling_rate() {
+    let in_use = depth(0.03, 1.0);
+
+    let stepped = after(in_use, at(8.0), dialogue(), Duration::from_secs(1));
+
+    assert_between(stepped.disparity, 0.019_99, 0.020_01, "a fall of 0.01 in one second");
 }
