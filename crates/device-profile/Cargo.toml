@@ -1,0 +1,18 @@
+[package]
+name = "device-profile"
+description = "Device profile files: each controller's bindings of the session's actions, read from a folder."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+test-support = { path = "../test-support" }
+
+[lints]
+workspace = true

@@ -8,7 +8,7 @@ This page is for people who build or change Arcane Eye VR. The [README](README.m
 2. **Familiar controls.** VR controllers move the game's mouse pointer, so every menu works as it does on a desktop. Gamepad style controls may follow.
 3. **Works out of the box.** Copy the files in and start the launch app. The best settings are built in, and only a few options exist.
 4. **Fast frame rate.** Performance comes before features.
-5. **Open to other headsets.** Each headset and controller will be described by data files, so that adding a device needs no code change. The Steam Frame is the first target, and the HTC Vive is next.
+5. **Open to other headsets.** Each controller is described by a data file, and each headset will be, so that adding a device needs no code change. The Steam Frame is the first target, and the HTC Vive is next.
 
 ## How the stereo pair works
 
@@ -41,6 +41,37 @@ An unknown key in `dev.toml` rejects the file. A change to `dev.toml` applies at
 ## Root folder
 
 The mod's root folder is `%LOCALAPPDATA%\arcane-eye-vr\`. It holds `settings.toml`, `dev.toml` and the session logs in `logs\`. The environment variable `ARCANE_EYE_VR_HOME` sets a different root folder when its value is an absolute path. The game reads it from the environment it inherits. The launch app starts the game through Steam, so the game gets Steam's environment and not the launch app's. A user variable reaches the game when Steam starts after the variable is set. `trial.exe` sets it on the game it starts.
+
+## Controller profiles
+
+The launch app reads its controller profiles from the `profiles` folder beside `arcane-eye-vr.exe`. `tools/deploy.ps1` copies the repo's `profiles` folder there. Each `.toml` file describes one controller, and the files load in file name order.
+
+```toml
+# profiles/valve-frame-controller.toml
+version = 1                                                  # the file format, always 1
+name = "Steam Frame controller"                              # the controller's name in the log
+interaction_profile = "/interaction_profiles/valve/frame_controller_valve"
+extension = "XR_VALVE_frame_controller_interaction"          # the OpenXR extension the profile needs
+
+[left]
+aim = "/user/hand/left/input/aim/pose"                       # the pose the controller points with
+grip = "/user/hand/left/input/grip/pose"                     # the pose of the hand that holds it
+menu = "/user/hand/left/input/view/click"                    # the menu button
+select = "/user/hand/left/input/trigger/value"               # the trigger, from 0 to 1
+secondary = "/user/hand/left/input/squeeze/click"            # a second button
+middle = "/user/hand/left/input/thumbstick/click"            # a third button
+scroll = "/user/hand/left/input/thumbstick"                  # a stick or pad with two axes
+haptic = "/user/hand/left/output/haptic"                     # the vibration output
+
+[right]
+# the same keys, with paths under /user/hand/right/
+```
+
+`interaction_profile` is the OpenXR interaction profile path of the controller. `version`, `name` and `interaction_profile` are required. `extension` and each key under `[left]` and `[right]` are optional. A missing key leaves its action unbound on that controller. A file binds at least one action. Each path under `[left]` starts with `/user/hand/left/`, and each path under `[right]` starts with `/user/hand/right/`.
+
+An unknown key rejects the file. A file that names the interaction profile of an earlier file is rejected too. The launch app logs each rejected file with the reason, and the other files still load. The headset screen leaves out a profile whose extension the OpenXR runtime does not offer and a profile whose bindings the runtime refuses.
+
+A new controller needs no code change. Add a file to `profiles` with its interaction profile and the paths of its inputs. The OpenXR specification lists the paths of each interaction profile.
 
 ## Build
 

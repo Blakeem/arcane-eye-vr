@@ -1,0 +1,17 @@
+version = 1
+name = "Khronos simple controller"
+interaction_profile = "/interaction_profiles/khr/simple_controller"
+
+[left]
+aim = "/user/hand/left/input/aim/pose"
+grip = "/user/hand/left/input/grip/pose"
+menu = "/user/hand/left/input/menu/click"
+select = "/user/hand/left/input/select/click"
+haptic = "/user/hand/left/output/haptic"
+
+[right]
+aim = "/user/hand/right/input/aim/pose"
+grip = "/user/hand/right/input/grip/pose"
+menu = "/user/hand/right/input/menu/click"
+select = "/user/hand/right/input/select/click"
+haptic = "/user/hand/right/output/haptic"

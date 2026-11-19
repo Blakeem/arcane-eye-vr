@@ -16,6 +16,17 @@ pub enum XrStep {
     AcquireImage,
     WaitImage,
     ReleaseImage,
+    StringToPath,
+    CreateActionSet,
+    CreateAction,
+    SuggestBindings,
+    AttachActionSets,
+    CreateActionSpace,
+    CreateViewSpace,
+    SyncActions,
+    ReadAction,
+    LocateSpace,
+    ReadInteractionProfile,
 }
 
 impl XrStep {
@@ -32,6 +43,17 @@ impl XrStep {
             Self::AcquireImage => "acquiring a swapchain image",
             Self::WaitImage => "waiting for a swapchain image",
             Self::ReleaseImage => "releasing a swapchain image",
+            Self::StringToPath => "turning a path string into an OpenXR path",
+            Self::CreateActionSet => "creating the action set",
+            Self::CreateAction => "creating an action",
+            Self::SuggestBindings => "suggesting a device profile's bindings",
+            Self::AttachActionSets => "attaching the action set",
+            Self::CreateActionSpace => "creating a hand's action space",
+            Self::CreateViewSpace => "creating the VIEW reference space",
+            Self::SyncActions => "syncing the actions",
+            Self::ReadAction => "reading an action's state",
+            Self::LocateSpace => "locating a space",
+            Self::ReadInteractionProfile => "reading a hand's interaction profile",
         }
     }
 }

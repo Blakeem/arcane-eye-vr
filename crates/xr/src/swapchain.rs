@@ -68,10 +68,7 @@ impl Swapchains {
         format: SwapchainFormat,
         size: (u32, u32),
     ) -> Result<Self, XrError> {
-        let Some(rect) = image_rect(size) else {
-            let code = sys::Result::ERROR_SWAPCHAIN_RECT_INVALID;
-            return Err(XrError { step: XrStep::CreateSwapchain, code });
-        };
+        let rect = checked_rect(size)?;
         let eyes = PerEye {
             left: eye_swapchain(session, format, size)?,
             right: eye_swapchain(session, format, size)?,
@@ -111,6 +108,13 @@ impl Swapchains {
     }
 }
 
+/// The rectangle of an entire image of `size`, or the swapchain create's error for a size
+/// [`image_rect`] refuses.
+pub(crate) fn checked_rect(size: (u32, u32)) -> Result<Rect2Di, XrError> {
+    let code = sys::Result::ERROR_SWAPCHAIN_RECT_INVALID;
+    image_rect(size).ok_or(XrError { step: XrStep::CreateSwapchain, code })
+}
+
 /// The rectangle of an entire image of `size`, or `None` for an empty size or one a rectangle's
 /// signed extent cannot hold.
 fn image_rect(size: (u32, u32)) -> Option<Rect2Di> {
@@ -121,8 +125,8 @@ fn image_rect(size: (u32, u32)) -> Option<Rect2Di> {
     (width > 0 && height > 0).then_some(Rect2Di { offset: Offset2Di { x: 0, y: 0 }, extent })
 }
 
-/// One eye's swapchain of `format` with images of `size`.
-fn eye_swapchain(
+/// One swapchain of `format` with images of `size`.
+pub(crate) fn eye_swapchain(
     session: &openxr::Session<D3D11>,
     format: SwapchainFormat,
     size: (u32, u32),
@@ -149,8 +153,9 @@ fn eye_swapchain(
 
 #[cfg(test)]
 mod tests {
-    use super::image_rect;
-    use openxr::{Extent2Di, Offset2Di, Rect2Di};
+    use super::{checked_rect, image_rect};
+    use crate::error::{XrError, XrStep};
+    use openxr::{Extent2Di, Offset2Di, Rect2Di, sys};
 
     #[test]
     fn an_image_rect_covers_the_entire_image() {
@@ -166,5 +171,13 @@ mod tests {
         assert_eq!(image_rect((0, 1600)), None);
         assert_eq!(image_rect((1280, 0)), None);
         assert_eq!(image_rect((u32::MAX, 1600)), None);
+    }
+
+    #[test]
+    fn a_size_with_no_rect_is_the_swapchain_create_s_rect_error() {
+        let code = sys::Result::ERROR_SWAPCHAIN_RECT_INVALID;
+        let error = XrError { step: XrStep::CreateSwapchain, code };
+        assert_eq!(checked_rect((0, 360)), Err(error));
+        assert_eq!(checked_rect((640, 360)).map(|rect| rect.extent.width), Ok(640));
     }
 }

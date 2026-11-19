@@ -1,5 +1,5 @@
 //! The xr crate's unsafe edge: the runtime library load and the loader negotiation, the adapter
-//! list, the session create and the swapchain images.
+//! list, the session create, the action sync and the swapchain images.
 //!
 //! The runtime's library is loaded straight from the path its manifest names, so no
 //! `openxr_loader.dll` ships. It stays loaded until the process exits, since the entry points of
@@ -13,9 +13,10 @@
 use std::ffi::c_void;
 use std::mem;
 use std::path::Path;
+use std::ptr;
 
 use openxr::sys::{self, NegotiateLoaderInfo, NegotiateRuntimeRequest, pfn};
-use openxr::{D3D11, Entry, FrameStream, FrameWaiter, Instance, Session, SystemId};
+use openxr::{ActionSet, D3D11, Entry, FrameStream, FrameWaiter, Instance, Session, SystemId};
 use windows::Win32::Foundation::LUID;
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, IDXGIFactory1};
@@ -127,6 +128,22 @@ pub(crate) fn create_session(
     // checked the device's feature level against them, and the caller keeps a reference to the
     // device for as long as the session lives.
     unsafe { instance.create_session::<D3D11>(system, &info) }
+}
+
+/// Syncs `set`, attached to `session`, and returns the runtime's code. The `openxr` crate's
+/// `Session::sync_actions` drops a success code, so it hides `XR_SESSION_NOT_FOCUSED`.
+pub(crate) fn sync_actions(session: &Session<D3D11>, set: &ActionSet) -> sys::Result {
+    let active = sys::ActiveActionSet { action_set: set.as_raw(), subaction_path: sys::Path::NULL };
+    let info = sys::ActionsSyncInfo {
+        ty: sys::ActionsSyncInfo::TYPE,
+        next: ptr::null(),
+        count_active_action_sets: 1,
+        active_action_sets: &raw const active,
+    };
+    let sync = session.instance().fp().sync_actions;
+    // SAFETY: `session` and `set` are live handles of one instance, `info` points to one active
+    // set, and both structures live for the call.
+    unsafe { sync(session.as_raw(), &raw const info) }
 }
 
 /// The textures of a D3D11 swapchain's `images`, each with a reference of its own, or `None` when

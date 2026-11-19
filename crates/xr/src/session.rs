@@ -1,20 +1,25 @@
-//! The session: its state changes, its frame loop and the two quad layers it submits.
+//! The session: its state changes, its frame loop, its controller input and the quad layers it
+//! submits.
 //!
 //! The caller polls the session's events, and while the session runs it waits for each frame,
-//! draws into the swapchains of [`crate::swapchain`] and ends the frame. The session follows the
-//! session lifecycle of the OpenXR specification through the steps of `state.rs`.
+//! reads the controllers' input, draws into the swapchains of [`crate::swapchain`] and the panels
+//! of [`crate::panel`], and ends the frame. The session follows the session lifecycle of the
+//! OpenXR specification through the steps of `state.rs`.
 
 use openxr::{
-    CompositionLayerQuad, D3D11, EnvironmentBlendMode, Event, EventDataBuffer, EyeVisibility,
-    FrameStream, FrameWaiter, Instance, Posef, ReferenceSpaceType, SessionState, Space,
-    SwapchainSubImage, Time, ViewConfigurationType, sys,
+    CompositionLayerBase, CompositionLayerQuad, D3D11, EnvironmentBlendMode, Event,
+    EventDataBuffer, Extent2Df, FrameStream, FrameWaiter, Instance, Posef, ReferenceSpaceType,
+    SessionState, Space, Time, ViewConfigurationType, sys,
 };
-use stereo_core::eye::Eye;
 use tracing::{info, warn};
 use windows::Win32::Graphics::Direct3D11::ID3D11Device;
 
+use crate::controls::{Controls, ReadAt};
 use crate::error::{XrError, XrStep};
 use crate::format::{self, SwapchainFormat};
+use crate::input::Input;
+use crate::layers;
+use crate::panel::Panel;
 use crate::quad::ScreenQuad;
 use crate::raw;
 use crate::runtime::Headset;
@@ -69,6 +74,7 @@ enum Observed {
     State(SessionState),
     InstanceLoss,
     EventsLost(u32),
+    InteractionProfileChanged,
     Other,
 }
 
@@ -76,6 +82,9 @@ impl Observed {
     fn of(event: &Event<'_>) -> Self {
         if let Event::SessionStateChanged(changed) = event {
             return Self::State(changed.state());
+        }
+        if let Event::InteractionProfileChanged(_) = event {
+            return Self::InteractionProfileChanged;
         }
         if let Event::InstanceLossPending(_) = event {
             return Self::InstanceLoss;
@@ -87,9 +96,13 @@ impl Observed {
     }
 }
 
-/// An OpenXR session that draws with one D3D11 device, with its LOCAL reference space. Fields drop
-/// in declaration order, so the device outlives the session's handles.
+/// An OpenXR session that draws with one D3D11 device, with its LOCAL reference space and the
+/// controls of its device profiles. Fields drop in declaration order, so the device outlives the
+/// session's handles.
 pub struct Session {
+    /// `None` when the session reads no controller, so every input read gives the idle input. No
+    /// profile was left, the runtime refused every profile, or a setup step failed.
+    controls: Option<Controls>,
     space: Space,
     stream: FrameStream<D3D11>,
     waiter: FrameWaiter,
@@ -132,7 +145,9 @@ impl Session {
             Err(code) => return Err(SessionError::Space(code)),
         };
         info!(swapchain_format = format.swapchain().0, "session created");
+        let controls = Controls::open(&headset.instance, &session, &headset.profiles);
         Ok(Self {
+            controls,
             space,
             stream,
             waiter,
@@ -181,6 +196,11 @@ impl Session {
                 return Ok(Polled::Ended);
             }
             Observed::EventsLost(count) => warn!(count, "the runtime dropped events"),
+            Observed::InteractionProfileChanged => {
+                if let Some(controls) = &self.controls {
+                    controls.log_interaction_profiles(&self.handle);
+                }
+            }
             Observed::Other => {}
         }
         Ok(Polled::Continue)
@@ -217,9 +237,26 @@ impl Session {
         })
     }
 
+    /// Syncs the controllers' actions and reads their input and the head's pose at the display
+    /// time of `timing`, in the LOCAL space. A session that reads no controller, or that lacks the
+    /// input focus, gives the idle input.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`XrError`] of the failed sync, state read or space location.
+    pub fn read_input(&self, timing: FrameTiming) -> Result<Input, XrError> {
+        let Some(controls) = &self.controls else {
+            return Ok(Input::default());
+        };
+        let at = ReadAt { session: &self.handle, base: &self.space, time: timing.display_time };
+        controls.read(at)
+    }
+
     /// Ends the frame of `timing`. `shown` gives each eye a quad layer of `quad` that only that
-    /// eye sees, with the image the caller last released into that eye's swapchain. Without
-    /// `shown`, the frame holds no layer, so the headset shows the runtime's black.
+    /// eye sees, with the image the caller last released into that eye's swapchain. Each panel
+    /// of `panels` then adds one quad layer both eyes see, in the list's order, so a later layer
+    /// covers an earlier one. A frame with neither holds no layer, so the headset shows the
+    /// runtime's black.
     ///
     /// # Errors
     ///
@@ -228,25 +265,15 @@ impl Session {
         &mut self,
         timing: FrameTiming,
         shown: Option<(&Swapchains, ScreenQuad)>,
+        panels: &[&Panel],
     ) -> Result<(), XrError> {
+        let space = &self.space;
+        let quads: Vec<CompositionLayerQuad<'_, D3D11>> =
+            layers::order(shown, panels).map(|layer| layers::quad(space, layer)).collect();
+        let bases: Vec<&CompositionLayerBase<'_, D3D11>> =
+            quads.iter().map(|quad| &**quad).collect();
         let blend = EnvironmentBlendMode::OPAQUE;
-        let Some((swapchains, quad)) = shown else {
-            let ended = self.stream.end(timing.display_time, blend, &[]);
-            return XrError::check(XrStep::EndFrame, ended);
-        };
-        let rect = swapchains.image_rect();
-        let layer = |eye: Eye| {
-            let swapchain = swapchains.eye(eye).handle();
-            let image = SwapchainSubImage::new().swapchain(swapchain).image_rect(rect);
-            CompositionLayerQuad::new()
-                .space(&self.space)
-                .eye_visibility(visibility(eye))
-                .sub_image(image)
-                .pose(quad.pose)
-                .size(quad.size)
-        };
-        let (left, right) = (layer(Eye::Left), layer(Eye::Right));
-        let ended = self.stream.end(timing.display_time, blend, &[&*left, &*right]);
+        let ended = self.stream.end(timing.display_time, blend, &bases);
         XrError::check(XrStep::EndFrame, ended)
     }
 
@@ -258,11 +285,20 @@ impl Session {
     pub fn create_swapchains(&self, size: (u32, u32)) -> Result<Swapchains, XrError> {
         Swapchains::create(&self.handle, self.format, size)
     }
-}
 
-const fn visibility(eye: Eye) -> EyeVisibility {
-    match eye {
-        Eye::Left => EyeVisibility::LEFT,
-        Eye::Right => EyeVisibility::RIGHT,
+    /// Creates a panel with images of `pixels` in the session's format, on a quad at `pose` in the
+    /// LOCAL space of `size` meters.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`XrError`] of an empty or oversized `pixels`, and of the failed create or
+    /// image list.
+    pub fn create_panel(
+        &self,
+        pixels: (u32, u32),
+        pose: Posef,
+        size: Extent2Df,
+    ) -> Result<Panel, XrError> {
+        Panel::create(&self.handle, self.format, pixels, pose, size)
     }
 }

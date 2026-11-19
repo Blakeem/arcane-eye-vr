@@ -4,8 +4,9 @@
 Builds the mod, stages it in dist/, and installs the two game DLLs into the game's bin folder.
 .DESCRIPTION
 dist/ holds the launch app, the debug viewer and the trial runner at paths that stay the same across builds and
-profiles, so a Steam "Add a Non-Steam Game" entry keeps working. dist/game-bin/ holds the files
-the game's bin folder receives. A normal Steam launch stays unmodded while the DLLs are installed.
+cargo profiles, so a Steam "Add a Non-Steam Game" entry keeps working. dist/profiles/ holds the launch app's
+device profiles. dist/game-bin/ holds the files the game's bin folder receives. A normal Steam launch stays
+unmodded while the DLLs are installed.
 .PARAMETER Configuration
 The cargo profile. A debug build carries the allocation guard. A release build gives headset frame times.
 .PARAMETER GameBin
@@ -32,6 +33,8 @@ $GameFolder = 'Baldurs Gate 3'
 $ProxyDll = 'version.dll'
 $CoreDll = 'arcane_eye_core.dll'
 $StagedApps = @('arcane-eye-vr.exe', 'viewer.exe', 'trial.exe')
+# The launch app reads its device profiles from the folder of this name beside its exe.
+$StagedFolders = @('profiles')
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $StageRoot = Join-Path $RepoRoot 'dist'
 $StageGameBin = Join-Path $StageRoot 'game-bin'
@@ -94,7 +97,27 @@ function Copy-BuildToStage {
     $buildDir = Join-Path $targetDir $Configuration
     New-Item -ItemType Directory -Force $StageGameBin | Out-Null
     foreach ($name in $StagedApps) { Copy-Item (Join-Path $buildDir $name) $StageRoot -Force }
+    foreach ($name in $StagedFolders) { Sync-StagedFolder -Name $name }
     foreach ($name in $CoreDll, $ProxyDll) { Copy-Item (Join-Path $buildDir $name) $StageGameBin -Force }
+}
+
+function Sync-StagedFolder {
+    param([string] $Name)
+    $repoFolder = Join-Path $RepoRoot $Name
+    $stagedFolder = Join-Path $StageRoot $Name
+    New-Item -ItemType Directory -Force $stagedFolder | Out-Null
+    # The launch app loads every *.toml file of the staged folder, so a file the repo folder lost must go.
+    $stale = @(Get-ChildItem -LiteralPath $stagedFolder -File |
+            Where-Object { -not (Test-Path -LiteralPath (Join-Path $repoFolder $_.Name)) })
+    foreach ($file in $stale) { Move-ToRecycleBin -Path $file.FullName }
+    Copy-Item (Join-Path $repoFolder '*') $stagedFolder -Force
+}
+
+function Move-ToRecycleBin {
+    param([string] $Path)
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($Path, 'OnlyErrorDialogs', 'SendToRecycleBin')
+    Write-Host "Moved to the Recycle Bin: $Path"
 }
 
 function Install-ToGame {
@@ -105,14 +128,10 @@ function Install-ToGame {
 
 function Uninstall-FromGame {
     param([string] $Bin)
-    Add-Type -AssemblyName Microsoft.VisualBasic
     # The proxy goes first, for the same reason the install copies it last.
     $installed = @($ProxyDll, $CoreDll | ForEach-Object { Join-Path $Bin $_ } | Where-Object { Test-Path $_ })
     if ($installed.Count -eq 0) { Write-Host "Nothing to remove in $Bin" }
-    foreach ($path in $installed) {
-        [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($path, 'OnlyErrorDialogs', 'SendToRecycleBin')
-        Write-Host "Moved to the Recycle Bin: $path"
-    }
+    foreach ($path in $installed) { Move-ToRecycleBin -Path $path }
 }
 
 Push-Location $RepoRoot

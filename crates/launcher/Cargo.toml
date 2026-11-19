@@ -12,6 +12,7 @@ name = "arcane-eye-vr"
 path = "src/main.rs"
 
 [dependencies]
+device-profile = { path = "../device-profile" }
 diag = { path = "../diag" }
 gfx = { path = "../gfx" }
 ipc-layout = { path = "../ipc-layout" }

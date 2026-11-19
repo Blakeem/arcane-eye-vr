@@ -2,10 +2,12 @@
 //! of each frame to the left eye and the right half to the right eye.
 //!
 //! `picture.rs` reads the newest published frame from the viewer link, and `eyes.rs` draws its
-//! halves into the swapchains of the `xr` crate's session. The screen runs until Steam reports that
-//! the game ended, the runtime ends the session or the game's frames are of a kind it cannot show.
-//! The game window keeps the keyboard and the mouse, since the screen has no window.
+//! halves into the swapchains of the `xr` crate's session. `controls.rs` reads the device profiles
+//! and logs what the controllers do in each frame. The screen runs until Steam reports that the game
+//! ended, the runtime ends the session or the game's frames are of a kind it cannot show. The game
+//! window keeps the keyboard and the mouse, since the screen has no window.
 
+mod controls;
 mod eyes;
 pub(crate) mod failure;
 mod picture;
@@ -32,6 +34,7 @@ use xr::runtime::Runtime;
 use xr::session::{Lifecycle, Session};
 use xr::swapchain::Swapchains;
 
+use self::controls::Controllers;
 use self::eyes::{Eyes, EyesError};
 use self::failure::ScreenFailure;
 use self::picture::{Link, Unshowable};
@@ -133,7 +136,7 @@ pub(crate) fn run(manifest: &Path, settings: ScreenSettings) -> Result<(), Scree
         return Err(ScreenFailure::Heartbeat(error));
     }
     let runtime = Runtime::load(manifest)?;
-    let headset = runtime.connect()?;
+    let headset = runtime.connect(controls::profiles())?;
     let luid = headset.adapter()?.luid();
     let device = match Device::create(AdapterLuid { low: luid.LowPart, high: luid.HighPart }) {
         Ok(device) => device,
@@ -148,6 +151,7 @@ pub(crate) fn run(manifest: &Path, settings: ScreenSettings) -> Result<(), Scree
         draw,
         device,
         settings,
+        controllers: Controllers::new(),
         first_shown: Once::new(),
     };
     screen.show_until_end(&mut GameWatch::new(Instant::now()))
@@ -185,6 +189,7 @@ struct Screen {
     draw: RegionDraw,
     device: Device,
     settings: ScreenSettings,
+    controllers: Controllers,
     first_shown: Once,
 }
 
@@ -220,11 +225,12 @@ impl Screen {
         }
     }
 
-    /// Waits for the session's next frame, draws the newest published frame into it when the
-    /// runtime shows the frame, and ends it.
+    /// Waits for the session's next frame, reads the controllers, draws the newest published frame
+    /// into it when the runtime shows the frame, and ends it.
     fn frame(&mut self) -> Result<(), FrameError> {
         let timing = self.session.wait_frame()?;
-        let Self { eyes, link, session, draw, device, settings, first_shown } = self;
+        self.controllers.read(&self.session, timing)?;
+        let Self { eyes, link, session, draw, device, settings, first_shown, .. } = self;
         let drawn =
             if timing.should_render { show(eyes, link, session, draw, device)? } else { None };
         let (distance_m, width_m) = (settings.distance_m.meters(), settings.width_m.meters());
@@ -235,7 +241,7 @@ impl Screen {
             let (width, height) = swapchains.size();
             once!(*first_shown, Level::INFO, width, height, "first frame shown in the headset");
         }
-        session.end_frame(timing, shown)?;
+        session.end_frame(timing, shown, &[])?;
         Ok(())
     }
 }

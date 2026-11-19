@@ -1,0 +1,23 @@
+version = 1
+name = "HTC Vive controller"
+interaction_profile = "/interaction_profiles/htc/vive_controller"
+
+[left]
+aim = "/user/hand/left/input/aim/pose"
+grip = "/user/hand/left/input/grip/pose"
+menu = "/user/hand/left/input/menu/click"
+select = "/user/hand/left/input/trigger/value"
+secondary = "/user/hand/left/input/squeeze/click"
+middle = "/user/hand/left/input/trackpad/click"
+scroll = "/user/hand/left/input/trackpad"
+haptic = "/user/hand/left/output/haptic"
+
+[right]
+aim = "/user/hand/right/input/aim/pose"
+grip = "/user/hand/right/input/grip/pose"
+menu = "/user/hand/right/input/menu/click"
+select = "/user/hand/right/input/trigger/value"
+secondary = "/user/hand/right/input/squeeze/click"
+middle = "/user/hand/right/input/trackpad/click"
+scroll = "/user/hand/right/input/trackpad"
+haptic = "/user/hand/right/output/haptic"

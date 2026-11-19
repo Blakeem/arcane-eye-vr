@@ -5,11 +5,13 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use device_profile::profile::DeviceProfile;
 use openxr::{ApplicationInfo, D3D11, ExtensionSet, FormFactor, Instance, SystemId, sys};
 use tracing::{info, warn};
 use windows::Win32::Foundation::LUID;
 
 use crate::adapter::{self, AdapterChoice};
+use crate::extensions::{self, Chosen};
 use crate::manifest::{self, ManifestError};
 use crate::raw;
 
@@ -80,15 +82,23 @@ impl Runtime {
         Ok(Self { entry: raw::load_entry(&library)? })
     }
 
-    /// Creates an instance with D3D11 support and finds its head-mounted system. Creating an
-    /// instance starts SteamVR when it does not run.
+    /// Creates an instance with D3D11 support and the extensions of `profiles` that the runtime
+    /// lists, and finds its head-mounted system. A profile whose extension the runtime does not list
+    /// is left out with a warning. Creating an instance starts SteamVR when it does not run.
     ///
     /// # Errors
     ///
     /// Returns the [`ConnectError`] of the call that failed.
-    pub fn connect(&self) -> Result<Headset, ConnectError> {
-        let mut extensions = ExtensionSet::default();
-        extensions.khr_d3d11_enable = true;
+    pub fn connect(&self, profiles: Vec<DeviceProfile>) -> Result<Headset, ConnectError> {
+        let Chosen { kept, left_out, extensions } = extensions::choose(profiles, &self.listed());
+        for profile in &left_out {
+            let extension = profile.extension.as_deref().unwrap_or_default();
+            warn!(
+                profile = %profile.name,
+                extension,
+                "the runtime lacks the device profile's extension, so the profile is left out"
+            );
+        }
         let app = ApplicationInfo {
             application_name: APP_NAME,
             application_version: 1,
@@ -116,7 +126,20 @@ impl Runtime {
             system,
             adapter: LUID { LowPart: adapter.LowPart, HighPart: adapter.HighPart },
             min_feature_level: requirements.min_feature_level,
+            profiles: kept,
         })
+    }
+
+    /// The extensions the runtime lists. A failed list holds none, so only the device profiles
+    /// that need no extension stay.
+    fn listed(&self) -> ExtensionSet {
+        match self.entry.enumerate_extensions() {
+            Ok(listed) => listed,
+            Err(code) => {
+                warn!(code = ?code, "the runtime's extensions could not be listed");
+                ExtensionSet::default()
+            }
+        }
     }
 }
 
@@ -137,12 +160,14 @@ fn log_system(instance: &Instance, system: SystemId) {
     }
 }
 
-/// An instance, its head-mounted system and the runtime's D3D11 requirements.
+/// An instance, its head-mounted system, the runtime's D3D11 requirements and the device profiles
+/// whose extensions the instance enabled.
 pub struct Headset {
     pub(crate) instance: Instance,
     pub(crate) system: SystemId,
     adapter: LUID,
     pub(crate) min_feature_level: i32,
+    pub(crate) profiles: Vec<DeviceProfile>,
 }
 
 impl Headset {
