@@ -41,15 +41,19 @@ pub(super) fn log_camera(frame: &FrameCamera) {
 }
 
 /// Logs the UI depth's lines. The `ui depth` line holds the nearest distance of
-/// [`DepthReport::nearest_m`], the columns per half of the UI disparity in use and the eye scale in
-/// use. The `cursor depth` line holds what the newest pointer read's result is over, `ui`, `scene`
-/// or `none` for no result, and the cursor's moves in use in the left half and the right half.
+/// [`DepthReport::nearest_m`], the columns per half of the UI disparity in use, the eye scale in
+/// use, the depth offset in use as a share and where it comes from, `screen`, `setting` or `none`
+/// for no depth offset. The `cursor depth` line holds what the newest pointer read's result is
+/// over, `ui`, `scene` or `none` for no result, and the cursor's moves in use in the left half and
+/// the right half.
 pub(super) fn log_depth(depth: DepthReport, cursor: CursorReport) {
     tracing::info!(
         target: TARGET,
         nearest_m = ?depth.nearest_m(),
         ui_columns = depth.columns,
         eye_scale = ?depth.eye_scale.share(),
+        offset = ?depth.offset.share(),
+        offset_from = depth.offset.origin().as_str(),
         "ui depth"
     );
     tracing::info!(

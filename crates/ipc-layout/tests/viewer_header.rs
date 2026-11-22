@@ -2,12 +2,14 @@
 
 #[cfg(test)]
 mod tests {
-    use ipc_layout::viewer_header::pose::{FrameTag, HeadPose, HeadSample};
+    use ipc_layout::viewer_header::pose::{FrameTag, HeadPose, HeadRead, HeadSample};
+    use ipc_layout::viewer_header::screen::{ParallelShare, ScreenRead};
     use ipc_layout::viewer_header::{
         Acquire, AdapterLuid, EYE_DISTANCE_OFFSET, EyeRect, FRAME_ASPECT_OFFSET,
         FRAME_FOV_Y_OFFSET, FRAME_HEAD_SEQUENCE_OFFSET, FRAME_OFFSET, GENERATION_OFFSET,
         HEAD_ORIENTATION_OFFSET, HEAD_POSITION_OFFSET, HEAD_SEQUENCE_OFFSET, HEARTBEAT_OFFSET,
-        HeaderError, PRESENT_OFFSET, SIZE, TextureInfo, ViewerHeader, WIDTH_OFFSET, WORDS,
+        HeaderError, PARALLEL_SHARE_OFFSET, PRESENT_OFFSET, SCREEN_SEQUENCE_OFFSET, SIZE,
+        TextureInfo, ViewerHeader, WIDTH_OFFSET, WORDS,
     };
 
     /// A LUID low part whose four bytes differ, so a swapped byte order shows.
@@ -31,8 +33,6 @@ mod tests {
 
     #[test]
     fn layout_constants_match_the_word_layout() {
-        assert_eq!(WORDS, 32);
-        assert_eq!(SIZE, 128);
         assert_eq!(WIDTH_OFFSET, 16);
         assert_eq!(GENERATION_OFFSET, 60);
         assert_eq!(FRAME_OFFSET, 64);
@@ -48,10 +48,17 @@ mod tests {
     }
 
     #[test]
+    fn the_screen_slot_sits_at_bytes_128_and_132_of_a_192_byte_header() {
+        assert_eq!((SIZE, WORDS), (192, 48));
+        assert_eq!(SCREEN_SEQUENCE_OFFSET, 128);
+        assert_eq!(PARALLEL_SHARE_OFFSET, 132);
+    }
+
+    #[test]
     fn encode_writes_each_field_at_its_layout_word() {
         let words = ViewerHeader::new(texture(), 7, FRAME, PRESENT).encode();
         assert_eq!(words[0].to_le_bytes(), *b"B3SV");
-        assert_eq!(words[1], 3, "layout version 3");
+        assert_eq!(words[1], 4, "layout version 4");
         assert_eq!(words[2], LUID_LOW, "adapter LUID low part");
         assert_eq!(words[3], LUID_HIGH_BITS, "adapter LUID high part -2");
         assert_eq!(words[4..7], [1920, 1080, 28], "width, height and format");
@@ -65,7 +72,7 @@ mod tests {
             words[19], 0,
             "the head sequence of a header the core made, which means no pose"
         );
-        assert_eq!(words[20..], [0; 12], "head pose, frame tag and reserved");
+        assert_eq!(words[20..], [0; 28], "head pose, frame tag, screen and reserved");
     }
 
     /// The tag of a frame with the head sequence 6, 0.96 radians of vertical field of view and the
@@ -77,7 +84,7 @@ mod tests {
         let words = ViewerHeader::new(texture(), 7, FRAME, PRESENT).with_frame_tag(TAG).encode();
         assert_eq!(words[28..31], [6, 0.96_f32.to_bits(), 1.777_777_8_f32.to_bits()]);
         assert_eq!(words[19..28], [0; 9], "no head pose");
-        assert_eq!(words[31], 0, "reserved");
+        assert_eq!(words[31..], [0; 17], "reserved, no screen and reserved");
     }
 
     #[test]
@@ -104,17 +111,24 @@ mod tests {
         words[1] = 2;
         let error = ViewerHeader::decode(&words).expect_err("layout version 2");
         assert_eq!(error, HeaderError::LayoutVersion { found: 2 });
-        assert_eq!(error.to_string(), "the viewer header's layout version is 2, not 3");
+        assert_eq!(error.to_string(), "the viewer header's layout version is 2, not 4");
+        words[1] = 3;
+        let version_3 = ViewerHeader::decode(&words).expect_err("layout version 3");
+        assert_eq!(version_3, HeaderError::LayoutVersion { found: 3 });
     }
 
     #[test]
-    fn core_words_cover_every_word_but_the_heartbeat_and_the_head_pose_in_ascending_order() {
+    fn core_words_cover_every_word_but_the_heartbeat_the_head_pose_and_the_screen_in_order() {
         let header = ViewerHeader::new(texture(), 5, 6, 8).with_frame_tag(TAG);
         let words = header.encode();
         let written: Vec<(usize, u32)> = header.core_words().collect();
-        assert_eq!(written.len(), WORDS - 10, "the heartbeat and the 9 head pose words left out");
-        let viewer_owned =
-            |offset: usize| offset == HEARTBEAT_OFFSET || (76..112).contains(&offset);
+        let left_out = "the heartbeat, the 9 head pose words and the 2 screen words left out";
+        assert_eq!(written.len(), WORDS - 12, "{left_out}");
+        let viewer_owned = |offset: usize| {
+            offset == HEARTBEAT_OFFSET
+                || (76..112).contains(&offset)
+                || (128..136).contains(&offset)
+        };
         assert!(written.iter().all(|(offset, _word)| !viewer_owned(*offset)), "{written:?}");
         assert!(written.is_sorted_by_key(|(offset, _word)| *offset), "{written:?}");
         for (offset, word) in &written {
@@ -138,7 +152,8 @@ mod tests {
     /// The head pose a reader takes from `words`, with the sequence number read again unchanged.
     fn read_pose(words: &[u32; WORDS]) -> Option<HeadSample> {
         let head = ViewerHeader::decode(words).expect("a valid header").head();
-        head.sample(head.sequence())
+        let HeadRead::Ended { sample } = head.read(head.sequence()) else { return None };
+        sample
     }
 
     #[test]
@@ -156,6 +171,62 @@ mod tests {
         assert_eq!(read_pose(&words), Some(expected));
         words[19] = 3;
         assert_eq!(read_pose(&words), None, "a header whose head sequence is 3");
+    }
+
+    /// Applies the viewer's writes of the parallel share `share` to `words` up to the write
+    /// `writes_applied` and returns the sequence number the entire write ends with.
+    fn write_screen(words: &mut [u32; WORDS], share: f32, writes_applied: usize) -> u32 {
+        let header = ViewerHeader::decode(words).expect("a valid header");
+        let share = ParallelShare::new(share).expect("a share above 0");
+        let (sequence, writes) = header.screen().writes(share);
+        for (offset, value) in writes.into_iter().take(writes_applied) {
+            words[offset / 4] = value;
+        }
+        sequence
+    }
+
+    /// The parallel share a reader takes from `words`, with the sequence number read again
+    /// unchanged.
+    fn read_screen(words: &[u32; WORDS]) -> Option<f32> {
+        let screen = ViewerHeader::decode(words).expect("a valid header").screen();
+        let ScreenRead::Ended { share, .. } = screen.read(screen.sequence()) else { return None };
+        share.map(ParallelShare::share)
+    }
+
+    #[test]
+    fn a_first_screen_write_ends_on_2_and_a_read_gives_its_share() {
+        let mut words = ViewerHeader::new(texture(), 1, 1, 1).encode();
+        assert_eq!(read_screen(&words), None, "a header the core made holds no screen");
+        assert_eq!(write_screen(&mut words, 0.0065, 3), 2, "the first write");
+        assert_eq!(words[32], 2, "the screen sequence at byte 128");
+        assert_eq!(words[33], 0.0065_f32.to_bits(), "the parallel share at byte 132");
+        assert_eq!(read_screen(&words), Some(0.0065));
+        assert_eq!(write_screen(&mut words, 0.021_666_7, 3), 4, "the second write");
+        assert_eq!(read_screen(&words), Some(0.021_666_7));
+    }
+
+    #[test]
+    fn a_read_between_the_two_sequence_writes_gives_no_share() {
+        let mut words = ViewerHeader::new(texture(), 1, 1, 1).encode();
+        write_screen(&mut words, 0.0065, 3);
+        let first_read = ViewerHeader::decode(&words).expect("a valid header").screen();
+        write_screen(&mut words, 0.02, 1);
+        assert_eq!(words[32], 3, "the second write's odd number");
+        assert_eq!(read_screen(&words), None, "a read while the write runs");
+        let read_again = ViewerHeader::decode(&words).expect("a valid header").screen();
+        assert_eq!(first_read.read(read_again.sequence()), ScreenRead::Running, "2, then 3");
+        write_screen(&mut words, 0.02, 3);
+        assert_eq!(read_screen(&words), Some(0.02), "the ended write");
+    }
+
+    #[test]
+    fn the_core_words_leave_the_screen_slot_as_the_viewer_wrote_it() {
+        let mut words = ViewerHeader::new(texture(), 1, 1, 1).encode();
+        write_screen(&mut words, 0.0065, 3);
+        for (offset, word) in ViewerHeader::new(texture(), 2, 2, 2).core_words() {
+            words[offset / 4] = word;
+        }
+        assert_eq!(read_screen(&words), Some(0.0065));
     }
 
     const S_FALSE: i32 = 1;

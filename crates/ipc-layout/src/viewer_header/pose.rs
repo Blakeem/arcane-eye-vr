@@ -2,7 +2,8 @@
 //!
 //! The viewing side writes a head pose under a sequence number. The number is odd while a write runs
 //! and even once it ended, and 0 means that no write ended yet. A reader that reads the same even
-//! number before and after the pose read a pose that no write changed during the read.
+//! number before and after the pose read a pose that no write changed during the read. The screen
+//! slot of [`super::screen`] follows the same rule.
 
 use core::iter;
 use core::ops::RangeInclusive;
@@ -42,13 +43,25 @@ pub struct HeadSample {
 
 /// The words the viewing side writes for a head pose, as one read of a header found them: the
 /// sequence number, the pose and the eye distance in meters. A write may have changed them during
-/// that read, which [`HeadSlot::sample`] detects.
+/// that read, which [`HeadSlot::read`] detects.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HeadSlot {
     pub(super) sequence: u32,
     pub(super) pose: HeadPose,
     pub(super) eye_distance_m: f32,
+}
+
+/// What a read of the head slot found, as [`HeadSlot::read`] tells it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HeadRead {
+    /// No write ended since the core created the header: the sequence number 0 on both reads.
+    Empty,
+    /// A write ran during the read: an odd sequence number or two different ones.
+    Running,
+    /// A write ended before the read. `sample` is its head pose, or `None` when a value of it is
+    /// not finite.
+    Ended { sample: Option<HeadSample> },
 }
 
 /// The number of words of a [`HeadSlot`].
@@ -83,14 +96,20 @@ impl HeadSlot {
         self.sequence
     }
 
-    /// The head pose of this slot, whose words were read in ascending offset order, with
-    /// `sequence_again` the sequence number read after them. It is `None` unless both sequence
-    /// numbers are the same even number above 0 and every value is finite.
-    pub fn sample(&self, sequence_again: u32) -> Option<HeadSample> {
+    /// What a read of this slot found, whose words were read in ascending offset order, with
+    /// `sequence_again` the sequence number read after them. A pose counts only when both sequence
+    /// numbers are the same even number above 0.
+    pub fn read(&self, sequence_again: u32) -> HeadRead {
         let Self { sequence, pose, eye_distance_m } = *self;
-        let ended = sequence == sequence_again && sequence.is_multiple_of(2) && sequence > 0;
-        let finite = pose.is_finite() && eye_distance_m.is_finite();
-        (ended && finite).then_some(HeadSample { sequence, pose, eye_distance_m })
+        if ended(sequence, sequence_again) {
+            let finite = pose.is_finite() && eye_distance_m.is_finite();
+            let sample = finite.then_some(HeadSample { sequence, pose, eye_distance_m });
+            return HeadRead::Ended { sample };
+        }
+        if write_ran(sequence, sequence_again) {
+            return HeadRead::Running;
+        }
+        HeadRead::Empty
     }
 
     /// The writes of `pose` and `eye_distance_m` after this slot, as byte offsets in the header and
@@ -112,10 +131,23 @@ impl HeadSlot {
     }
 }
 
+/// Whether a read between the sequence numbers `sequence` and `sequence_again` read words that no
+/// write changed: both are the same even number above 0.
+pub(super) const fn ended(sequence: u32, sequence_again: u32) -> bool {
+    sequence == sequence_again && sequence.is_multiple_of(2) && sequence > 0
+}
+
+/// Whether a write ran during a read between the sequence numbers `sequence` and
+/// `sequence_again`: an odd number or two different ones.
+pub(super) const fn write_ran(sequence: u32, sequence_again: u32) -> bool {
+    sequence != sequence_again || !sequence.is_multiple_of(2)
+}
+
 /// The odd sequence number a write after the value `current` starts with and the even number it
 /// ends with. After the largest even number the numbers start again at 1 and 2, since 0 means no
-/// pose. An odd `current`, which a writer that stopped mid-write leaves, is the start of the write.
-const fn next_sequences(current: u32) -> (u32, u32) {
+/// write ended. An odd `current`, which a writer that stopped mid-write leaves, is the start of the
+/// write.
+pub(super) const fn next_sequences(current: u32) -> (u32, u32) {
     let start = current | 1;
     match start.checked_add(1) {
         Some(end) => (start, end),
@@ -156,7 +188,7 @@ impl FrameTag {
 
 #[cfg(test)]
 mod tests {
-    use super::{HeadPose, HeadSample, HeadSlot, next_sequences};
+    use super::{HeadPose, HeadRead, HeadSample, HeadSlot, next_sequences};
 
     const POSE: HeadPose =
         HeadPose { position: [0.1, 1.6, -0.3], orientation: [0.0, 0.0, 0.0, 1.0] };
@@ -181,22 +213,24 @@ mod tests {
 
     #[test]
     fn a_read_gives_a_pose_only_between_two_equal_even_numbers_above_0() {
-        let read = |before, after| slot(before, POSE, 0.064).sample(after);
+        let read = |before, after| slot(before, POSE, 0.064).read(after);
         let sample = HeadSample { sequence: 4, pose: POSE, eye_distance_m: 0.064 };
-        assert_eq!(read(4, 4), Some(sample));
-        assert_eq!(read(0, 0), None, "no write ended yet");
-        assert_eq!(read(3, 3), None, "a write runs");
-        assert_eq!(read(4, 6), None, "a write ran during the read");
-        assert_eq!(read(4, 5), None, "a write started during the read");
+        assert_eq!(read(4, 4), HeadRead::Ended { sample: Some(sample) });
+        assert_eq!(read(0, 0), HeadRead::Empty, "no write ended yet");
+        assert_eq!(read(3, 3), HeadRead::Running, "a write runs");
+        assert_eq!(read(4, 6), HeadRead::Running, "a write ran during the read");
+        assert_eq!(read(4, 5), HeadRead::Running, "a write started during the read");
+        assert_eq!(read(0, 1), HeadRead::Running, "the first write started during the read");
     }
 
     #[test]
-    fn a_read_of_a_value_that_is_not_finite_gives_no_pose() {
+    fn a_read_of_a_value_that_is_not_finite_gives_an_ended_write_with_no_pose() {
+        let no_pose = HeadRead::Ended { sample: None };
         let torn = HeadPose { orientation: [0.0, 0.0, 0.0, f32::NAN], ..POSE };
-        assert_eq!(slot(2, torn, 0.064).sample(2), None, "a NaN orientation");
+        assert_eq!(slot(2, torn, 0.064).read(2), no_pose, "a NaN orientation");
         let far = HeadPose { position: [f32::INFINITY, 0.0, 0.0], ..POSE };
-        assert_eq!(slot(2, far, 0.064).sample(2), None, "an infinite position");
-        assert_eq!(slot(2, POSE, f32::NAN).sample(2), None, "a NaN eye distance");
+        assert_eq!(slot(2, far, 0.064).read(2), no_pose, "an infinite position");
+        assert_eq!(slot(2, POSE, f32::NAN).read(2), no_pose, "a NaN eye distance");
     }
 
     #[test]

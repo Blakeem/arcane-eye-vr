@@ -169,9 +169,10 @@ fn a_perf_window_with_a_ui_layer_logs_one_ui_depth_and_cursor_depth_line_before_
     let position = |message: &str| lines.iter().position(|line| line.contains(message));
     let depth: Vec<&String> = lines.iter().filter(|line| line.contains("\"ui depth\"")).collect();
     let [line] = depth.as_slice() else { panic!("one ui depth line: {lines:#?}") };
-    let fields =
-        " arcane_eye_core::frame msg=\"ui depth\" nearest_m=-1.0 ui_columns=0 eye_scale=1.0";
-    assert!(line.ends_with(fields), "no result, no UI disparity and the full eye distance: {line}");
+    let fields = " arcane_eye_core::frame msg=\"ui depth\" nearest_m=-1.0 ui_columns=0 \
+                  eye_scale=1.0 offset=0.015 offset_from=setting";
+    let expected = "no result, no UI disparity, the full eye distance and the setting's offset";
+    assert!(line.ends_with(fields), "{expected}: {line}");
     let cursor: Vec<&String> =
         lines.iter().filter(|text| text.contains("\"cursor depth\"")).collect();
     let [cursor_line] = cursor.as_slice() else { panic!("one cursor depth line: {lines:#?}") };

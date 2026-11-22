@@ -1,6 +1,6 @@
-//! The game's side of the headset session: the viewer link's header with the head pose write, the
-//! shared texture opened at its generation, and the private copy of the newest published frame
-//! that the eye draws read, with the frame's tag.
+//! The game's side of the headset session: the viewer link's header with the head pose write and
+//! the screen write, the shared texture opened at its generation, and the private copy of the
+//! newest published frame that the eye draws read, with the frame's tag.
 //!
 //! The copy holds the keyed mutex for one copy of the entire frame and the read of the frame's tag,
 //! and waits on it at most as long as [`Device::copy_region`] does. A session frame with no new
@@ -12,10 +12,11 @@ use diag::rate::RateLimit;
 use diag::warn_every;
 use gfx::region::{RegionDraw, RegionError};
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose};
+use ipc_layout::viewer_header::screen::ParallelShare;
 use ipc_layout::viewer_header::{AdapterLuid, TextureInfo};
 use tracing::info;
 use viewer_client::frame::PixelFormat;
-use viewer_client::header::{HeaderReadError, Names, read_header, write_head_pose};
+use viewer_client::header::{HeaderReadError, Names, read_header, write_head_pose, write_screen};
 use viewer_client::region::Region;
 use viewer_client::{Device, GpuError, HeaderView, SharedTexture};
 use windows::Win32::Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11Texture2D};
@@ -118,8 +119,8 @@ impl Picture {
     }
 }
 
-/// The session's view of the viewer link, which reads the frames and writes the head pose. The
-/// heartbeat thread holds its own view of the header.
+/// The session's view of the viewer link, which reads the frames and writes the head pose and the
+/// screen. The heartbeat thread holds its own view of the header.
 pub(crate) struct Link {
     picture: Option<Picture>,
     header: Option<HeaderView>,
@@ -170,12 +171,29 @@ impl Link {
         pose: HeadPose,
         eye_distance_m: f32,
     ) -> Result<Option<u32>, HeaderReadError> {
-        let view = match read_header(&mut self.header, &self.names.mapping) {
-            Ok((view, _header)) => view,
-            Err(HeaderReadError::Missing) => return Ok(None),
-            Err(error) => return Err(error),
-        };
+        let Some(view) = self.header_view()? else { return Ok(None) };
         Ok(Some(write_head_pose(view, pose, eye_distance_m)?))
+    }
+
+    /// Writes `share`, the parallel share of the screen quad, into the viewer header, and writes
+    /// nothing while no core created the header.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`HeaderReadError`] of a header that cannot be opened or holds another layout.
+    pub(crate) fn write_screen(&mut self, share: ParallelShare) -> Result<(), HeaderReadError> {
+        let Some(view) = self.header_view()? else { return Ok(()) };
+        write_screen(view, share)?;
+        Ok(())
+    }
+
+    /// The viewer header a write goes into, or `None` while no core created it.
+    fn header_view(&mut self) -> Result<Option<&HeaderView>, HeaderReadError> {
+        match read_header(&mut self.header, &self.names.mapping) {
+            Ok((view, _header)) => Ok(Some(view)),
+            Err(HeaderReadError::Missing) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     fn update(&mut self, device: &Device, draw: &RegionDraw) -> Result<(), LinkError> {

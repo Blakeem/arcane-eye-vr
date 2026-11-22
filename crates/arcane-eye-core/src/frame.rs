@@ -309,10 +309,11 @@ fn on_frame(
     if let Some(devices) = &state.devices {
         if let Some(layer) = &mut state.ui_layer {
             let target = Target { swapchain, devices, size: back_buffer, window };
-            let stereo = state.vr.depth_stereo(input.stereo);
+            let screen = state.viewer.parallel_share(now);
+            let offset = state.vr.depth_offset(input.stereo, screen);
             let eye_m = state.vr.depth_eye_m(input.stereo);
             let (camera, mode) = (input.camera, state.vr.mode());
-            let depth = DepthInput { stereo, eye_m, camera, now, mode };
+            let depth = DepthInput { offset, eye_m, camera, now, mode };
             layer.on_frame(input.health, input.next, &depth, &target);
         }
         let tag = state.vr.tag(input.head_sequence, input.camera);

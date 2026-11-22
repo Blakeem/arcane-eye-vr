@@ -16,8 +16,8 @@
 //!                       at the depth of what is under the pointer, in `ui_depth`. 0 in every
 //!                       other frame
 //!   [pair]              a flat frame's entire picture into each half of the back buffer
-//!   [move]              a side by side frame's right half moved right by the player's depth
-//!                       offset, black in the columns it uncovers, in a frame that holds no UI yet
+//!   [move]              a side by side frame's right half moved right by the depth offset in
+//!                       use, black in the columns it uncovers, in a frame that holds no UI yet
 //!   [draw]              the UI key's texture over each half of the back buffer, moved by those
 //!                       columns
 //!   [cursor]            the game's cursor over each half of the back buffer, in each frame whose
@@ -34,13 +34,13 @@
 //! measured in the game). A failed draw of the pair, the move or the UI texture switches the feature
 //! off, which makes the stereo pair flat. A feature that is off presents flat frames flat, leaves the
 //! right half where the game rendered it, and gives the byte the game's value back, so the game
-//! draws its UI again. It also
-//! gives the cursor display counter the game's value back, so Windows shows the cursor over the game
-//! window again. The feature stops the same way while the stereo pair is flat after a failure of
-//! another feature of the pair (see [`pair`](crate::pair)).
+//! draws its UI again. It also gives the cursor display counter the game's value back, so Windows
+//! shows the cursor over the game window again. The feature stops the same way while the stereo
+//! pair is flat after a failure of another feature of the pair (see [`pair`](crate::pair)).
 
 pub(crate) mod cursor;
 mod decide;
+pub(crate) mod depth_offset;
 mod target;
 pub(crate) mod ui_depth;
 
@@ -178,6 +178,7 @@ impl UiLayer {
         target: &Target<'_>,
     ) {
         let layout = mem::replace(&mut self.next, next);
+        self.depth.keep_offset(input.offset);
         if PairState::of(health).is_flat() {
             self.release();
             return;
@@ -231,8 +232,7 @@ impl UiLayer {
             Layout::SideBySide { .. } => Picture::SideBySide,
             Layout::MainOnly => Picture::Flat,
         };
-        let offset = input.stereo.depth_offset_percent;
-        let shift = depth_shift(target.size.width, target.size.height, offset);
+        let shift = depth_shift(target.size.width, target.size.height, input.offset);
         let read = self.stage().and_then(|stage| Some((stage, stage.ui_enabled()?)));
         let seen = read.map(|(stage, enabled)| self.see(stage, enabled));
         if seen.is_none() && picture == Picture::SideBySide {

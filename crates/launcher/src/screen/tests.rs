@@ -10,12 +10,12 @@ use std::time::{Duration, Instant};
 use diag::logging::{self, LogName};
 use gfx::region::RegionDraw;
 use ipc_layout::launch_token::Mode;
-use ipc_layout::viewer_header::pose::{FrameTag, HeadPose};
+use ipc_layout::viewer_header::pose::{FrameTag, HeadPose, HeadRead, HeadSample};
 use ipc_layout::viewer_header::{
     AdapterLuid, EyeRect, FRAME_TAG_OFFSETS, TextureInfo, ViewerHeader,
 };
 use launch::registry::{Hive, RegistryError, RegistryValue};
-use settings::player::{ScreenDistanceM, ScreenSettings, ScreenWidthM};
+use settings::player::{IpdMm, ScreenDistanceM, ScreenWidthM, Settings};
 use stereo_core::eye::{Eye, PerEye};
 use tracing::dispatcher;
 use viewer_client::Device;
@@ -146,8 +146,9 @@ fn the_head_pose_write_reaches_the_header_with_its_eye_distance() {
     assert_eq!(core.link.write_head(pose, 0.064).expect("a second write"), Some(4));
     let mut core_view = None;
     let (_, header) = read_header(&mut core_view, &core.mapping.name).expect("the core's header");
-    let sample = header.head().sample(header.head().sequence()).expect("an ended write");
-    assert_eq!((sample.sequence, sample.pose, sample.eye_distance_m), (4, pose, 0.064));
+    let expected = HeadSample { sequence: 4, pose, eye_distance_m: 0.064 };
+    let read = header.head().read(header.head().sequence());
+    assert_eq!(read, HeadRead::Ended { sample: Some(expected) });
 }
 
 #[test]
@@ -254,9 +255,9 @@ fn a_bgra_8_bit_pair_reaches_each_eye_with_its_stored_values() {
     assert_within_one(&shown.right, [7, 6, 5, 8], "the right eye");
 }
 
-/// The screen settings read from `root`, whether the file gave them, and the log lines the read
+/// The player settings read from `root`, whether the file gave them, and the log lines the read
 /// wrote.
-fn settings_logged(root: &Path) -> ((ScreenSettings, PlayerFile), Vec<String>) {
+fn settings_logged(root: &Path) -> ((Settings, PlayerFile), Vec<String>) {
     let logging = logging::start(&root.join("logs"), LogName::Launcher).expect("start logging");
     let read = dispatcher::with_default(&logging.dispatch, || settings(root));
     let file_path = logging.handle.file_path().to_path_buf();
@@ -274,11 +275,12 @@ fn test_dir(name: &str) -> test_support::TestDir {
 #[test]
 fn the_screen_settings_come_from_the_player_file() {
     let dir = test_dir("settings-valid");
-    fs::write(dir.path().join("settings.toml"), "[screen]\ndistance_m = 4.0\nwidth_m = 6\n")
-        .expect("write");
+    let text = "[stereo]\nipd_mm = 58.5\n[screen]\ndistance_m = 4.0\nwidth_m = 6\n";
+    fs::write(dir.path().join("settings.toml"), text).expect("write");
     let ((read, file), lines) = settings_logged(dir.path());
-    assert_eq!(read.distance_m, ScreenDistanceM::try_from(4.0).expect("in range"));
-    assert_eq!(read.width_m, ScreenWidthM::try_from(6.0).expect("in range"));
+    assert_eq!(read.screen.distance_m, ScreenDistanceM::try_from(4.0).expect("in range"));
+    assert_eq!(read.screen.width_m, ScreenWidthM::try_from(6.0).expect("in range"));
+    assert_eq!(read.stereo.ipd_mm, IpdMm::try_from(58.5).expect("in range"), "the eye distance");
     assert_eq!(file, PlayerFile::Read);
     assert_eq!(lines, ["\"screen settings loaded\" distance_m=4.0 width_m=6.0"]);
 }
@@ -289,7 +291,7 @@ fn a_rejected_player_file_gives_the_default_screen_and_a_warning() {
     let path = dir.path().join("settings.toml");
     fs::write(&path, "[screen]\nwidth_m = 11\n").expect("write");
     let (read, lines) = settings_logged(dir.path());
-    assert_eq!(read, (ScreenSettings::default(), PlayerFile::Unread));
+    assert_eq!(read, (Settings::default(), PlayerFile::Unread));
     let shown_path = path.display().to_string().replace('\\', "\\\\");
     let warning = format!(
         "\"settings file gave no values, so its defaults apply\" error=\"{shown_path} is rejected: \

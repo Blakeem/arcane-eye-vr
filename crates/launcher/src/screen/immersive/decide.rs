@@ -4,13 +4,13 @@
 
 use std::collections::VecDeque;
 
-use ipc_layout::viewer_header::pose::{EYE_DISTANCE_M, FrameTag, HeadPose};
+use ipc_layout::viewer_header::pose::{FrameTag, HeadPose};
 use openxr::{Fovf, Posef, Vector3f};
 use stereo_core::eye::PerEye;
 use xr::head::Head;
 use xr::projection::EyeView;
 
-use crate::screen::geometry::{add, length, rotate, sub};
+use crate::screen::geometry::{add, eye_distance_m, rotate};
 
 /// The number of written head poses the launch app keeps to find a frame's tagged pose.
 pub(crate) const KEPT_POSES: usize = 64;
@@ -29,13 +29,6 @@ pub(crate) struct Written {
     pub(crate) sequence: u32,
     pub(crate) pose: Posef,
     pub(crate) eye_distance_m: f32,
-}
-
-/// The distance between the two eye views of `eyes`, held to [`EYE_DISTANCE_M`], or `None` when it
-/// is not finite.
-pub(crate) fn eye_distance_m(eyes: PerEye<Vector3f>) -> Option<f32> {
-    let distance = length(sub(eyes.right, eyes.left));
-    distance.is_finite().then(|| distance.clamp(*EYE_DISTANCE_M.start(), *EYE_DISTANCE_M.end()))
 }
 
 /// The head pose in the viewer link's layout and the eye distance in meters that a read of `head`

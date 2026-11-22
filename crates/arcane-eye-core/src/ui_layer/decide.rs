@@ -4,12 +4,9 @@
 //! with a crossed disparity, and the places of a layer moved by its own columns in each half.
 
 use gfx::layer::{Area, Placement, Rect};
-use settings::player::DepthOffsetPercent;
 
 use super::cursor::counter::WindowsCursor;
-
-/// The divisor that turns a percentage into a fraction.
-const PERCENT: f32 = 100.0;
+use super::depth_offset::DepthOffset;
 
 /// Who drew the UI of the frame at the Present call site, as the UI enable byte shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,13 +155,12 @@ pub(crate) fn halves(width: u32, height: u32) -> Option<[Rect; 2]> {
     ])
 }
 
-/// The move of the right half in a back buffer of `width` by `height` pixels: `offset` of the right
-/// half's width, rounded to entire columns. Returns `None` when the move rounds to 0 columns or the
-/// size holds no halves.
-pub(crate) fn depth_shift(width: u32, height: u32, offset: DepthOffsetPercent) -> Option<Shift> {
+/// The move of the right half in a back buffer of `width` by `height` pixels: the depth offset in
+/// use `offset` of the right half's width, rounded to entire columns. Returns `None` when the move
+/// rounds to 0 columns or the size holds no halves.
+pub(crate) fn depth_shift(width: u32, height: u32, offset: DepthOffset) -> Option<Shift> {
     let [left, right] = halves(width, height)?;
-    let columns =
-        rounded_columns(f32::from(right.width) * offset.percent() / PERCENT, right.width)?;
+    let columns = rounded_columns(f32::from(right.width) * offset.share(), right.width)?;
     if columns == 0 {
         return None;
     }

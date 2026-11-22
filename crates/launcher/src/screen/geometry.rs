@@ -1,11 +1,14 @@
 //! The vector math of the headset screen in OpenXR's LOCAL space: rays from a hand's `aim` pose,
-//! the hit of a ray on a quad, and the orientation of a quad from its axes.
+//! the hit of a ray on a quad, the orientation of a quad from its axes, and the distance between
+//! the two eye views that the screen quad's parallel share and the immersive mode's head write take.
 //!
 //! The LOCAL space has Y up and -Z forward. A quad with the identity orientation is upright and
 //! faces +Z, and an `aim` pose points along its own -Z axis. Every orientation here is a unit
 //! quaternion, as the runtime's poses are.
 
+use ipc_layout::viewer_header::pose::EYE_DISTANCE_M;
 use openxr::{Extent2Df, Posef, Quaternionf, Vector3f};
+use stereo_core::eye::PerEye;
 
 /// The shortest vector that gives a direction. A shorter one is float noise.
 const MIN_LENGTH: f32 = 1e-6;
@@ -41,6 +44,13 @@ pub(crate) const fn cross(a: Vector3f, b: Vector3f) -> Vector3f {
 
 pub(crate) fn length(v: Vector3f) -> f32 {
     dot(v, v).sqrt()
+}
+
+/// The distance between the two eye views of `eyes`, held to [`EYE_DISTANCE_M`], or `None` when it
+/// is not finite.
+pub(crate) fn eye_distance_m(eyes: PerEye<Vector3f>) -> Option<f32> {
+    let distance = length(sub(eyes.right, eyes.left));
+    distance.is_finite().then(|| distance.clamp(*EYE_DISTANCE_M.start(), *EYE_DISTANCE_M.end()))
 }
 
 /// `v` scaled to length 1, or `None` when it is shorter than [`MIN_LENGTH`] or not a number.
@@ -172,14 +182,29 @@ pub(crate) mod test_support;
 #[cfg(test)]
 mod tests {
     use openxr::{Extent2Df, Posef, Quaternionf};
+    use stereo_core::eye::PerEye;
 
     use super::test_support::{assert_near, ray_to, vector};
-    use super::{Ray, Shares, from_axes, hit, rotate};
+    use super::{Ray, Shares, eye_distance_m, from_axes, hit, rotate};
 
     /// An upright quad 2 meters wide and 1 meter high at (0, 0, -1) that faces +Z.
     fn ahead() -> (Posef, Extent2Df) {
         let pose = Posef { orientation: Quaternionf::IDENTITY, position: vector(0.0, 0.0, -1.0) };
         (pose, Extent2Df { width: 2.0, height: 1.0 })
+    }
+
+    #[test]
+    fn the_eye_distance_is_the_distance_between_the_views_held_to_0_04_to_0_09_meters() {
+        let apart =
+            |m: f32| PerEye { left: vector(-m / 2.0, 1.6, 0.0), right: vector(m / 2.0, 1.6, 0.0) };
+        let measured = eye_distance_m(apart(0.064)).expect("a distance");
+        assert!((measured - 0.064).abs() < 1e-6, "views 0.064 apart: {measured}");
+        assert_eq!(eye_distance_m(apart(0.02)), Some(0.04), "views 0.02 apart");
+        assert_eq!(eye_distance_m(apart(0.12)), Some(0.09), "views 0.12 apart");
+        let broken = PerEye { left: vector(f32::NAN, 1.6, 0.0), right: vector(0.032, 1.6, 0.0) };
+        assert_eq!(eye_distance_m(broken), None, "a view position that is not a number");
+        let far = PerEye { left: vector(f32::INFINITY, 1.6, 0.0), right: vector(0.032, 1.6, 0.0) };
+        assert_eq!(eye_distance_m(far), None, "an infinite view position");
     }
 
     #[test]

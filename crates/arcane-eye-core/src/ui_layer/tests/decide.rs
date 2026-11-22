@@ -1,13 +1,15 @@
 //! The UI layer's decisions for each pair of picture and UI enable byte state, and the halves.
 
 use gfx::layer::{Area, Placement, Rect};
+use ipc_layout::viewer_header::screen::ParallelShare;
 use settings::player::DepthOffsetPercent;
 
 use crate::ui_layer::cursor::counter::WindowsCursor;
 use crate::ui_layer::decide::{Draw, Picture, Seen, Shift, Step, Write, depth_shift, halves, step};
+use crate::ui_layer::depth_offset::DepthOffset;
 
-fn depth(percent: f32) -> DepthOffsetPercent {
-    DepthOffsetPercent::try_from(percent).expect("a depth offset in range")
+fn depth(percent: f32) -> DepthOffset {
+    DepthOffset::of_setting(DepthOffsetPercent::try_from(percent).expect("an offset in range"))
 }
 
 /// The move of a 64 by 32 frame's right half by 2 columns.
@@ -177,4 +179,15 @@ fn a_size_without_a_pixel_or_past_a_rectangles_fields_holds_no_halves() {
     assert_eq!(halves(3840, 0), None);
     assert_eq!(halves(65_536, 2160), None);
     assert_eq!(halves(3840, 65_536), None);
+}
+
+#[test]
+fn a_screen_s_share_moves_the_right_half_and_with_no_screen_the_setting_does() {
+    let screen = ParallelShare::of_screen(0.065, 3.0);
+    let on_screen = DepthOffset::in_use(DepthOffsetPercent::default(), screen);
+    let screen_shift = depth_shift(3840, 2160, on_screen).expect("41.6 columns round to 42");
+    assert_eq!(screen_shift.uncovered.clip.width, 42);
+    let setting = DepthOffset::in_use(DepthOffsetPercent::default(), None);
+    let setting_shift = depth_shift(3840, 2160, setting).expect("28.8 columns round to 29");
+    assert_eq!(setting_shift.uncovered.clip.width, 29);
 }

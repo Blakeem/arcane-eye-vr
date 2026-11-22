@@ -1,12 +1,15 @@
-//! The viewer link from the core's publisher to the reading side: the frame tag and the head pose.
+//! The viewer link from the core's publisher to the reading side: the frame tag, the head pose and
+//! the screen's parallel share.
 
 use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
 use gfx::publish::{Outcome, Present, Publisher, ViewNames};
+use ipc_layout::viewer_header::STALE_AFTER;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose, HeadSample};
+use ipc_layout::viewer_header::screen::ParallelShare;
 use viewer_client::frame::{FrameReader, ReadError};
-use viewer_client::header::{Names, read_header, write_head_pose};
+use viewer_client::header::{Names, read_header, write_head_pose, write_screen};
 use viewer_client::region::Region;
 use windows::core::HSTRING;
 
@@ -64,4 +67,21 @@ fn a_head_pose_the_reading_side_wrote_is_read_by_the_publisher() {
     assert_eq!(write_head_pose(view, pose, 0.064), Ok(2));
     let expected = HeadSample { sequence: 2, pose, eye_distance_m: 0.064 };
     assert_eq!(publisher.head_pose(now), Some(expected));
+}
+
+#[test]
+fn a_parallel_share_the_reading_side_wrote_is_read_by_the_publisher_while_it_beats() {
+    let names = test_view_names("link-screen");
+    let mut publisher = Publisher::create(&names).expect("create the header");
+    let mut viewer = TestViewer::open(&names);
+    viewer.beat();
+    let mut slot = None;
+    let (view, _header) = read_header(&mut slot, &names.mapping).expect("open the header");
+    let now = Instant::now();
+    assert_eq!(publisher.parallel_share(now), None, "no share written yet");
+    let share = ParallelShare::of_screen(0.065, 10.0).expect("the share of a 10 m screen");
+    assert_eq!(write_screen(view, share), Ok(2));
+    assert_eq!(publisher.parallel_share(now), Some(share));
+    let stalled = now.checked_add(STALE_AFTER + Duration::from_millis(1)).expect("a test time");
+    assert_eq!(publisher.parallel_share(stalled), None, "the heartbeat stopped");
 }

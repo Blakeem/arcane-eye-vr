@@ -8,8 +8,8 @@ use stereo_core::eye::PerEye;
 use xr::head::Head;
 
 use super::{
-    Choice, KeptPoses, QuadCause, TALLY_FRAMES, Tallies, Tally, Written, choose, eye_distance_m,
-    eye_views, fov, head_write,
+    Choice, KeptPoses, QuadCause, TALLY_FRAMES, Tallies, Tally, Written, choose, eye_views, fov,
+    head_write,
 };
 use crate::screen::geometry::test_support::{assert_near, vector};
 
@@ -32,18 +32,6 @@ fn eyes_apart(distance_m: f32) -> PerEye<openxr::Vector3f> {
 
 fn assert_close(got: f32, want: f32, tolerance: f32, what: &str) {
     assert!((got - want).abs() < tolerance, "{what}: {got} is not within {tolerance} of {want}");
-}
-
-#[test]
-fn the_eye_distance_is_the_distance_between_the_views_held_to_0_04_to_0_09_meters() {
-    let measured = eye_distance_m(eyes_apart(0.064)).expect("a distance");
-    assert_close(measured, 0.064, 1e-6, "views 0.064 apart");
-    assert_eq!(eye_distance_m(eyes_apart(0.02)), Some(0.04), "views 0.02 apart");
-    assert_eq!(eye_distance_m(eyes_apart(0.12)), Some(0.09), "views 0.12 apart");
-    let broken = PerEye { left: vector(f32::NAN, 1.6, 0.0), right: vector(0.032, 1.6, 0.0) };
-    assert_eq!(eye_distance_m(broken), None, "a view position that is not a number");
-    let far = PerEye { left: vector(f32::INFINITY, 1.6, 0.0), right: vector(0.032, 1.6, 0.0) };
-    assert_eq!(eye_distance_m(far), None, "an infinite view position");
 }
 
 #[test]

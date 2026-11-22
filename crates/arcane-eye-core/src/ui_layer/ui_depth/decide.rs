@@ -14,16 +14,13 @@ use game_bindings::camera::Camera;
 use gfx::nearest::Nearest;
 use gfx::pointer::{Pointed, Probe};
 use ipc_layout::launch_token::Mode;
-use settings::player::StereoSettings;
 use stereo_core::eye::EyeScale;
 
 use crate::ui_layer::decide::{Moves, signed_columns};
+use crate::ui_layer::depth_offset::DepthOffset;
 
 /// The share the UI sits in front of the scene under it.
 const MARGIN: f32 = 0.0025;
-
-/// The largest UI disparity. Past it the eye distance shrinks.
-const LIMIT: f32 = 0.04;
 
 /// The UI disparity in use falls only while its target lies more than this share below it.
 const HOLD: f32 = 0.0025;
@@ -34,8 +31,10 @@ const FALL_PER_SECOND: f32 = 0.01;
 /// The largest rise of the eye scale in use in one second.
 const RISE_PER_SECOND: f32 = 0.5;
 
-/// The divisor that turns a percentage into a share.
-const PERCENT: f32 = 100.0;
+/// The largest fall of the UI limit that keeps the eye scale and the wait in use. It lies above the
+/// f32 noise of a screen's limit, which follows the located eye views' distance in each frame, and
+/// below half of [`MARGIN`], the fall of a screen's limit that brings the scene in front of the UI.
+const LIMIT_NOISE: f32 = 1e-5;
 
 /// A UI texel under the pointer covers the scene when its alpha is above this value, as `COVERING`
 /// in `shaders/nearest.slang` decides for the nearest read.
@@ -121,41 +120,42 @@ impl EyeDistance {
 }
 
 /// What turns a nearest distance into a disparity: the main view's lens, the full eye distance, the
-/// depth offset and whether the eye distance shrinks.
+/// depth offset in use, the UI limit in use and whether the eye distance shrinks.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct View {
     /// `1 / (aspect * tan(fov_y / 2))`.
     pub(crate) lens: f32,
     /// The full eye distance in meters.
     pub(crate) eye_m: f32,
-    /// The depth offset as a share.
+    /// The depth offset in use as a share.
     pub(crate) offset: f32,
+    /// The UI limit in use, the largest UI disparity of a target.
+    pub(crate) limit: f32,
     pub(crate) eye_distance: EyeDistance,
 }
 
 impl View {
-    /// The view of the main view's `camera`, the depth offset of the player's `stereo` settings and
+    /// The view of the main view's `camera`, the depth offset in use `offset` with its UI limit and
     /// the full eye distance `eye_m` in the launch mode `mode`.
-    pub(crate) fn of(camera: &Camera, stereo: StereoSettings, eye_m: f32, mode: Mode) -> Self {
+    pub(crate) fn of(camera: &Camera, offset: DepthOffset, eye_m: f32, mode: Mode) -> Self {
         Self {
             lens: (camera.aspect * (camera.fov_y_rad / 2.0).tan()).recip(),
             eye_m,
-            offset: offset(stereo),
+            offset: offset.share(),
+            limit: offset.ui_limit(),
             eye_distance: EyeDistance::of(mode),
         }
     }
-}
-
-/// The depth offset of the player's `stereo` settings as a share.
-pub(crate) fn offset(stereo: StereoSettings) -> f32 {
-    stereo.depth_offset_percent.percent() / PERCENT
 }
 
 /// The values in use and the wait after a frame whose newest result is `found`, `elapsed` after
 /// the last step in `view`, with the wait time `forward_wait`. A UI that hides the scene sets
 /// [`Following::FLAT`] at once, with no hold, no rate and no wait, since a UI moved inward would
 /// leave a strip of the scene at the outer edge of each half. Every other result's [`targets`] go
-/// to [`follow_or_wait`].
+/// to [`follow_or_wait`]. The UI disparity in use is at most the view's UI limit, so a limit that
+/// falls, such as at a screen that grows wider, takes it down at once. A fall of more than
+/// [`LIMIT_NOISE`] also takes the eye scale in use down at once to its target's when smaller and
+/// empties the wait, since the scene would otherwise sit in front of the UI for the wait time.
 pub(crate) fn after(
     following: Following,
     found: Nearest,
@@ -166,7 +166,19 @@ pub(crate) fn after(
     if found == Nearest::Hidden {
         return Following::FLAT;
     }
-    follow_or_wait(following, targets(found, view), elapsed, forward_wait)
+    let target = targets(found, view);
+    let followed = follow_or_wait(following, target, elapsed, forward_wait);
+    let in_use = followed.in_use;
+    if in_use.disparity <= view.limit {
+        return followed;
+    }
+    if in_use.disparity - view.limit <= LIMIT_NOISE {
+        let clamped = Depth { disparity: view.limit, eye_scale: in_use.eye_scale };
+        return Following { in_use: clamped, wait: followed.wait };
+    }
+    let eye_scale =
+        if target.eye_scale < in_use.eye_scale { target.eye_scale } else { in_use.eye_scale };
+    Following { in_use: Depth { disparity: view.limit, eye_scale }, wait: None }
 }
 
 /// The values in use and the wait after a step that brought `target`, `elapsed` after the last
@@ -200,8 +212,8 @@ fn follow_or_wait(
 
 /// The targets that `nearest` asks for in `view`. A UI over no scene or over a hidden scene, a
 /// distance that is not above 0 and a lens that gives no finite disparity above 0 all ask for
-/// [`Depth::FLAT`]. Past [`LIMIT`] the UI disparity stays at the limit, and the eye scale shrinks
-/// only while the view's eye distance [`EyeDistance::Shrinks`].
+/// [`Depth::FLAT`]. Past the view's UI limit the UI disparity stays at the limit, and the eye scale
+/// shrinks only while the view's eye distance [`EyeDistance::Shrinks`].
 pub(crate) fn targets(nearest: Nearest, view: View) -> Depth {
     let Nearest::At(distance) = nearest else { return Depth::FLAT };
     if !distance.is_finite() || distance <= 0.0 {
@@ -215,14 +227,14 @@ pub(crate) fn targets(nearest: Nearest, view: View) -> Depth {
     if needed.is_nan() || needed <= 0.0 {
         return Depth::FLAT;
     }
-    if needed <= LIMIT {
+    if needed <= view.limit {
         return Depth { disparity: needed, eye_scale: EyeScale::FULL };
     }
     if view.eye_distance == EyeDistance::Fixed {
-        return Depth { disparity: LIMIT, eye_scale: EyeScale::FULL };
+        return Depth { disparity: view.limit, eye_scale: EyeScale::FULL };
     }
-    let eye_scale = EyeScale::clamped((LIMIT + view.offset - MARGIN) / crossed);
-    Depth { disparity: LIMIT, eye_scale }
+    let eye_scale = EyeScale::clamped((view.limit + view.offset - MARGIN) / crossed);
+    Depth { disparity: view.limit, eye_scale }
 }
 
 /// The values in use moved toward `target` in a step `elapsed` after the last step. A rise of the
@@ -283,22 +295,22 @@ impl Over {
 /// eye scale in use `eye_scale`, with the main view camera's far plane `far_m` as the distance
 /// texture's unit. The left eye sits half the eye distance left of the head camera, so the head
 /// camera's ray through the pointer lies `lens * eye_m / (4 * t)` meters away where the left eye
-/// sees it `t` to the right of the pointer. The march reaches half the sum of the largest UI
-/// disparity and the depth offset. `None` for a ray that is not finite and above 0.
+/// sees it `t` to the right of the pointer. The march reaches half the sum of the view's UI limit
+/// and its depth offset. `None` for a ray that is not finite and above 0.
 pub(crate) fn probe(place: [f32; 2], view: View, eye_scale: EyeScale, far_m: f32) -> Option<Probe> {
     let ray = view.lens * view.eye_m * eye_scale.share() / (4.0 * far_m);
     if !ray.is_finite() || ray <= 0.0 {
         return None;
     }
-    Some(Probe { place, ray, reach: f32::midpoint(LIMIT, view.offset) })
+    Some(Probe { place, ray, reach: f32::midpoint(view.limit, view.offset) })
 }
 
 /// The cursor's moves in each half of `half_width` columns, from the newest pointer read's result
-/// `pointed`, the UI's columns `ui_columns` and the depth offset `offset` as a share. A cursor over
-/// no result or over the UI moves as the UI does. A cursor over the scene sits where each eye sees
-/// the hit: `hit` to the right in the left half, and `hit` to the left of the right half's scene,
-/// which the depth offset moves right. A hit outside 0 to 1 or a move past the half moves as the UI
-/// does.
+/// `pointed`, the UI's columns `ui_columns` and the depth offset in use `offset` as a share. A
+/// cursor over no result or over the UI moves as the UI does. A cursor over the scene sits where
+/// each eye sees the hit: `hit` to the right in the left half, and `hit` to the left of the right
+/// half's scene, which the depth offset moves right. A hit outside 0 to 1 or a move past the half
+/// moves as the UI does.
 pub(crate) fn cursor_moves(
     pointed: Option<Pointed>,
     ui_columns: u16,

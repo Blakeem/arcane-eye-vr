@@ -174,9 +174,6 @@ impl DepthOffsetPercent {
     pub const MIN: f32 = 0.0;
     pub const MAX: f32 = 5.0;
 
-    /// The depth offset that moves nothing.
-    pub const NONE: Self = Self(Self::MIN);
-
     pub const fn percent(self) -> f32 {
         self.0
     }

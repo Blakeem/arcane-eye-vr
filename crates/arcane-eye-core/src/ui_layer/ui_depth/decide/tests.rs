@@ -9,6 +9,7 @@ use game_bindings::camera::Camera;
 use gfx::nearest::Nearest;
 use gfx::pointer::Pointed;
 use ipc_layout::launch_token::Mode;
+use ipc_layout::viewer_header::screen::ParallelShare;
 use settings::player::{DepthOffsetPercent, IpdMm, StereoSettings};
 use stereo_core::eye::EyeScale;
 
@@ -16,6 +17,7 @@ use super::{
     Depth, EyeDistance, Following, Over, View, after, cursor_moves, follow, probe, targets,
 };
 use crate::ui_layer::decide::{Moves, ui_columns};
+use crate::ui_layer::depth_offset::DepthOffset;
 
 /// The main view's camera in the measured dialogue close-up.
 const DIALOGUE: Camera = Camera {
@@ -31,15 +33,23 @@ const DIALOGUE: Camera = Camera {
 /// `desktop-stereo`.
 fn dialogue() -> View {
     let stereo = dialogue_stereo();
-    View::of(&DIALOGUE, stereo, stereo.ipd_mm.meters(), Mode::DesktopStereo)
+    let offset = DepthOffset::in_use(stereo.depth_offset_percent, None);
+    View::of(&DIALOGUE, offset, stereo.ipd_mm.meters(), Mode::DesktopStereo)
 }
 
 /// The measured dialogue's view in the launch mode `vr` at the eye distance `eye_m`, with no depth
-/// offset, as `VrView::depth_stereo` gives the UI depth in that mode.
+/// offset, as `VrView::depth_offset` gives the UI depth in that mode.
 fn dialogue_vr(eye_m: f32) -> View {
-    let stereo =
-        StereoSettings { depth_offset_percent: DepthOffsetPercent::NONE, ..dialogue_stereo() };
-    View::of(&DIALOGUE, stereo, eye_m, Mode::Vr)
+    View::of(&DIALOGUE, DepthOffset::NONE, eye_m, Mode::Vr)
+}
+
+/// The measured dialogue's view at 65 mm in the launch mode `desktop-stereo` while the viewing
+/// side reports the parallel share of a screen `width_m` wide, 0.065 / `width_m`.
+fn dialogue_on_screen(width_m: f32) -> View {
+    let screen = ParallelShare::of_screen(0.065, width_m);
+    let stereo = dialogue_stereo();
+    let offset = DepthOffset::in_use(stereo.depth_offset_percent, screen);
+    View::of(&DIALOGUE, offset, stereo.ipd_mm.meters(), Mode::DesktopStereo)
 }
 
 /// The measured dialogue's eye distance of 65 mm and depth offset of 1.5 percent.
@@ -279,6 +289,7 @@ fn the_probe_scales_the_ray_by_the_eye_scale_and_reaches_half_the_limit_and_the_
         lens: 1.080_552_4,
         eye_m: 0.065,
         offset: OFFSET,
+        limit: 0.04,
         eye_distance: EyeDistance::Shrinks,
     };
 
@@ -297,10 +308,91 @@ fn a_far_plane_that_gives_no_finite_ray_above_0_gives_no_probe() {
         lens: 1.080_552_4,
         eye_m: 0.065,
         offset: OFFSET,
+        limit: 0.04,
         eye_distance: EyeDistance::Shrinks,
     };
 
     for far_m in [0.0, -1.0, f32::INFINITY, f32::NAN] {
         assert_eq!(probe([0.25, 0.5], view, EyeScale::FULL, far_m), None, "{far_m}");
     }
+}
+
+#[test]
+fn on_a_3_m_screen_the_targets_compute_with_its_share_as_the_offset_and_the_limit() {
+    let near = targets(at(1.496), dialogue_on_screen(3.0));
+    // The dialogue's lens of 2.343 crosses 0.0509 at 65 mm and 1.496 m. With the offset 0.0216667
+    // and the margin it asks for 0.0317, past the limit 0.0216667, so the eye scale shrinks to
+    // (0.0216667 + 0.0216667 - 0.0025) / 0.0509.
+    assert_between(near.disparity, 0.021_666, 0.021_667, "the UI disparity at the limit");
+    assert_between(near.eye_scale.share(), 0.801, 0.803, "the eye scale");
+    // At 4 m the scene crosses 0.0190, which the setting's offset 0.015 brings in front of the
+    // screen surface and the screen's offset leaves behind it.
+    assert_between(targets(at(4.0), dialogue()).disparity, 0.0065, 0.0066, "with the setting");
+    assert_eq!(targets(at(4.0), dialogue_on_screen(3.0)), Depth::FLAT, "on the 3 m screen");
+}
+
+#[test]
+fn on_a_3_m_screen_the_probe_reaches_its_share() {
+    let probed = probe([0.5, 0.5], dialogue_on_screen(3.0), EyeScale::FULL, 100.0).expect("a ray");
+
+    assert_between(probed.reach, 0.021_666, 0.021_667, "half the limit and the offset");
+}
+
+#[test]
+fn a_10_m_screen_that_appears_takes_the_ui_disparity_in_use_down_to_its_limit_at_once() {
+    let at_setting =
+        after(following(Depth::FLAT), at(1.0), dialogue(), Duration::ZERO, Duration::ZERO);
+    assert_between(at_setting.in_use.disparity, 0.04, 0.04, "the setting's limit");
+
+    let step = Duration::from_millis(17);
+    let on_screen = after(at_setting, at(1.0), dialogue_on_screen(10.0), step, FORWARD_WAIT);
+
+    assert_between(on_screen.in_use.disparity, 0.006_499, 0.006_501, "the limit 0.065 / 10");
+    // The scene at 1.0 m crosses 0.07615, so the eye scale behind the limit is
+    // (0.0065 + 0.0065 - 0.0025) / 0.07615 in place of the setting's 0.689.
+    assert_between(
+        on_screen.in_use.eye_scale.share(),
+        0.1378,
+        0.1380,
+        "the 10 m screen's eye scale",
+    );
+    assert_eq!(on_screen.wait, None);
+}
+
+#[test]
+fn a_wider_screen_within_the_hold_takes_the_ui_disparity_in_use_down_to_its_limit() {
+    let at_three = after(
+        following(Depth::FLAT),
+        at(1.0),
+        dialogue_on_screen(3.0),
+        Duration::ZERO,
+        Duration::ZERO,
+    );
+    assert_between(at_three.in_use.disparity, 0.021_666, 0.021_667, "the 3 m screen's limit");
+    assert_between(at_three.in_use.eye_scale.share(), 0.5361, 0.5364, "the 3 m screen's eye scale");
+
+    let step = Duration::from_secs(5);
+    let wider = after(at_three, at(1.0), dialogue_on_screen(3.1), step, FORWARD_WAIT);
+
+    assert_between(wider.in_use.disparity, 0.020_967, 0.020_968, "the limit 0.065 / 3.1");
+    // (0.020968 + 0.020968 - 0.0025) / 0.07615 at once, with no forward wait.
+    assert_between(wider.in_use.eye_scale.share(), 0.5178, 0.5180, "the 3.1 m screen's eye scale");
+    assert_eq!(wider.wait, None);
+}
+
+#[test]
+fn a_scene_that_comes_nearer_under_an_unchanged_limit_still_waits() {
+    let at_three = after(
+        following(Depth::FLAT),
+        at(1.0),
+        dialogue_on_screen(3.0),
+        Duration::ZERO,
+        Duration::ZERO,
+    );
+
+    let step = Duration::from_millis(17);
+    let nearer = after(at_three, at(0.5), dialogue_on_screen(3.0), step, FORWARD_WAIT);
+
+    assert_eq!(nearer.in_use, at_three.in_use);
+    assert!(nearer.wait.is_some(), "the nearer scene waits for the forward wait");
 }

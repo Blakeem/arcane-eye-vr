@@ -1,17 +1,25 @@
-//! The viewer header: the 128-byte block the core shares with the debug viewer.
+//! The viewer header: the 192-byte block the core shares with the debug viewer.
 //!
 //! The core creates the mapping [`MAPPING_NAME`] and writes every field but the viewer's. The viewer
-//! writes only the heartbeat, at [`HEARTBEAT_OFFSET`], and the head pose, from [`HEAD_SEQUENCE_OFFSET`]
-//! up to [`FRAME_HEAD_SEQUENCE_OFFSET`]. Every field is one 32-bit little-endian word, so each process
-//! writes a field with one aligned store, which the other process never reads torn.
+//! writes only the heartbeat, at [`HEARTBEAT_OFFSET`], the head pose, from [`HEAD_SEQUENCE_OFFSET`]
+//! up to [`FRAME_HEAD_SEQUENCE_OFFSET`], and the screen slot, at [`SCREEN_SEQUENCE_OFFSET`] and
+//! [`PARALLEL_SHARE_OFFSET`]. The one exception is the screen slot's sequence number, which the core
+//! sets to 0 once when it creates or opens the mapping. Every field is one 32-bit little-endian
+//! word, so each process writes a field with one aligned store, which the other process never reads
+//! torn.
 
+mod keyed_mutex;
 pub mod pose;
+pub mod screen;
 
 use core::mem::offset_of;
 use core::ops::Range;
 use core::time::Duration;
 
 use pose::{FRAME_TAG_WORDS, FrameTag, HEAD_SLOT_WORDS, HeadSlot};
+use screen::{SCREEN_SLOT_WORDS, ScreenSlot};
+
+pub use keyed_mutex::{Acquire, MUTEX_KEY, SHARED_ACCESS, WAIT_ABANDONED, WAIT_TIMEOUT};
 
 /// How long after the heartbeat's last advance the core still treats the viewer as running. The
 /// viewer must advance the heartbeat more often than this.
@@ -24,55 +32,14 @@ pub const MAPPING_NAME: &str = r"Local\arcane-eye-vr-view";
 /// name, and its new generation tells the viewer to open it again.
 pub const TEXTURE_NAME: &str = r"Local\arcane-eye-vr-view-texture";
 
-/// The access both processes name for the shared texture: `DXGI_SHARED_RESOURCE_READ` and
-/// `DXGI_SHARED_RESOURCE_WRITE`.
-pub const SHARED_ACCESS: u32 = 0x8000_0000 | 0x0000_0001;
-
-/// The keyed mutex key both processes use, so the mutex is plain mutual exclusion.
-pub const MUTEX_KEY: u64 = 0;
-
-/// The `WAIT_TIMEOUT` code `IDXGIKeyedMutex::AcquireSync` returns when the other process held the
-/// keyed mutex past the wait.
-pub const WAIT_TIMEOUT: u32 = 0x0000_0102;
-
-/// The `WAIT_ABANDONED` code `IDXGIKeyedMutex::AcquireSync` returns when the other process exited
-/// while holding the keyed mutex, which leaves the shared texture inconsistent.
-pub const WAIT_ABANDONED: u32 = 0x0000_0080;
-
-/// What an `IDXGIKeyedMutex::AcquireSync` call on the shared texture returned. The `windows` crate
-/// reports both wait codes as `Ok(())`, so each process classifies the raw code here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Acquire {
-    /// This process holds the keyed mutex.
-    Held,
-    /// The other process held the keyed mutex past the wait.
-    Busy,
-    /// The other process exited while holding the keyed mutex.
-    Abandoned,
-    /// The call failed with this `HRESULT`.
-    Failed(i32),
-}
-
-impl Acquire {
-    /// Classifies the raw `HRESULT` that `AcquireSync` returned.
-    pub const fn from_code(code: i32) -> Self {
-        match code.cast_unsigned() {
-            0 => Self::Held,
-            WAIT_TIMEOUT => Self::Busy,
-            WAIT_ABANDONED => Self::Abandoned,
-            _ => Self::Failed(code),
-        }
-    }
-}
-
 /// The first field of every viewer header, the ASCII bytes `B3SV`.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"B3SV");
 
 /// The layout version this crate reads and writes. Any change to the layout increments it.
-pub const LAYOUT_VERSION: u32 = 3;
+pub const LAYOUT_VERSION: u32 = 4;
 
 /// The size of the header, and of its mapping, in bytes.
-pub const SIZE: usize = 128;
+pub const SIZE: usize = 192;
 
 /// The size of one field, the unit of every read and write of the mapping.
 pub const WORD_SIZE: usize = size_of::<u32>();
@@ -126,10 +93,24 @@ pub const FRAME_ASPECT_OFFSET: usize = offset_of!(ViewerHeader, frame_tag.aspect
 pub const FRAME_TAG_OFFSETS: [usize; FRAME_TAG_WORDS] =
     [FRAME_HEAD_SEQUENCE_OFFSET, FRAME_FOV_Y_OFFSET, FRAME_ASPECT_OFFSET];
 
+/// The byte offset of the screen slot's sequence number, the first of the words the viewer writes
+/// for the screen.
+pub const SCREEN_SEQUENCE_OFFSET: usize = offset_of!(ViewerHeader, screen.sequence);
+
+/// The byte offset of the parallel share of the screen that the viewer writes.
+pub const PARALLEL_SHARE_OFFSET: usize = offset_of!(ViewerHeader, screen.parallel_share);
+
 /// The byte offsets of the words the viewer writes for a head pose.
 const HEAD_WORDS: Range<usize> = HEAD_SEQUENCE_OFFSET..FRAME_HEAD_SEQUENCE_OFFSET;
 
+/// The byte offsets of the words the viewer writes for the screen.
+const SCREEN_WORDS: Range<usize> = SCREEN_SEQUENCE_OFFSET..offset_of!(ViewerHeader, reserved_end);
+
+/// The reserved word between the frame tag and the screen slot.
 const RESERVED_WORDS: usize = 1;
+
+/// The reserved words after the screen slot, up to [`SIZE`].
+const RESERVED_END_WORDS: usize = 14;
 
 /// The locally unique id of the adapter that owns the shared texture, as DXGI reports it.
 #[repr(C)]
@@ -185,6 +166,8 @@ pub struct ViewerHeader {
     head: HeadSlot,
     frame_tag: FrameTag,
     reserved: [u32; RESERVED_WORDS],
+    screen: ScreenSlot,
+    reserved_end: [u32; RESERVED_END_WORDS],
 }
 
 const _: () = assert!(size_of::<ViewerHeader>() == SIZE);
@@ -213,12 +196,17 @@ const _: () = assert!(FRAME_HEAD_SEQUENCE_OFFSET == 112);
 const _: () = assert!(FRAME_FOV_Y_OFFSET == 116);
 const _: () = assert!(FRAME_ASPECT_OFFSET == 120);
 const _: () = assert!(offset_of!(ViewerHeader, reserved) == 124);
+const _: () = assert!(SCREEN_SEQUENCE_OFFSET == 128);
+const _: () = assert!(PARALLEL_SHARE_OFFSET == 132);
+const _: () = assert!(offset_of!(ViewerHeader, reserved_end) == 136);
 const _: () = assert!(size_of::<HeadSlot>() == HEAD_SLOT_WORDS * WORD_SIZE);
 const _: () = assert!(size_of::<FrameTag>() == FRAME_TAG_WORDS * WORD_SIZE);
+const _: () = assert!(size_of::<ScreenSlot>() == SCREEN_SLOT_WORDS * WORD_SIZE);
 
 impl ViewerHeader {
-    /// A header as the core writes it, with the heartbeat and the head pose's sequence number at 0,
-    /// which means no pose, and the frame tag [`FrameTag::NONE`].
+    /// A header as the core writes it, with the heartbeat and the sequence numbers of the head pose
+    /// and the screen slot at 0, which means no pose and no screen, and the frame tag
+    /// [`FrameTag::NONE`].
     pub const fn new(texture: TextureInfo, generation: u32, frame: u32, present: u32) -> Self {
         Self {
             magic: MAGIC,
@@ -231,6 +219,8 @@ impl ViewerHeader {
             head: HeadSlot::EMPTY,
             frame_tag: FrameTag::NONE,
             reserved: [0; RESERVED_WORDS],
+            screen: ScreenSlot::EMPTY,
+            reserved_end: [0; RESERVED_END_WORDS],
         }
     }
 
@@ -265,11 +255,16 @@ impl ViewerHeader {
             self.heartbeat,
             self.present,
         ];
-        let tail = self.head.to_words().into_iter().chain(self.frame_tag.to_words());
+        let tail = self
+            .head
+            .to_words()
+            .into_iter()
+            .chain(self.frame_tag.to_words())
+            .chain(self.reserved)
+            .chain(self.screen.to_words())
+            .chain(self.reserved_end);
         let mut words = [0; WORDS];
-        for (word, field) in
-            words.iter_mut().zip(fields.into_iter().chain(tail).chain(self.reserved))
-        {
+        for (word, field) in words.iter_mut().zip(fields.into_iter().chain(tail)) {
             *word = field;
         }
         words
@@ -314,9 +309,11 @@ impl ViewerHeader {
         let right = EyeRect { x: right_x, y: right_y, width: right_width, height: right_height };
         let adapter_luid = AdapterLuid { low: luid_low, high: luid_high.cast_signed() };
         let texture = TextureInfo { adapter_luid, width, height, format, eyes: [left, right] };
-        let [h0, h1, h2, h3, h4, h5, h6, h7, h8, t0, t1, t2, reserved] = tail;
+        let [h0, h1, h2, h3, h4, h5, h6, h7, h8, t0, t1, t2, reserved, s0, s1, reserved_end @ ..] =
+            tail;
         let head = HeadSlot::from_words([h0, h1, h2, h3, h4, h5, h6, h7, h8]);
         let frame_tag = FrameTag::from_words([t0, t1, t2]);
+        let screen = ScreenSlot::from_words([s0, s1]);
         Ok(Self {
             magic,
             layout_version,
@@ -328,6 +325,8 @@ impl ViewerHeader {
             head,
             frame_tag,
             reserved: [reserved],
+            screen,
+            reserved_end,
         })
     }
 
@@ -337,14 +336,17 @@ impl ViewerHeader {
     }
 
     /// Each word the core writes, as its byte offset and value, in ascending offset order. The
-    /// heartbeat and the head pose are left out, since the viewer owns them. The texture fields come
-    /// before the generation, so a viewer that reads the generation before the texture fields reads
-    /// that generation's texture or a later one. The adapter LUID comes before the width, so a viewer
-    /// that reads a nonzero width before the LUID reads the LUID of that texture or a later one. A
-    /// later texture comes with a new generation on the next read.
+    /// heartbeat, the head pose and the screen slot are left out, since the viewer writes them. The
+    /// texture fields come before the generation, so a viewer that reads the generation before the
+    /// texture fields reads that generation's texture or a later one. The adapter LUID comes before
+    /// the width, so a viewer that reads a nonzero width before the LUID reads the LUID of that
+    /// texture or a later one. A later texture comes with a new generation on the next read.
     pub fn core_words(&self) -> impl Iterator<Item = (usize, u32)> {
-        self.words()
-            .filter(|(offset, _word)| *offset != HEARTBEAT_OFFSET && !HEAD_WORDS.contains(offset))
+        self.words().filter(|(offset, _word)| {
+            *offset != HEARTBEAT_OFFSET
+                && !HEAD_WORDS.contains(offset)
+                && !SCREEN_WORDS.contains(offset)
+        })
     }
 
     pub const fn texture(&self) -> TextureInfo {
@@ -374,6 +376,11 @@ impl ViewerHeader {
 
     pub const fn frame_tag(&self) -> FrameTag {
         self.frame_tag
+    }
+
+    /// The screen slot's words, which the viewer writes.
+    pub const fn screen(&self) -> ScreenSlot {
+        self.screen
     }
 }
 

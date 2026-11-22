@@ -1,7 +1,8 @@
-//! The names of the viewer link, the header read that every reader of the link shares and the
-//! head pose write.
+//! The names of the viewer link, the header read that every reader of the link shares, the head
+//! pose write and the screen write.
 
 use ipc_layout::viewer_header::pose::HeadPose;
+use ipc_layout::viewer_header::screen::ParallelShare;
 use ipc_layout::viewer_header::{self, HeaderError, ViewerHeader};
 use windows::core::HSTRING;
 
@@ -74,6 +75,21 @@ pub fn write_head_pose(
 ) -> Result<u32, HeaderError> {
     let header = ViewerHeader::decode(&view.read_words())?;
     let (sequence, writes) = header.head().writes(pose, eye_distance_m);
+    view.write_words(writes);
+    Ok(sequence)
+}
+
+/// Writes `share`, the parallel share of the screen that shows the frames, into the screen slot of
+/// the header of `view` and returns the sequence number the write ended with. The write follows
+/// the rule of [`write_head_pose`]. One thread of the process writes the screen slot.
+///
+/// # Errors
+///
+/// Returns [`HeaderError`] when the header holds another magic value or layout version, which may
+/// hold another field at the screen slot's offsets. The header is then left as it is.
+pub fn write_screen(view: &HeaderView, share: ParallelShare) -> Result<u32, HeaderError> {
+    let header = ViewerHeader::decode(&view.read_words())?;
+    let (sequence, writes) = header.screen().writes(share);
     view.write_words(writes);
     Ok(sequence)
 }

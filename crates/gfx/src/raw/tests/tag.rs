@@ -1,9 +1,11 @@
-//! The publisher's frame tag and its read of the head pose the viewer writes.
+//! The publisher's frame tag and its reads of the head pose and the screen's parallel share that
+//! the viewer writes.
 
 use std::time::Instant;
 
-use ipc_layout::viewer_header::HEAD_SEQUENCE_OFFSET;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose, HeadSample};
+use ipc_layout::viewer_header::screen::ParallelShare;
+use ipc_layout::viewer_header::{HEAD_SEQUENCE_OFFSET, SCREEN_SEQUENCE_OFFSET};
 
 use super::{Viewer, after, names, pattern, publish, publish_tagged, warp};
 use crate::publish::{Outcome, Present, Publisher};
@@ -17,6 +19,18 @@ const POSE: HeadPose = HeadPose { position: [0.1, 1.6, -0.2], orientation: [0.0,
 /// Writes `pose` with the eye distance 0.064 m as the viewer does and returns its sequence number.
 fn write_pose(viewer: &Viewer, pose: HeadPose) -> u32 {
     let (sequence, writes) = viewer.header().head().writes(pose, 0.064);
+    viewer.header.write_words(writes);
+    sequence
+}
+
+/// The parallel share of a 3 m screen at an eye distance of 0.065 m.
+fn default_screen() -> ParallelShare {
+    ParallelShare::of_screen(0.065, 3.0).expect("a share")
+}
+
+/// Writes `share` into the screen slot as the viewer does and returns its sequence number.
+fn write_share(viewer: &Viewer, share: ParallelShare) -> u32 {
+    let (sequence, writes) = viewer.header().screen().writes(share);
     viewer.header.write_words(writes);
     sequence
 }
@@ -64,18 +78,21 @@ fn a_new_core_keeps_the_tag_of_the_frame_the_earlier_core_published() {
 }
 
 #[test]
-fn the_publisher_reads_the_pose_the_viewer_wrote_and_none_during_a_write() {
+fn the_publisher_reads_the_pose_the_viewer_wrote_and_keeps_it_during_a_write() {
     let names = names("head-pose");
     let mut publisher = Publisher::create(&names).expect("create the header");
     let mut viewer = Viewer::new(&names);
     let start = Instant::now();
     viewer.beat();
     assert_eq!(publisher.head_pose(start), None, "no pose written yet");
+    viewer.header.write_words([(HEAD_SEQUENCE_OFFSET, 1)]);
+    assert_eq!(publisher.head_pose(start), None, "the first write runs");
+    viewer.header.write_words([(HEAD_SEQUENCE_OFFSET, 0)]);
     assert_eq!(write_pose(&viewer, POSE), 2, "the first write");
     let expected = HeadSample { sequence: 2, pose: POSE, eye_distance_m: 0.064 };
     assert_eq!(publisher.head_pose(start), Some(expected));
     viewer.header.write_words([(HEAD_SEQUENCE_OFFSET, 3)]);
-    assert_eq!(publisher.head_pose(start), None, "a write runs");
+    assert_eq!(publisher.head_pose(start), Some(expected), "a write runs");
 }
 
 #[test]
@@ -106,4 +123,56 @@ fn a_new_core_leaves_the_pose_a_viewer_wrote() {
     viewer.beat();
     let read = second.head_pose(Instant::now()).map(|sample| (sample.sequence, sample.pose));
     assert_eq!(read, Some((2, POSE)));
+}
+
+#[test]
+fn the_publisher_reads_the_share_the_viewer_wrote_and_keeps_it_during_a_write() {
+    let names = names("screen-share");
+    let mut publisher = Publisher::create(&names).expect("create the header");
+    let mut viewer = Viewer::new(&names);
+    let start = Instant::now();
+    viewer.beat();
+    assert_eq!(publisher.parallel_share(start), None, "no share written yet");
+    viewer.header.write_words([(SCREEN_SEQUENCE_OFFSET, 1)]);
+    assert_eq!(publisher.parallel_share(start), None, "the first write runs");
+    viewer.header.write_words([(SCREEN_SEQUENCE_OFFSET, 0)]);
+    assert_eq!(write_share(&viewer, default_screen()), 2, "the first write");
+    assert_eq!(publisher.parallel_share(start), Some(default_screen()));
+    viewer.header.write_words([(SCREEN_SEQUENCE_OFFSET, 3)]);
+    assert_eq!(publisher.parallel_share(start), Some(default_screen()), "a write runs");
+}
+
+#[test]
+fn the_publisher_reads_no_share_while_the_heartbeat_does_not_advance() {
+    let names = names("screen-share-stale");
+    let mut publisher = Publisher::create(&names).expect("create the header");
+    let mut viewer = Viewer::new(&names);
+    let start = Instant::now();
+    assert_eq!(write_share(&viewer, default_screen()), 2);
+    assert_eq!(publisher.parallel_share(start), None, "a share with no heartbeat");
+    viewer.beat();
+    let at = |millis| after(start, millis);
+    assert_eq!(publisher.parallel_share(at(10)), None, "a share written before the beats");
+    assert_eq!(write_share(&viewer, default_screen()), 4, "a write while the viewer beats");
+    assert_eq!(publisher.parallel_share(at(20)), Some(default_screen()), "a beat");
+    assert_eq!(publisher.parallel_share(at(1011)), None, "the heartbeat stalled");
+    viewer.beat();
+    assert_eq!(publisher.parallel_share(at(5000)), None, "the share the stalled viewer left");
+    assert_eq!(write_share(&viewer, default_screen()), 6, "the next viewer's write");
+    assert_eq!(publisher.parallel_share(at(5010)), Some(default_screen()));
+}
+
+#[test]
+fn a_new_core_clears_the_share_an_earlier_session_wrote_and_reads_the_next_write() {
+    let names = names("screen-share-next-core");
+    let first = Publisher::create(&names).expect("create the header");
+    let mut viewer = Viewer::new(&names);
+    assert_eq!(write_share(&viewer, default_screen()), 2);
+    drop(first);
+    let mut second = Publisher::create(&names).expect("open the header the viewer kept");
+    viewer.beat();
+    assert_eq!(viewer.header().screen().sequence(), 0, "the new core's screen sequence");
+    assert_eq!(second.parallel_share(Instant::now()), None, "the earlier session's share");
+    assert_eq!(write_share(&viewer, default_screen()), 2, "the next write");
+    assert_eq!(second.parallel_share(Instant::now()), Some(default_screen()));
 }

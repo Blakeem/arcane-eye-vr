@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use gfx::nearest::Nearest;
 
-use super::{FORWARD_WAIT, assert_between, at, depth, dialogue, following};
-use crate::ui_layer::ui_depth::decide::{Depth, Following, after, follow_or_wait};
+use super::{FORWARD_WAIT, assert_between, at, depth, dialogue, dialogue_on_screen, following};
+use crate::ui_layer::ui_depth::decide::{Depth, Following, View, after, follow_or_wait};
 
 /// The time between two steps, near one frame at 30 frames per second.
 const STEP: Duration = Duration::from_millis(33);
@@ -133,4 +133,19 @@ fn the_ui_disparity_falls_and_the_eye_scale_rises_while_a_wait_runs() {
     assert_eq!(rising.in_use.disparity, 0.002, "the larger UI disparity waits");
     assert_between(rising.in_use.eye_scale.share(), 0.549, 0.551, "the risen eye scale");
     assert!(rising.wait.is_some(), "a wait for the larger UI disparity runs");
+}
+
+#[test]
+fn a_screen_limit_that_falls_by_noise_keeps_the_eye_scale_and_the_wait_of_a_nearer_scene() {
+    let screen = dialogue_on_screen(3.0);
+    let at_limit = after(following(Depth::FLAT), at(1.0), screen, Duration::ZERO, Duration::ZERO);
+    let waiting = after(at_limit, at(0.5), screen, STEP, FORWARD_WAIT);
+    let noisy = View { limit: screen.limit - 1e-7, offset: screen.offset - 1e-7, ..screen };
+
+    let next = after(waiting, at(0.5), noisy, STEP, FORWARD_WAIT);
+
+    assert!(waiting.wait.is_some(), "the nearer scene waits under the unchanged limit");
+    assert_eq!(next.in_use.disparity, noisy.limit, "the UI disparity at the lower limit");
+    assert_eq!(next.in_use.eye_scale, at_limit.in_use.eye_scale, "the eye scale in use");
+    assert!(next.wait.is_some(), "the nearer scene still waits");
 }

@@ -11,7 +11,9 @@
 //!   [targets]   the UI disparity and the eye scale that distance asks for, in `decide`
 //!   [follow]    the values in use moved toward the targets, nearer ones only once they held for
 //!               the wait time, or set to no UI disparity and the full eye distance at once while
-//!               the UI hides the scene, in `decide`
+//!               the UI hides the scene, with the UI disparity held at most at the UI limit in
+//!               use, which a falling limit takes down at once, with the eye scale its target
+//!               asks for after a fall past `LIMIT_NOISE`, in `decide`
 //!   [start]     this frame's read of the distance texture under the UI texture, times the far plane
 //!   [columns]   the UI disparity in use as columns per half, by which the UI layer draws the UI
 //!               crossed
@@ -44,7 +46,6 @@ use game_bindings::texture_table::TextureKey;
 use game_mem::GameAddr;
 use gfx::nearest::{DistanceFault, Nearest, NearestError, NearestRead, check_distance};
 use ipc_layout::launch_token::Mode;
-use settings::player::StereoSettings;
 use stereo_core::eye::EyeScale;
 use tracing::Level;
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
@@ -52,19 +53,20 @@ use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 pub(crate) use self::cursor_depth::CursorReport;
 use self::cursor_depth::{CursorDepth, Start};
 pub(crate) use self::decide::Over;
-use self::decide::{Following, View, after, offset, probe};
+use self::decide::{Following, View, after, probe};
 use super::LOG_PERIOD;
 pub(crate) use super::decide::Moves;
 use super::decide::ui_columns;
+use super::depth_offset::DepthOffset;
 use crate::game_source::{GameSource, SourceFault};
 use crate::raw::Devices;
 
 /// What the UI depth reads at the Present call site besides the frame's textures.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DepthInput {
-    /// The player settings in effect, whose depth offset also moves the right half. The depth
+    /// The depth offset in use, which also moves the right half, and its UI limit. The depth
     /// offset is 0 in the launch mode `vr`.
-    pub(crate) stereo: StereoSettings,
+    pub(crate) offset: DepthOffset,
     /// The full eye distance in meters: `stereo.ipd_mm` in the launch mode `desktop-stereo`, and the
     /// eye distance of the head pose in use in the mode `vr`.
     pub(crate) eye_m: f32,
@@ -89,6 +91,8 @@ pub(crate) struct DepthReport {
     pub(crate) nearest: Option<Nearest>,
     pub(crate) columns: u16,
     pub(crate) eye_scale: EyeScale,
+    /// The depth offset in use of the last frame the UI layer ran.
+    pub(crate) offset: DepthOffset,
 }
 
 impl DepthReport {
@@ -169,6 +173,9 @@ pub(crate) struct UiDepth {
     /// The eye scale handed at the Present call before the last, at which the eye cameras rendered
     /// the frame the UI layer draws now.
     rendered: EyeScale,
+    /// The depth offset in use of the last frame the UI layer ran, [`DepthOffset::NONE`] before the
+    /// first.
+    offset: DepthOffset,
     pub(super) cursor: CursorDepth,
     texture_log: RateLimit,
     stop_log: Once,
@@ -189,6 +196,7 @@ impl UiDepth {
             newest: None,
             handed: EyeScale::FULL,
             rendered: EyeScale::FULL,
+            offset: DepthOffset::NONE,
             cursor: CursorDepth::new(),
             texture_log: RateLimit::new(),
             stop_log: Once::new(),
@@ -202,9 +210,14 @@ impl UiDepth {
         self.handed
     }
 
+    /// Keeps `offset`, the depth offset in use of a frame the UI layer runs, for the report.
+    pub(crate) const fn keep_offset(&mut self, offset: DepthOffset) {
+        self.offset = offset;
+    }
+
     pub(crate) const fn report(&self) -> DepthReport {
         let eye_scale = self.following.in_use.eye_scale;
-        DepthReport { nearest: self.newest, columns: self.columns, eye_scale }
+        DepthReport { nearest: self.newest, columns: self.columns, eye_scale, offset: self.offset }
     }
 
     pub(crate) fn cursor_report(&self) -> CursorReport {
@@ -233,7 +246,7 @@ impl UiDepth {
         self.columns = ui_columns(self.following.in_use.disparity, drawn.half_width);
         let start = scene.as_ref().and_then(|scene| self.cursor_start(input, drawn, scene));
         self.cursor.read(devices, start);
-        let cursor = self.cursor.moves(self.columns, offset(input.stereo), drawn.half_width);
+        let cursor = self.cursor.moves(self.columns, input.offset.share(), drawn.half_width);
         Columns { ui: self.columns, cursor }
     }
 
@@ -246,7 +259,7 @@ impl UiDepth {
         scene: &'frame Scene,
     ) -> Option<Start<'frame>> {
         let place = drawn.pointer?;
-        let view = View::of(&scene.camera, input.stereo, input.eye_m, input.mode);
+        let view = View::of(&scene.camera, input.offset, input.eye_m, input.mode);
         let probe = probe(place, view, self.rendered, scene.camera.far)?;
         Some(Start { ui: drawn.ui, distances: &scene.distances, probe })
     }
@@ -308,7 +321,7 @@ impl UiDepth {
             let elapsed = self
                 .stepped
                 .map_or(Duration::ZERO, |stepped| input.now.saturating_duration_since(stepped));
-            let view = View::of(&scene.camera, input.stereo, input.eye_m, input.mode);
+            let view = View::of(&scene.camera, input.offset, input.eye_m, input.mode);
             self.following = after(self.following, found, view, elapsed, self.forward_wait);
             self.stepped = Some(input.now);
             self.newest = Some(found);

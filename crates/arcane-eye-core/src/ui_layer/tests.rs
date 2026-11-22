@@ -23,6 +23,7 @@ use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 use windows::core::Interface as _;
 
+use super::depth_offset::DepthOffset;
 use super::test_support::no_camera;
 use super::ui_depth::DepthInput;
 use super::{Target, UiLayer, install};
@@ -116,9 +117,9 @@ fn running() -> Health {
     health
 }
 
-/// A depth offset of `percent` percent.
-fn depth(percent: f32) -> DepthOffsetPercent {
-    DepthOffsetPercent::try_from(percent).expect("a depth offset in range")
+/// The depth offset of the player setting `percent` percent.
+fn depth(percent: f32) -> DepthOffset {
+    DepthOffset::of_setting(DepthOffsetPercent::try_from(percent).expect("an offset in range"))
 }
 
 /// One frame of `layer` at the Present call site of `swapchain`, where the eye view feature read
@@ -133,10 +134,10 @@ fn offset_frame(
     health: &Health,
     swapchain: &IDXGISwapChain,
     next: Layout,
-    depth_offset: DepthOffsetPercent,
+    depth_offset: DepthOffset,
 ) {
     let mut input = no_camera();
-    input.stereo.depth_offset_percent = depth_offset;
+    input.offset = depth_offset;
     input_frame(layer, health, swapchain, next, &input);
 }
 
@@ -337,7 +338,7 @@ fn a_flat_frame_and_a_side_by_side_frame_make_no_heap_allocation() {
 
     // 5 percent of a 32-column half moves it 2 columns.
     let mut input = no_camera();
-    input.stereo.depth_offset_percent = depth(5.0);
+    input.offset = depth(5.0);
 
     let guard = arm_alloc_guard().expect("arm the allocation guard");
     layer.on_frame(&health, SIDE_BY_SIDE, &input, &target);

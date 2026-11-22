@@ -41,7 +41,7 @@ The launch app shows the game in 3D on a flat screen in the headset.
 
 The game shows on the screen once it runs. The screen closes when the game ends.
 
-The menu button of a controller opens a menu on that controller, and a second press closes it. The menu is fixed to the hand that opened it and turns with that hand. On a Steam Frame, the menu button of the left controller is the View button. Point the other controller at a button of the menu and press its trigger. The buttons set the distance and the size of the screen, and the launch app keeps the values for the next start.
+The menu button of a controller opens a menu on that controller, and a second press closes it. The menu is fixed to the hand that opened it and turns with that hand. On a Steam Frame, the menu button of the left controller is the View button. Point the other controller at a button of the menu and press its trigger. The buttons set the distance and the size of the screen, and the launch app keeps the values for the next start. A screen farther away shows the scene farther away. A wider screen fills more of the view, and above a width of about 2 m it also shows the scene nearer.
 
 A controller that points at the screen moves the mouse pointer to the place it points at. The trigger is the left mouse button, and the grip is the right mouse button. The thumbstick's up and down is the mouse wheel. The thumbstick's left and right turn the camera with the game's default keys Delete and End. On an HTC Vive controller, the trackpad takes the place of the thumbstick. The controller whose trigger was pressed last points, and the right controller points before the first press. While the menu is open, the other controller points. A trigger press of the controller that holds the open menu does not change which controller points.
 
@@ -94,7 +94,8 @@ width_m = 3.0       # width of the headset screen in meters, 0.5 to 10
 ```
 
 - A larger `ipd_mm` gives a stronger 3D effect.
-- A larger `depth_offset_percent` sets the scene further behind the screen.
+- `depth_offset_percent` applies in `--mode desktop-stereo`. A larger value sets the scene further behind the screen.
+- On the headset screen the depth follows the width of the screen and the distance between the eyes.
 - `arcane-eye-vr.exe --reload-settings` applies a saved change to `[stereo]` while the game runs.
 - A change to `[screen]` in the file applies at the next start of the headset screen.
 - The menu of the headset screen writes `distance_m` and `width_m` into the file when it closes after a change. Its values replace a change to `[screen]` made in the file while the headset screen runs.

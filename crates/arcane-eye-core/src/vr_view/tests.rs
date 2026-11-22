@@ -7,6 +7,7 @@ use diag::health::{Feature, Health};
 use game_bindings::camera::Camera;
 use ipc_layout::launch_token::Mode;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose as XrPose, HeadSample};
+use ipc_layout::viewer_header::screen::ParallelShare;
 use settings::dev::{DevFlags, Horizon, TestHead, VrFlags};
 use settings::player::{DepthOffsetPercent, IpdMm, StereoSettings};
 use stereo_core::eye::{EyeScale, PerEye};
@@ -17,6 +18,7 @@ use super::{PresentCall, Rays, TestClock, VrReport, VrView, first_placement};
 use crate::config::Config;
 use crate::eye_camera::Placement;
 use crate::logged;
+use crate::ui_layer::depth_offset::{DepthOffset, OffsetFrom};
 
 /// The OpenXR orientation of a turn of 20 degrees to the right: (0, -sin 10, 0, cos 10).
 const RIGHT_20: [f32; 4] = [0.0, -0.173_648_18, 0.0, 0.984_807_7];
@@ -242,13 +244,18 @@ fn the_rays_are_rewritten_only_while_the_view_camera_runs() {
 }
 
 #[test]
-fn the_depth_offset_counts_as_0_only_in_the_mode_vr() {
+fn the_depth_offset_counts_as_0_in_the_mode_vr_and_follows_a_screen_only_in_desktop_stereo() {
+    let screen = ParallelShare::new(0.0065);
     let desktop = VrView::new(Mode::DesktopStereo, VrFlags::default());
-    assert_eq!(desktop.depth_stereo(stereo(64.0)), stereo(64.0));
+    let setting = desktop.depth_offset(stereo(64.0), None);
+    assert_near(&[setting.share()], &[0.025], "the setting's 2.5 percent");
+    assert_eq!(setting.origin(), OffsetFrom::Setting);
+    let from_screen = desktop.depth_offset(stereo(64.0), screen);
+    assert_near(&[from_screen.share()], &[0.0065], "the 10 m screen's share");
+    assert_eq!(from_screen.origin(), OffsetFrom::Screen);
     let vr = VrView::new(Mode::Vr, VrFlags::default());
-    let used = vr.depth_stereo(stereo(64.0));
-    assert_eq!(used.depth_offset_percent.percent(), 0.0);
-    assert_eq!(used.ipd_mm, stereo(64.0).ipd_mm);
+    assert_eq!(vr.depth_offset(stereo(64.0), None), DepthOffset::NONE);
+    assert_eq!(vr.depth_offset(stereo(64.0), screen), DepthOffset::NONE, "a screen in the mode vr");
 }
 
 #[test]

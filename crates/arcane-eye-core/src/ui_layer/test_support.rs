@@ -11,6 +11,7 @@ use settings::player::StereoSettings;
 use super::cursor::Aim;
 use super::cursor::counter::WindowsCursor;
 use super::decide::{Draw, Step, Write};
+use super::depth_offset::DepthOffset;
 use super::ui_depth::DepthInput;
 use super::{DrawFault, Target, UiLayer};
 use crate::raw::cursor::Window;
@@ -33,7 +34,7 @@ pub(crate) fn target_parts(test: &TestSwapchain) -> (BackBuffer, Devices, Window
 pub(crate) fn no_camera() -> DepthInput {
     let stereo = StereoSettings::default();
     DepthInput {
-        stereo,
+        offset: DepthOffset::of_setting(stereo.depth_offset_percent),
         eye_m: stereo.ipd_mm.meters(),
         camera: None,
         now: Instant::now(),

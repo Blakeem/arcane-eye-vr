@@ -1,23 +1,35 @@
 //! The viewer publisher: copies the back buffer into the shared texture while a debug viewer runs.
 //!
 //! On each frame the publisher reads the viewer's heartbeat from the viewer header. It holds a shared
-//! texture and copies into it only while the heartbeat advanced within [`STALE_AFTER`], so with no
-//! viewer the frame costs one read of the header. It counts every frame it handles, so the present
-//! number of each published frame shows the frames it did not publish. It writes each published
-//! frame's tag beside the present number. [`Publisher::head_pose`] reads the head pose the viewer
-//! writes while the same heartbeat rule finds the viewer running.
+//! texture and copies into it only while the heartbeat advanced within [`STALE_AFTER`]. It counts
+//! every frame it handles, so the present number of each published frame shows the frames it did
+//! not publish. It writes each published frame's tag beside the present number.
+//! [`Publisher::head_pose`] reads the head pose and [`Publisher::parallel_share`] the screen's
+//! parallel share that the viewer writes while the same heartbeat rule finds the viewer running.
+//! With no viewer, each of [`Publisher::on_frame`], [`Publisher::head_pose`] and
+//! [`Publisher::parallel_share`] costs one read of the header. The heartbeat's decision is in
+//! `publish/heartbeat.rs`, the head pose's in `publish/head.rs` and the share's in
+//! `publish/screen.rs`.
+
+mod head;
+mod heartbeat;
+mod screen;
 
 use std::iter;
 use std::time::Instant;
 
 use ipc_layout::viewer_header::pose::{FrameTag, HeadSample};
+use ipc_layout::viewer_header::screen::ParallelShare;
 use ipc_layout::viewer_header::{
-    self, Acquire, EyeRect, FRAME_OFFSET, FRAME_TAG_OFFSETS, PRESENT_OFFSET, STALE_AFTER,
-    TextureInfo, ViewerHeader, WIDTH_OFFSET,
+    self, Acquire, EyeRect, FRAME_OFFSET, FRAME_TAG_OFFSETS, PRESENT_OFFSET,
+    SCREEN_SEQUENCE_OFFSET, STALE_AFTER, TextureInfo, ViewerHeader, WIDTH_OFFSET,
 };
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D};
 use windows::core::{HRESULT, HSTRING};
 
+use self::head::KeptHead;
+use self::heartbeat::Heartbeat;
+use self::screen::KeptShare;
 use crate::raw::{self, HeaderView, SharedTexture, SourceKey};
 
 /// The names of the viewer header mapping and the shared texture.
@@ -101,30 +113,6 @@ pub struct Present {
     pub tag: FrameTag,
 }
 
-/// The viewer's heartbeat as the publisher last read it.
-#[derive(Clone, Copy, Debug)]
-struct Heartbeat {
-    value: u32,
-    advanced_at: Option<Instant>,
-}
-
-impl Heartbeat {
-    /// A heartbeat at `value` that has not advanced yet, since a value an earlier viewer left is no
-    /// sign of a running viewer.
-    const fn new(value: u32) -> Self {
-        Self { value, advanced_at: None }
-    }
-
-    /// Records `value` read at `now` and returns whether the viewer runs.
-    fn observe(&mut self, value: u32, now: Instant) -> bool {
-        if value != self.value {
-            self.value = value;
-            self.advanced_at = Some(now);
-        }
-        self.advanced_at.is_some_and(|at| now.saturating_duration_since(at) <= STALE_AFTER)
-    }
-}
-
 /// What a frame does once the keyed mutex acquire returned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AfterAcquire {
@@ -142,6 +130,16 @@ fn after_acquire(acquired: Acquire) -> Result<AfterAcquire, PublishError> {
         Acquire::Abandoned => Ok(AfterAcquire::Recreate),
         Acquire::Failed(code) => Err(PublishError { step: Step::Acquire, code: HRESULT(code) }),
     }
+}
+
+/// The viewer header as [`Publisher::read_twice`] found it.
+enum Reads {
+    /// A read holds another layout.
+    Other,
+    /// The heartbeat did not advance within [`STALE_AFTER`], so the one read was not repeated.
+    Idle(ViewerHeader),
+    /// The viewer runs, and the header was read twice one after the other.
+    Running(ViewerHeader, ViewerHeader),
 }
 
 /// The shared texture's state.
@@ -170,12 +168,15 @@ pub struct Publisher {
     published_present: u32,
     /// The tag of the last published frame.
     published_tag: FrameTag,
+    head: KeptHead,
+    screen: KeptShare,
 }
 
 impl Publisher {
     /// Creates the header mapping `names.mapping`, or opens it when a viewer that outlived an earlier
     /// core still holds it. The counters then continue from the earlier core's, so that viewer sees a
-    /// new generation.
+    /// new generation. The screen slot's sequence number starts at 0, so another viewer's heartbeat
+    /// never revives the screen of a headset session that ended with the earlier core.
     ///
     /// # Errors
     ///
@@ -193,7 +194,7 @@ impl Publisher {
             }
             Err(_new_mapping) => (ViewerHeader::new(TextureInfo::default(), 0, 0, 0), 0),
         };
-        header.write_words(start.core_words());
+        header.write_words(start.core_words().chain([(SCREEN_SEQUENCE_OFFSET, 0)]));
         Ok(Self {
             header,
             texture_name: HSTRING::from(&names.texture),
@@ -204,6 +205,8 @@ impl Publisher {
             presents: start.present(),
             published_present: start.present(),
             published_tag: start.frame_tag(),
+            head: KeptHead::NONE,
+            screen: KeptShare::new(0),
         })
     }
 
@@ -278,28 +281,54 @@ impl Publisher {
     }
 
     /// The head pose the viewer wrote last, with its sequence number and eye distance, read at
-    /// `now`, or `None` while the heartbeat did not advance within [`STALE_AFTER`], the viewer wrote
-    /// none, a write runs, a value of the pose or the eye distance is not finite, or the header holds
+    /// `now`. A read that a write overlaps gives the pose of the last write that ended while the
+    /// viewer ran. It is `None` while the heartbeat did not advance within [`STALE_AFTER`], no such
+    /// write ended, a value of that write's pose or eye distance is not finite, or the header holds
     /// another layout.
     pub fn head_pose(&mut self, now: Instant) -> Option<HeadSample> {
-        // A viewer that exited or hangs leaves its last pose in the header.
-        if !self.viewer_runs(now) {
-            return None;
+        let reads = self.read_twice(now);
+        self.head.after(&reads)
+    }
+
+    /// The parallel share of the screen the viewer wrote last, read at `now`. A read that a write
+    /// overlaps gives the share of the last write that ended. It is `None` while the heartbeat did
+    /// not advance within [`STALE_AFTER`], the slot is empty, the share is not finite or not above
+    /// 0, its sequence number is the one the slot held at the last read that found no viewer
+    /// running, or the header holds another layout.
+    pub fn parallel_share(&mut self, now: Instant) -> Option<ParallelShare> {
+        let reads = self.read_twice(now);
+        self.screen.after(&reads)
+    }
+
+    /// The header read at `now`, and read again right after while the viewer runs. A slot's
+    /// sequence number is read before its words in the first read and again in the second, so a
+    /// write that ran during the reads changes it.
+    fn read_twice(&mut self, now: Instant) -> Reads {
+        let Some((first, runs)) = self.read_once(now) else {
+            return Reads::Other;
+        };
+        // A viewer that exited or hangs leaves its last slots in the header.
+        if !runs {
+            return Reads::Idle(first);
         }
-        // The sequence number is read before the pose's words and again after them, so a write that
-        // ran during the read changes it.
-        let (first, again) = (self.header.read_words(), self.header.read_words());
-        match (ViewerHeader::decode(&first), ViewerHeader::decode(&again)) {
-            (Ok(first), Ok(again)) => first.head().sample(again.head().sequence()),
-            (Err(_overwritten), _) | (_, Err(_overwritten)) => None,
+        match ViewerHeader::decode(&self.header.read_words()) {
+            Ok(again) => Reads::Running(first, again),
+            Err(_overwritten) => Reads::Other,
         }
     }
 
     fn viewer_runs(&mut self, now: Instant) -> bool {
-        match ViewerHeader::decode(&self.header.read_words()) {
-            Ok(header) => self.heartbeat.observe(header.heartbeat(), now),
-            Err(_overwritten) => false,
-        }
+        self.read_once(now).is_some_and(|(_header, runs)| runs)
+    }
+
+    /// The header read at `now` and whether the heartbeat advanced within [`STALE_AFTER`], or
+    /// `None` for a header of another layout.
+    fn read_once(&mut self, now: Instant) -> Option<(ViewerHeader, bool)> {
+        let Ok(header) = ViewerHeader::decode(&self.header.read_words()) else {
+            return None;
+        };
+        let runs = self.heartbeat.observe(header.heartbeat(), now);
+        Some((header, runs))
     }
 
     /// Makes the shared texture fit `key` on `device`, unless an earlier try for the same back buffer
@@ -359,34 +388,4 @@ impl Publisher {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{AfterAcquire, Heartbeat, PublishError, STALE_AFTER, Step, after_acquire};
-    use ipc_layout::viewer_header::Acquire;
-    use std::time::{Duration, Instant};
-    use windows::Win32::Foundation::E_FAIL;
-
-    #[test]
-    fn each_acquire_result_maps_to_its_frame_step_and_a_failure_names_the_acquire() {
-        assert_eq!(after_acquire(Acquire::Held), Ok(AfterAcquire::Copy));
-        assert_eq!(after_acquire(Acquire::Busy), Ok(AfterAcquire::Skip));
-        assert_eq!(after_acquire(Acquire::Abandoned), Ok(AfterAcquire::Recreate));
-        let failed = after_acquire(Acquire::Failed(E_FAIL.0)).expect_err("a failed acquire");
-        assert_eq!(failed, PublishError { step: Step::Acquire, code: E_FAIL });
-        let message = failed.to_string();
-        assert!(message.starts_with("acquiring the keyed mutex failed with "), "{message}");
-    }
-
-    #[test]
-    fn heartbeat_runs_only_within_a_second_of_its_last_advance() {
-        let start = Instant::now();
-        let at = |millis| start.checked_add(Duration::from_millis(millis)).expect("a test time");
-        let mut heartbeat = Heartbeat::new(7);
-        assert!(!heartbeat.observe(7, at(0)), "the value an earlier viewer left");
-        assert!(heartbeat.observe(8, at(10)), "an advance");
-        assert!(heartbeat.observe(8, at(1010)), "exactly one second after the advance");
-        assert!(!heartbeat.observe(8, at(1011)), "past one second");
-        assert!(heartbeat.observe(9, at(5000)), "a viewer that came back");
-        assert!(heartbeat.observe(2, at(5100)), "any change counts, a wrapped counter too");
-        assert_eq!(STALE_AFTER, Duration::from_secs(1));
-    }
-}
+mod tests;

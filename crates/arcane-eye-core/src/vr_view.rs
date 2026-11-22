@@ -26,8 +26,9 @@ use diag::rate::Once;
 use game_bindings::camera::Camera;
 use ipc_layout::launch_token::Mode;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadSample};
+use ipc_layout::viewer_header::screen::ParallelShare;
 use settings::dev::{Horizon, TestHead, VrFlags};
-use settings::player::{DepthOffsetPercent, StereoSettings};
+use settings::player::StereoSettings;
 use stereo_core::eye::{self, EyeScale};
 use tracing::Level;
 
@@ -37,6 +38,7 @@ use self::head::{
 };
 use crate::config::Config;
 use crate::eye_camera::Placement;
+use crate::ui_layer::depth_offset::DepthOffset;
 
 /// Whether the view camera feature rewrites the corner rays of each proxied view, which an eye
 /// turned against the head controller needs for its lighting.
@@ -165,12 +167,18 @@ impl VrView {
         pose_placement(head, self.flags.horizon)
     }
 
-    /// The player's `stereo` settings as the UI layer and the UI depth use them: with no depth
-    /// offset in the mode `vr`.
-    pub(crate) fn depth_stereo(&self, stereo: StereoSettings) -> StereoSettings {
+    /// The depth offset in use that the UI layer and the UI depth compute with, of the player's
+    /// `stereo` settings and the parallel share `screen` the viewing side reports: in the mode
+    /// `desktop-stereo` the screen's share while it reports one and the setting otherwise, and no
+    /// depth offset in the mode `vr`.
+    pub(crate) fn depth_offset(
+        &self,
+        stereo: StereoSettings,
+        screen: Option<ParallelShare>,
+    ) -> DepthOffset {
         match self.mode {
-            Mode::DesktopStereo => stereo,
-            Mode::Vr => StereoSettings { depth_offset_percent: DepthOffsetPercent::NONE, ..stereo },
+            Mode::DesktopStereo => DepthOffset::in_use(stereo.depth_offset_percent, screen),
+            Mode::Vr => DepthOffset::NONE,
         }
     }
 

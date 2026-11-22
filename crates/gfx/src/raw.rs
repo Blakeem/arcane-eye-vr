@@ -48,7 +48,7 @@ pub(crate) mod region;
 pub(crate) mod row;
 
 /// The header's size as `CreateFileMappingW` takes it.
-const HEADER_MAPPING_SIZE: u32 = 128;
+const HEADER_MAPPING_SIZE: u32 = 192;
 const _: () = assert!(HEADER_MAPPING_SIZE as usize == SIZE);
 
 const _: () = assert!(SHARED_ACCESS == DXGI_SHARED_RESOURCE_READ.0 | DXGI_SHARED_RESOURCE_WRITE.0);

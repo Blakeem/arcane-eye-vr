@@ -4,7 +4,8 @@
 //! copies the back buffer into the shared texture while a viewer runs, or the game source's texture
 //! when the frame handler holds one and it yields a texture, with the frame's tag. The texture
 //! reference it takes drops before the frame handler returns. Once the header exists, the link reads
-//! the head pose the viewing side wrote into it while the viewing side's heartbeat runs.
+//! the head pose and the screen's parallel share the viewing side wrote into it while the viewing
+//! side's heartbeat runs.
 
 use std::time::{Duration, Instant};
 
@@ -12,6 +13,7 @@ use diag::rate::{Once, RateLimit};
 use diag::{error_every, once, warn_every};
 use gfx::publish::{Outcome, Present, Publisher, ViewNames};
 use ipc_layout::viewer_header::pose::{FrameTag, HeadSample};
+use ipc_layout::viewer_header::screen::ParallelShare;
 use tracing::Level;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 
@@ -63,6 +65,16 @@ impl ViewerLink {
     pub(crate) fn head_pose(&mut self, now: Instant) -> Option<HeadSample> {
         match &mut self.link {
             Link::Ready(publisher) => publisher.head_pose(now),
+            Link::Pending(_) | Link::Failed => None,
+        }
+    }
+
+    /// The parallel share of the screen the viewing side wrote last into the header, read at `now`,
+    /// or `None` before the header exists, after its creation failed, or while
+    /// [`Publisher::parallel_share`] reads none, such as after the viewing side stopped beating.
+    pub(crate) fn parallel_share(&mut self, now: Instant) -> Option<ParallelShare> {
+        match &mut self.link {
+            Link::Ready(publisher) => publisher.parallel_share(now),
             Link::Pending(_) | Link::Failed => None,
         }
     }
