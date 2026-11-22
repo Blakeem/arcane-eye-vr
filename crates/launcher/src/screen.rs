@@ -9,11 +9,14 @@
 //! the device profiles and logs what the controllers do in each frame. `menu.rs` shows the menu
 //! that sets the screen's distance and width, `pointer.rs` sends the game the mouse input of the
 //! controller that points at the screen and the turn key input of the pointing controller's stick,
-//! and `geometry.rs` holds the vector math of the quads and rays. The menu and the pointer rest while a projection layer shows. The session
-//! runs until Steam reports that the game ended, the runtime ends the session or the game's frames
-//! are of a kind it cannot show. The game window keeps the keyboard, since the session has no
-//! window, and the pointer's input reaches the game only while the game window is in the
-//! foreground.
+//! and `geometry.rs` holds the vector math of the quads and rays. The menu and the pointer rest
+//! while a projection layer shows. `models.rs` draws every tracked controller model into one
+//! projection layer, which the compositor blends over the frame's layer and under the panels.
+//! `image.rs` finds the draw target of each swapchain image that the eyes, the panels and the
+//! models acquire. The session runs until Steam reports that the game ended, the runtime ends the
+//! session or the game's frames are of a kind it cannot show. The game window keeps the keyboard,
+//! since the session has no window, and the pointer's input reaches the game only while the game
+//! window is in the foreground.
 //!
 //! A game that the launch app starts starts in the first pass of the frame loop after the session
 //! runs (`crate::start`). Until the game reports its goal status, the session shows none of its
@@ -28,10 +31,12 @@ mod eyes;
 pub(crate) mod failure;
 pub(crate) mod game;
 mod geometry;
+mod image;
 mod immersive;
 mod launcher;
 mod layer;
 mod menu;
+mod models;
 mod panel_image;
 mod picture;
 mod pointer;
@@ -68,6 +73,7 @@ use self::immersive::Immersive;
 use self::launcher::{LauncherScreen, Wait};
 use self::layer::Layer;
 use self::menu::{PlayerFile, ScreenMenu};
+use self::models::Models;
 use self::panel_image::Gpu;
 use self::picture::{Link, Unshowable};
 use self::pointer::{PanelAim, Pointer, Seen};
@@ -168,6 +174,7 @@ fn open(
     let status_panel = if start.is_done() { StatusPanel::closed() } else { StatusPanel::new() };
     Ok(Screen {
         eyes: None,
+        models: Models::new(),
         immersive,
         status_panel,
         launcher: LauncherScreen::new(),
@@ -210,6 +217,7 @@ impl FrameError {
 /// panels go before the session and the device goes last.
 struct Screen {
     eyes: Option<Eyes>,
+    models: Models,
     /// `None` in the view [`View::Screen`].
     immersive: Option<Immersive>,
     status_panel: StatusPanel,
@@ -258,15 +266,16 @@ impl Screen {
     /// [`View::Immersive`], draws the newest published frame into the swapchains once the start is
     /// done and the runtime shows the frame, chooses its layer, updates the menu, shows the newest
     /// copy of the launcher window during the start wait, sends the pointer's input to the game or
-    /// the launcher window, draws the menu's quads and the laser, and ends the frame with the frame's
-    /// layer, then the launcher's picture or else the status panel until a game frame showed, then
-    /// the menu's panels.
+    /// the launcher window, draws the menu's quads, the laser and the controller models, and ends
+    /// the frame with the frame's layer, then the controller models' layer, then the launcher's
+    /// picture or else the status panel until a game frame showed, then the menu's panels.
     fn frame(&mut self) -> Result<(), FrameError> {
         let timing = self.session.wait_frame()?;
         let controls = self.controllers.read(&self.session, timing)?;
         let now = Instant::now();
         let Self {
             eyes,
+            models,
             immersive,
             status_panel,
             launcher,
@@ -310,7 +319,8 @@ impl Screen {
         }
         let start_quad = launcher.panel().or_else(|| status_panel.panel(|| status::make(&gpu)));
         let panels: Vec<&Panel> = start_quad.into_iter().chain(menu.panels()).collect();
-        session.end_frame(timing, shown, &panels)?;
+        let model_layer = models.frame(session, device, timing)?;
+        session.end_frame(timing, shown, model_layer, &panels)?;
         if let Some(immersive) = immersive.as_mut() {
             immersive.end_frame();
         }

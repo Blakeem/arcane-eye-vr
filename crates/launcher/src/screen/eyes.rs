@@ -12,6 +12,7 @@ use xr::format::Sampling;
 use xr::session::Session;
 use xr::swapchain::Swapchains;
 
+use super::image;
 use super::picture::Picture;
 
 /// Why an eye's half was not drawn into its swapchain.
@@ -101,7 +102,7 @@ impl Eyes {
     ) -> Result<(), EyesError> {
         let swapchain = self.swapchains.eye_mut(eye);
         let index = swapchain.acquire()?;
-        let target = usize::try_from(index).ok().and_then(|slot| self.targets[eye].get(slot));
+        let target = image::target(&self.targets[eye], index);
         if let Some(target) = target {
             draw_half(draw, context, target, picture, eye);
         }

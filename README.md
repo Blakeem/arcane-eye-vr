@@ -47,6 +47,7 @@ A controller that points at the screen moves the mouse pointer to the place it p
 
 - The game window on the PC takes the keyboard, the mouse and the input of the controllers, so it must stay the active window.
 - SteamVR must be the active OpenXR runtime.
+- The headset shows the controllers when the OpenXR runtime gives their models.
 - The screen sits in front of the seated position that SteamVR holds.
 - The game renders at the resolution in its video options, and each eye gets half of that width. A higher resolution gives a sharper picture and a lower frame rate.
 

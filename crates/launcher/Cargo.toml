@@ -17,6 +17,7 @@ diag = { path = "../diag" }
 gfx = { path = "../gfx" }
 ipc-layout = { path = "../ipc-layout" }
 launch = { path = "../launch" }
+model-file = { path = "../model-file" }
 openxr.workspace = true
 overlay = { path = "../overlay" }
 settings = { path = "../settings" }

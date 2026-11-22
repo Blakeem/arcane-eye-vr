@@ -218,6 +218,7 @@ dependencies = [
  "gfx",
  "ipc-layout",
  "launch",
+ "model-file",
  "openxr",
  "overlay",
  "settings",

@@ -13,6 +13,7 @@ These changes are on the main branch. No headset has tested them yet.
 - In `--mode screen`, a controller that points at the screen works as the mouse, and its thumbstick's left and right turn the camera.
 - In `--mode screen` and `--mode vr`, the launch app opens the headset before it starts the game, and starts SteamVR when it does not run. The headset shows "Starting Baldur's Gate 3" until the Larian launcher or the game's first picture shows.
 - In `--mode screen` and `--mode vr`, the Larian launcher shows on the screen in the headset, and the trigger of a controller that points at it clicks it.
+- In `--mode screen` and `--mode vr`, the headset shows the controllers when the OpenXR runtime gives their models.
 - Controllers are described by files in `profiles`, for the Steam Frame, the HTC Vive and the Khronos simple controller.
 - `arcane-eye-vr.exe --mode vr` starts a first stage of the immersive mode, where the head looks around from the place of the game's camera.
 

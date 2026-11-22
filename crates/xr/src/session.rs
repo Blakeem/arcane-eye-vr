@@ -1,15 +1,15 @@
-//! The session: its state changes, its frame loop, its controller input, the head's read, the
-//! render models of the devices the user holds and the layers it submits.
+//! The session: its state changes, its frame loop, its controller input, the head's and the eye
+//! views' read, the render models of the devices the user holds and the layers it submits.
 //!
 //! The caller polls the session's events, and while the session runs it waits for each frame,
 //! reads the controllers' input, the head and the render models, draws into the swapchains of
-//! [`crate::swapchain`] and the panels of [`crate::panel`], and ends the frame. The session follows
-//! the session lifecycle of the OpenXR specification through the steps of `state.rs`.
+//! [`crate::swapchain`] and the panels of [`crate::panel`], and ends the frame with the layers of
+//! `layers.rs`. The session follows the OpenXR session lifecycle through the steps of `state.rs`.
+//! `views.rs` holds the calls on the view configuration.
 
 use openxr::{
-    CompositionLayerBase, CompositionLayerProjection, CompositionLayerQuad, D3D11,
-    EnvironmentBlendMode, EventDataBuffer, Extent2Df, FrameStream, FrameWaiter, Instance, Posef,
-    ReferenceSpaceType, SessionState, Space, Time, ViewConfigurationType, sys,
+    D3D11, EventDataBuffer, Extent2Df, FrameStream, FrameWaiter, Instance, Posef,
+    ReferenceSpaceType, SessionState, Space, SystemId, Time, ViewConfigurationType, sys,
 };
 use stereo_core::eye::PerEye;
 use tracing::{info, warn};
@@ -31,6 +31,7 @@ use crate::state::{self, Step};
 use crate::swapchain::Swapchains;
 
 mod events;
+mod views;
 
 use events::{Observed, Polled};
 
@@ -80,6 +81,15 @@ pub enum Shown<'a> {
     Projection { swapchains: &'a Swapchains, views: PerEye<EyeView> },
 }
 
+/// The render models' layer of a frame: each eye's swapchain, whose last released image holds the
+/// models in premultiplied color over transparent black, as that eye's view of one projection
+/// layer that the compositor blends by its alpha over the frame's layer.
+#[derive(Clone, Copy)]
+pub struct ModelLayer<'a> {
+    pub swapchains: &'a Swapchains,
+    pub views: PerEye<EyeView>,
+}
+
 /// An OpenXR session that draws with one D3D11 device, with its LOCAL reference space, its VIEW
 /// reference space, the controls of its device profiles and its render models. Fields drop in
 /// declaration order, so the device outlives the session's handles.
@@ -99,6 +109,7 @@ pub struct Session {
     waiter: FrameWaiter,
     handle: openxr::Session<D3D11>,
     instance: Instance,
+    system: SystemId,
     events: EventDataBuffer,
     format: SwapchainFormat,
     /// Idle or Running. `poll` returns Ended without storing it, since the caller drops the session.
@@ -160,6 +171,7 @@ impl Session {
             waiter,
             handle: session,
             instance: headset.instance.clone(),
+            system: headset.system,
             events: EventDataBuffer::new(),
             format,
             lifecycle: Lifecycle::Idle,
@@ -301,18 +313,41 @@ impl Session {
         let Some(view_space) = &self.view else {
             return Ok(None);
         };
-        let time = timing.display_time;
-        let view = view_space.locate(&self.space, time)?;
-        let located = self.handle.locate_views(VIEW_CONFIGURATION, time, &self.space);
-        let (flags, views) = XrError::check(XrStep::LocateViews, located)?;
+        let view = view_space.locate(&self.space, timing.display_time)?;
+        let (flags, views) = views::locate(&self.handle, &self.space, timing.display_time)?;
         Ok(head::located(view, flags, &views))
+    }
+
+    /// Each eye's view at the display time of `timing`, its pose in the LOCAL space and its field
+    /// of view, or `None` while the runtime marks a view's position or orientation invalid.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`XrError`] of the failed view location.
+    pub fn locate_eye_views(
+        &self,
+        timing: FrameTiming,
+    ) -> Result<Option<PerEye<EyeView>>, XrError> {
+        let (flags, views) = views::locate(&self.handle, &self.space, timing.display_time)?;
+        Ok(projection::located(flags, &views))
+    }
+
+    /// The largest image size the runtime recommends among the eye views, `(width, height)`. It
+    /// follows the runtime's render scale, so the caller holds it to a cap of its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`XrError`] of the failed view list.
+    pub fn recommended_size(&self) -> Result<(u32, u32), XrError> {
+        views::recommended_size(&self.instance, self.system)
     }
 
     /// Ends the frame of `timing`. `shown` gives each eye the image the caller last released into
     /// that eye's swapchain, as a quad layer of the screen quad that only that eye sees or as that
-    /// eye's view of one projection layer. Each panel of `panels` then adds one quad layer both
-    /// eyes see, in the list's order, so a later layer covers an earlier one. A frame with neither
-    /// holds no layer, so the headset shows the runtime's black.
+    /// eye's view of one projection layer. `models` then adds the render models' projection layer,
+    /// blended by its alpha. Each panel of `panels` then adds one quad layer both eyes see, in the
+    /// list's order, so a later layer covers an earlier one. A frame with none of them holds no
+    /// layer, so the headset shows the runtime's black.
     ///
     /// # Errors
     ///
@@ -321,27 +356,11 @@ impl Session {
         &mut self,
         timing: FrameTiming,
         shown: Option<Shown<'_>>,
+        models: Option<ModelLayer<'_>>,
         panels: &[&Panel],
     ) -> Result<(), XrError> {
-        let space = &self.space;
-        let (screen, projected) = match shown {
-            Some(Shown::Screen { swapchains, quad }) => (Some((swapchains, quad)), None),
-            Some(Shown::Projection { swapchains, views }) => (None, Some((swapchains, views))),
-            None => (None, None),
-        };
-        let views =
-            projected.map(|(swapchains, views)| projection::layer_views(swapchains, &views));
-        let projection: Option<CompositionLayerProjection<'_, D3D11>> =
-            views.as_ref().map(|views| CompositionLayerProjection::new().space(space).views(views));
-        let quads: Vec<CompositionLayerQuad<'_, D3D11>> =
-            layers::order(screen, panels).map(|layer| layers::quad(space, layer)).collect();
-        let bases: Vec<&CompositionLayerBase<'_, D3D11>> = projection
-            .iter()
-            .map(|layer| &**layer)
-            .chain(quads.iter().map(|quad| &**quad))
-            .collect();
-        let blend = EnvironmentBlendMode::OPAQUE;
-        let ended = self.stream.end(timing.display_time, blend, &bases);
+        let composition = layers::Composition { shown, models, panels };
+        let ended = layers::end(&mut self.stream, timing.display_time, &self.space, composition);
         XrError::check(XrStep::EndFrame, ended)
     }
 

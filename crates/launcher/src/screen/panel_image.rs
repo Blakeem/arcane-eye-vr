@@ -11,6 +11,8 @@ use xr::format::{Sampling, SwapchainFormat};
 use xr::panel::Panel;
 use xr::session::Session;
 
+use super::image;
+
 /// The objects a panel is drawn with in a frame.
 pub(crate) struct Gpu<'a> {
     pub(crate) session: &'a Session,
@@ -75,7 +77,7 @@ pub(crate) fn show(
 ) -> Result<(), PanelImageError> {
     let (view, placement) = prepare(gpu.draw, source)?;
     let index = panel.acquire()?;
-    let target = usize::try_from(index).ok().and_then(|slot| targets.get(slot));
+    let target = image::target(targets, index);
     if let Some(target) = target {
         gpu.draw.draw(gpu.context, target, &view, placement);
     }
