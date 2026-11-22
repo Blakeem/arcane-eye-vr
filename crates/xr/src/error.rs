@@ -28,6 +28,14 @@ pub enum XrStep {
     LocateSpace,
     LocateViews,
     ReadInteractionProfile,
+    ListRenderModels,
+    CreateRenderModel,
+    ReadRenderModelProperties,
+    CreateRenderModelAsset,
+    ReadRenderModelAsset,
+    ReadRenderModelNodeNames,
+    CreateRenderModelSpace,
+    ReadRenderModelState,
 }
 
 impl XrStep {
@@ -56,6 +64,14 @@ impl XrStep {
             Self::LocateSpace => "locating a space",
             Self::LocateViews => "locating the eye views",
             Self::ReadInteractionProfile => "reading a hand's interaction profile",
+            Self::ListRenderModels => "listing the interaction render models",
+            Self::CreateRenderModel => "creating a render model",
+            Self::ReadRenderModelProperties => "reading a render model's properties",
+            Self::CreateRenderModelAsset => "creating a render model's asset",
+            Self::ReadRenderModelAsset => "reading a render model's GLB",
+            Self::ReadRenderModelNodeNames => "reading a render model's node names",
+            Self::CreateRenderModelSpace => "creating a render model's space",
+            Self::ReadRenderModelState => "reading a render model's node states",
         }
     }
 }

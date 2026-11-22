@@ -1,5 +1,6 @@
 //! The xr crate's unsafe edge: the runtime library load and the loader negotiation, the adapter
-//! list, the session create, the action sync and the swapchain images.
+//! list, the session create, the action sync, the swapchain images and, in `render_model.rs`, the
+//! render model calls.
 //!
 //! The runtime's library is loaded straight from the path its manifest names, so no
 //! `openxr_loader.dll` ships. It stays loaded until the process exits, since the entry points of
@@ -24,6 +25,8 @@ use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::core::{HSTRING, Interface as _, s};
 
 use crate::runtime::LoadError;
+
+pub(crate) mod render_model;
 
 /// The loader interface version this crate speaks, the only one the OpenXR loader specification
 /// defines.

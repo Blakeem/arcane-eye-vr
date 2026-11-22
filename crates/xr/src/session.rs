@@ -1,15 +1,15 @@
-//! The session: its state changes, its frame loop, its controller input, the head's read and the
-//! layers it submits.
+//! The session: its state changes, its frame loop, its controller input, the head's read, the
+//! render models of the devices the user holds and the layers it submits.
 //!
 //! The caller polls the session's events, and while the session runs it waits for each frame,
-//! reads the controllers' input and the head, draws into the swapchains of [`crate::swapchain`]
-//! and the panels of [`crate::panel`], and ends the frame. The session follows the session
-//! lifecycle of the OpenXR specification through the steps of `state.rs`.
+//! reads the controllers' input, the head and the render models, draws into the swapchains of
+//! [`crate::swapchain`] and the panels of [`crate::panel`], and ends the frame. The session follows
+//! the session lifecycle of the OpenXR specification through the steps of `state.rs`.
 
 use openxr::{
     CompositionLayerBase, CompositionLayerProjection, CompositionLayerQuad, D3D11,
-    EnvironmentBlendMode, Event, EventDataBuffer, Extent2Df, FrameStream, FrameWaiter, Instance,
-    Posef, ReferenceSpaceType, SessionState, Space, Time, ViewConfigurationType, sys,
+    EnvironmentBlendMode, EventDataBuffer, Extent2Df, FrameStream, FrameWaiter, Instance, Posef,
+    ReferenceSpaceType, SessionState, Space, Time, ViewConfigurationType, sys,
 };
 use stereo_core::eye::PerEye;
 use tracing::{info, warn};
@@ -21,6 +21,7 @@ use crate::format::{self, SwapchainFormat};
 use crate::head::{self, Head, ViewSpace};
 use crate::input::Input;
 use crate::layers;
+use crate::model::{ModelChanges, ModelFrame, Models};
 use crate::panel::Panel;
 use crate::projection::{self, EyeView};
 use crate::quad::ScreenQuad;
@@ -28,6 +29,10 @@ use crate::raw;
 use crate::runtime::Headset;
 use crate::state::{self, Step};
 use crate::swapchain::Swapchains;
+
+mod events;
+
+use events::{Observed, Polled};
 
 /// The view configuration the session begins with and locates its views in.
 const VIEW_CONFIGURATION: ViewConfigurationType = ViewConfigurationType::PRIMARY_STEREO;
@@ -67,41 +72,6 @@ pub struct FrameTiming {
     pub should_render: bool,
 }
 
-/// Whether the events polled so far ended the session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Polled {
-    Continue,
-    Ended,
-}
-
-/// What one event tells the session.
-#[derive(Clone, Copy)]
-enum Observed {
-    State(SessionState),
-    InstanceLoss,
-    EventsLost(u32),
-    InteractionProfileChanged,
-    Other,
-}
-
-impl Observed {
-    fn of(event: &Event<'_>) -> Self {
-        if let Event::SessionStateChanged(changed) = event {
-            return Self::State(changed.state());
-        }
-        if let Event::InteractionProfileChanged(_) = event {
-            return Self::InteractionProfileChanged;
-        }
-        if let Event::InstanceLossPending(_) = event {
-            return Self::InstanceLoss;
-        }
-        if let Event::EventsLost(lost) = event {
-            return Self::EventsLost(lost.lost_event_count());
-        }
-        Self::Other
-    }
-}
-
 /// What a frame shows under its panels: each eye's swapchain on the screen quad, or each eye's
 /// swapchain as one view of a projection layer.
 #[derive(Clone, Copy)]
@@ -111,9 +81,12 @@ pub enum Shown<'a> {
 }
 
 /// An OpenXR session that draws with one D3D11 device, with its LOCAL reference space, its VIEW
-/// reference space and the controls of its device profiles. Fields drop in declaration order, so
-/// the device outlives the session's handles.
+/// reference space, the controls of its device profiles and its render models. Fields drop in
+/// declaration order, so the device outlives the session's handles.
 pub struct Session {
+    /// `None` when the instance did not enable the render model extensions, so the session gives
+    /// no model.
+    models: Option<Models>,
     /// `None` when the session reads no controller, so every input read gives the idle input. No
     /// profile was left, the runtime refused every profile, a setup step failed, or the session has
     /// no VIEW space.
@@ -179,6 +152,7 @@ impl Session {
             None => None,
         };
         Ok(Self {
+            models: raw::render_model::Tables::of(&headset.instance).map(Models::new),
             controls,
             view,
             space,
@@ -198,8 +172,9 @@ impl Session {
         self.format
     }
 
-    /// Handles every queued event: it begins the session at READY and ends it at STOPPING, and
-    /// logs each state change.
+    /// Handles every queued event: it begins the session at READY and ends it at STOPPING, logs
+    /// each state change, and lists the render models after each change of them, once after the
+    /// first action sync and again after a failed list.
     ///
     /// # Errors
     ///
@@ -214,6 +189,9 @@ impl Session {
             if self.apply(observed)? == Polled::Ended {
                 return Ok(Lifecycle::Ended);
             }
+        }
+        if let Some(models) = &mut self.models {
+            models.list_when_due(&self.handle);
         }
         Ok(self.lifecycle)
     }
@@ -232,6 +210,11 @@ impl Session {
             Observed::InteractionProfileChanged => {
                 if let Some(controls) = &self.controls {
                     controls.log_interaction_profiles(&self.handle);
+                }
+            }
+            Observed::RenderModelsChanged => {
+                if let Some(models) = &mut self.models {
+                    models.refresh(&self.handle);
                 }
             }
             Observed::Other => {}
@@ -283,7 +266,28 @@ impl Session {
         };
         let at =
             ReadAt { session: &self.handle, base: &self.space, head, time: timing.display_time };
-        controls.read(at)
+        let input = controls.read(at)?;
+        if let Some(models) = &self.models {
+            models.synced();
+        }
+        Ok(input)
+    }
+
+    /// The render models that arrived and left since the last call. A session with no render
+    /// model gives none.
+    pub fn take_model_changes(&mut self) -> ModelChanges {
+        self.models.as_mut().map(Models::take_changes).unwrap_or_default()
+    }
+
+    /// Each kept render model at the display time of `timing`: its key, and while its space is
+    /// tracked its pose in the LOCAL space and the state of each animatable node. A model whose
+    /// read fails logs a warning and leaves. The next [`Session::take_model_changes`] records the
+    /// leave as [`ModelChanges`] states.
+    pub fn locate_models(&mut self, timing: FrameTiming) -> Vec<ModelFrame> {
+        let Some(models) = &mut self.models else {
+            return Vec::new();
+        };
+        models.locate(&self.space, timing.display_time)
     }
 
     /// The head and its eye views at the display time of `timing`, in the LOCAL space, or `None`

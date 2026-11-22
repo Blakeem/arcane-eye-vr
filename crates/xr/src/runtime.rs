@@ -11,7 +11,7 @@ use tracing::{info, warn};
 use windows::Win32::Foundation::LUID;
 
 use crate::adapter::{self, AdapterChoice};
-use crate::extensions::{self, Chosen};
+use crate::extensions::{self, Chosen, RenderModels};
 use crate::manifest::{self, ManifestError};
 use crate::raw;
 
@@ -82,15 +82,23 @@ impl Runtime {
         Ok(Self { entry: raw::load_entry(&library)? })
     }
 
-    /// Creates an instance with D3D11 support and the extensions of `profiles` that the runtime
-    /// lists, and finds its head-mounted system. A profile whose extension the runtime does not list
-    /// is left out with a warning. Creating an instance starts SteamVR when it does not run.
+    /// Creates an instance with D3D11 support, the render model extensions when the runtime lists
+    /// all three and the extensions of `profiles` that the runtime lists, and finds its
+    /// head-mounted system. A profile whose extension the runtime does not list is left out with a
+    /// warning. Creating an instance starts SteamVR when it does not run.
     ///
     /// # Errors
     ///
     /// Returns the [`ConnectError`] of the call that failed.
     pub fn connect(&self, profiles: Vec<DeviceProfile>) -> Result<Headset, ConnectError> {
-        let Chosen { kept, left_out, extensions } = extensions::choose(profiles, &self.listed());
+        let Chosen { kept, left_out, render_models, extensions } =
+            extensions::choose(profiles, &self.listed());
+        if render_models == RenderModels::Missing {
+            info!(
+                "the runtime lacks XR_EXT_render_model, XR_EXT_interaction_render_model or \
+                 XR_EXT_uuid, so the session gives no controller model"
+            );
+        }
         for profile in &left_out {
             let extension = profile.extension.as_deref().unwrap_or_default();
             warn!(

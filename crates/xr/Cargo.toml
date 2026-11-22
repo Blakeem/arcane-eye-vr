@@ -1,6 +1,6 @@
 [package]
 name = "xr"
-description = "The OpenXR session: the runtime load, the frame loop, the swapchains, the quad and projection layers, the head's read and the controllers' input through device profiles. No game type."
+description = "The OpenXR session: the runtime load, the frame loop, the swapchains, the quad and projection layers, the head's read, the controllers' input through device profiles and the render models of the devices the user holds. No game type."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
