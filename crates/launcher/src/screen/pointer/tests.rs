@@ -1,7 +1,9 @@
 //! The game's pointer across frames of controller input: the place it points at, the pointing
 //! hand, its moves, presses, releases and wheel turns. `turn.rs` holds the tests of its turn keys,
-//! and `launcher.rs` the tests of its input to the Larian launcher's window.
+//! `launcher.rs` the tests of its input to the Larian launcher's window, and `depth.rs` the tests
+//! of its place under the depth of the game's picture.
 
+mod depth;
 mod launcher;
 mod turn;
 
@@ -33,8 +35,9 @@ fn aiming(x: f32, y: f32) -> HandInput {
 }
 
 /// The screen with the menu closed.
-fn closed() -> Sight {
-    Sight { menu: None, panel: PanelAim::Missed, screen: Some(screen()), window: Window::Game }
+fn closed() -> Sight<'static> {
+    let screen = Some(screen());
+    Sight { menu: None, panel: PanelAim::Missed, screen, window: Window::Game, depth: None }
 }
 
 /// A hand that aims at the screen's center.
@@ -79,7 +82,7 @@ impl Run {
     }
 
     /// Runs one frame of the hands `left` and `right` with `sight`.
-    fn frame(&mut self, left: HandInput, right: HandInput, sight: Sight) -> Update {
+    fn frame(&mut self, left: HandInput, right: HandInput, sight: Sight<'_>) -> Update {
         let input = Input { left, right, head: None };
         let (left_buttons, right_buttons) = self.watch.update(&input, |_| {});
         let frame = Frame { input, left: left_buttons, right: right_buttons };
@@ -145,9 +148,9 @@ fn a_ray_on_the_screen_gives_its_place_as_shares_from_the_top_left_corner() {
     let size = screen().size;
     assert_eq!((size.width, size.height), (3.0, 1.6875));
     let mut run = Run::new();
-    let center = run.right(centered()).aimed.expect("a hit").hit.shares;
+    let center = run.right(centered()).aimed.expect("a hit").shares;
     assert_eq!(center, Shares { x: 0.5, y: 0.5 });
-    let shares = run.right(aiming(-0.75, 0.42)).aimed.expect("a hit").hit.shares;
+    let shares = run.right(aiming(-0.75, 0.42)).aimed.expect("a hit").shares;
     assert!((shares.x - 0.25).abs() < 0.001 && (shares.y - 0.2511).abs() < 0.001, "{shares:?}");
 }
 

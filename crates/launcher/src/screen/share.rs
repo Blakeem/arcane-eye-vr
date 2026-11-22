@@ -49,11 +49,11 @@ impl ShareWriter {
     /// Returns the [`XrError`] of a read that lost the session.
     pub(crate) fn write(
         &mut self,
-        located: Result<Option<Head>, XrError>,
+        located: &Result<Option<Head>, XrError>,
         quad: ScreenQuad,
         link: &mut Link,
     ) -> Result<(), XrError> {
-        let head = match located {
+        let head = match *located {
             Ok(head) => head,
             Err(error) if error.is_loss() => return Err(error),
             Err(error) => {
@@ -183,9 +183,9 @@ mod tests {
     fn each_write_puts_the_quads_share_into_the_header_under_the_next_even_number() {
         let (mapping, mut link) = header("writer-written");
         let mut writer = ShareWriter::new(0.065);
-        writer.write(Ok(Some(head(0.065))), screen_quad(3.0), &mut link).expect("no loss");
+        writer.write(&Ok(Some(head(0.065))), screen_quad(3.0), &mut link).expect("no loss");
         assert_slot(&mapping, 2, 0.021_666_7, "the first write, 65 mm on the 3 m screen");
-        writer.write(Ok(None), screen_quad(10.0), &mut link).expect("no loss");
+        writer.write(&Ok(None), screen_quad(10.0), &mut link).expect("no loss");
         assert_slot(&mapping, 4, 0.0065, "the second write, the player's 65 mm on a 10 m screen");
     }
 
@@ -194,10 +194,10 @@ mod tests {
         let (mapping, mut link) = header("writer-failed-read");
         let mut writer = ShareWriter::new(0.058);
         let failed = XrError { step: XrStep::LocateViews, code: sys::Result::ERROR_TIME_INVALID };
-        writer.write(Err(failed), screen_quad(2.9), &mut link).expect("a failed read is no loss");
+        writer.write(&Err(failed), screen_quad(2.9), &mut link).expect("a failed read is no loss");
         assert_slot(&mapping, 2, 0.02, "the player's 58 mm on a 2.9 m screen");
         let mut unmapped = self::link("writer-no-header");
-        let written = writer.write(Ok(Some(head(0.064))), screen_quad(3.0), &mut unmapped);
+        let written = writer.write(&Ok(Some(head(0.064))), screen_quad(3.0), &mut unmapped);
         assert_eq!(written, Ok(()), "no header is no loss");
     }
 
@@ -206,7 +206,7 @@ mod tests {
         let (mapping, mut link) = header("writer-failed-write");
         mapping.write_word(LAYOUT_VERSION_OFFSET, 3).expect("write the layout version 3");
         let mut writer = ShareWriter::new(0.065);
-        let written = writer.write(Ok(Some(head(0.065))), screen_quad(3.0), &mut link);
+        let written = writer.write(&Ok(Some(head(0.065))), screen_quad(3.0), &mut link);
         assert_eq!(written, Ok(()), "a failed write is no loss");
         mapping.write_word(LAYOUT_VERSION_OFFSET, LAYOUT_VERSION).expect("restore the layout");
         let mut core_view = None;
@@ -218,7 +218,7 @@ mod tests {
     fn a_read_that_lost_the_session_is_returned() {
         let mut unmapped = link("writer-lost");
         let lost = XrError { step: XrStep::LocateSpace, code: sys::Result::ERROR_SESSION_LOST };
-        let written = ShareWriter::new(0.065).write(Err(lost), screen_quad(3.0), &mut unmapped);
+        let written = ShareWriter::new(0.065).write(&Err(lost), screen_quad(3.0), &mut unmapped);
         assert_eq!(written, Err(lost));
     }
 }

@@ -1,6 +1,7 @@
 //! The vector math of the headset screen in OpenXR's LOCAL space: rays from a hand's `aim` pose,
-//! the hit of a ray on a quad, the orientation of a quad from its axes, and the distance between
-//! the two eye views that the screen quad's parallel share and the immersive mode's head write take.
+//! the hit of a ray on a quad, the place where an eye's line through a point meets a quad's plane,
+//! the orientation of a quad from its axes, and the distance between the two eye views that the
+//! screen quad's parallel share and the immersive mode's head write take.
 //!
 //! The LOCAL space has Y up and -Z forward. A quad with the identity orientation is upright and
 //! faces +Z, and an `aim` pose points along its own -Z axis. Every orientation here is a unit
@@ -150,6 +151,13 @@ pub(crate) struct Shares {
     pub(crate) y: f32,
 }
 
+impl Shares {
+    /// Whether the place lies on the quad: each share from 0 to 1.
+    pub(crate) fn inside(self) -> bool {
+        (0.0..=1.0).contains(&self.x) && (0.0..=1.0).contains(&self.y)
+    }
+}
+
 /// Where a ray meets a quad: the point in the LOCAL space and the place on the quad.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct QuadHit {
@@ -170,10 +178,24 @@ pub(crate) fn hit(ray: Ray, pose: Posef, size: Extent2Df) -> Option<QuadHit> {
         return None;
     }
     let point = ray.at(distance);
+    let shares = place(point, pose, size);
+    shares.inside().then_some(QuadHit { point, shares })
+}
+
+/// Where the line from `eye` through `point` meets the plane of the quad at `pose`, or `None` when
+/// it meets the plane behind `eye`, runs along the plane or is not a number.
+pub(crate) fn crossing(eye: Vector3f, point: Vector3f, pose: Posef) -> Option<Vector3f> {
+    let normal = rotate(pose.orientation, FACING);
+    let line = sub(point, eye);
+    let along = dot(sub(pose.position, eye), normal) / dot(line, normal);
+    (along.is_finite() && along > 0.0).then(|| add(eye, scale(line, along)))
+}
+
+/// The place of `point`, a point of the plane of the quad at `pose` of `size` meters, as shares
+/// of the quad from its top left corner, below 0 or above 1 off the quad.
+pub(crate) fn place(point: Vector3f, pose: Posef, size: Extent2Df) -> Shares {
     let local = rotate(inverse(pose.orientation), sub(point, pose.position));
-    let shares = Shares { x: local.x / size.width + 0.5, y: 0.5 - local.y / size.height };
-    let inside = (0.0..=1.0).contains(&shares.x) && (0.0..=1.0).contains(&shares.y);
-    inside.then_some(QuadHit { point, shares })
+    Shares { x: local.x / size.width + 0.5, y: 0.5 - local.y / size.height }
 }
 
 #[cfg(test)]
@@ -185,7 +207,7 @@ mod tests {
     use stereo_core::eye::PerEye;
 
     use super::test_support::{assert_near, ray_to, vector};
-    use super::{Ray, Shares, eye_distance_m, from_axes, hit, rotate};
+    use super::{Ray, Shares, crossing, eye_distance_m, from_axes, hit, place, rotate};
 
     /// An upright quad 2 meters wide and 1 meter high at (0, 0, -1) that faces +Z.
     fn ahead() -> (Posef, Extent2Df) {
@@ -238,6 +260,30 @@ mod tests {
         let along = Ray { origin: vector(0.0, 0.0, 0.0), direction: vector(1.0, 0.0, 0.0) };
         assert_eq!(hit(along, pose, size), None, "parallel to the quad");
         assert_eq!(hit(ray_to(vector(0.0, 0.51, -1.0)), pose, size), None, "above its top");
+    }
+
+    #[test]
+    fn an_eye_s_line_through_a_point_meets_the_quad_s_plane_only_ahead_of_the_eye() {
+        let (pose, _) = ahead();
+        let eye = vector(0.1, 0.0, 0.0);
+        let near = crossing(eye, vector(0.2, 0.1, -0.5), pose).expect("a point ahead");
+        assert_near(near, vector(0.3, 0.2, -1.0));
+        let far = crossing(eye, vector(-1.1, 0.4, -2.0), pose).expect("a point past the plane");
+        assert_near(far, vector(-0.5, 0.2, -1.0));
+        assert_eq!(crossing(eye, vector(0.1, 0.0, 0.5), pose), None, "a point behind the eye");
+        assert_eq!(crossing(eye, vector(0.5, 0.0, 0.0), pose), None, "along the plane");
+    }
+
+    #[test]
+    fn a_point_of_the_quad_s_plane_has_its_place_as_shares_and_off_the_quad_past_0_to_1() {
+        let (pose, size) = ahead();
+        let on = place(vector(0.5, -0.25, -1.0), pose, size);
+        assert!((on.x - 0.75).abs() < 1e-6 && (on.y - 0.75).abs() < 1e-6, "{on:?}");
+        assert!(on.inside());
+        let off = place(vector(-1.5, 0.0, -1.0), pose, size);
+        assert!((off.x + 0.25).abs() < 1e-6 && (off.y - 0.5).abs() < 1e-6, "{off:?}");
+        assert!(!off.inside());
+        assert!(!Shares { x: f32::NAN, y: 0.5 }.inside(), "a place that is not a number");
     }
 
     #[test]

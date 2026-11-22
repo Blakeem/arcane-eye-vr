@@ -7,21 +7,26 @@
 //! nothing. A ray that meets the menu's panel acts on the menu only. The camera turns while the
 //! screen quad shows the game and the ray misses the menu's panel, whether or not the ray meets the
 //! screen. While the screen quad shows the Larian launcher's window, the ray moves the pointer in
-//! it and `select` is its left button, and no other control sends it input.
+//! it and `select` is its left button, and no other control sends it input. With the depth of the
+//! game's picture, the pointer goes to the mouse place where the ray meets the picture
+//! (`trace.rs`), and a ray that meets no thing of the picture acts as a ray that misses the screen.
 
 use std::time::Duration;
 
 use device_profile::profile::Hand;
 use launch::mouse::Button;
 use launch::turn::TurnKey;
+use openxr::Vector3f;
 use xr::input::{ButtonState, HandInput};
 use xr::quad::ScreenQuad;
 
 use super::filter::OneEuro;
+use super::trace::trace;
 use super::turn;
 use super::wheel::Wheel;
 use crate::screen::controls::{Buttons, Frame, rose};
-use crate::screen::geometry::{self, QuadHit, Ray, Shares};
+use crate::screen::depth::Depth;
+use crate::screen::geometry::{self, Ray, Shares};
 
 /// The smallest change of the filtered place, as a share of the client area's width or height,
 /// that moves the mouse pointer. A controller at rest moves less, so a hand mouse keeps working.
@@ -63,25 +68,30 @@ pub(crate) enum PanelAim {
 }
 
 /// What the rest of the screen shows in a frame: the hand the open menu is on, whether the
-/// pointing hand's ray meets the menu's panel, the screen quad, when the screen is shown, and the
-/// window that takes the input.
+/// pointing hand's ray meets the menu's panel, the screen quad, when the screen is shown, the
+/// window that takes the input, and the depth of the picture the ray is traced through, `None`
+/// when the pointer takes the ray's hit on the screen quad.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Sight {
+pub(crate) struct Sight<'d> {
     pub(crate) menu: Option<Hand>,
     pub(crate) panel: PanelAim,
     pub(crate) screen: Option<ScreenQuad>,
     pub(crate) window: Window,
+    pub(crate) depth: Option<Depth<'d>>,
 }
 
-/// The pointing hand's ray and where it meets the screen quad.
+/// The pointing hand's ray, the point its laser ends at and the place of the window that the
+/// pointer moves to: the meeting point with the picture and its mouse place under a traced depth,
+/// else the ray's hit on the screen quad and its place there.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Aimed {
     pub(crate) ray: Ray,
-    pub(crate) hit: QuadHit,
+    pub(crate) point: Vector3f,
+    pub(crate) shares: Shares,
 }
 
-/// What a frame gave: the pointing hand's ray on the screen, and the new pointing hand when it
-/// changed in this frame.
+/// What a frame gave: the pointing hand's ray on the screen or the picture, and the new pointing
+/// hand when it changed in this frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Update {
     pub(crate) aimed: Option<Aimed>,
@@ -139,7 +149,7 @@ impl Model {
     pub(crate) fn update(
         &mut self,
         frame: &Frame,
-        sight: Sight,
+        sight: Sight<'_>,
         step: Duration,
         send: &mut impl FnMut(Action) -> Sent,
     ) -> Update {
@@ -170,7 +180,7 @@ impl Model {
             return Update { aimed, changed };
         };
         let seconds = step.as_secs_f32();
-        let moved = self.move_to(on_screen.hit.shares, seconds, send);
+        let moved = self.move_to(on_screen.shares, seconds, send);
         self.press_and_release(frame.buttons(self.pointing), window, moved, send);
         if on_game {
             self.turn_wheel(hand, seconds, send);
@@ -296,14 +306,19 @@ impl Model {
     }
 }
 
-/// The ray of `hand` and where it meets the screen quad of `sight`, or `None` when the hand has no
-/// `aim` pose, the ray meets the menu's panel or it misses the screen.
-fn aim(hand: &HandInput, sight: Sight) -> Option<Aimed> {
+/// The ray of `hand` and where it meets the picture of the depth of `sight`, or with no depth where
+/// it meets the screen quad of `sight`. `None` when the hand has no `aim` pose, the ray meets the
+/// menu's panel or it misses the screen or the picture.
+fn aim(hand: &HandInput, sight: Sight<'_>) -> Option<Aimed> {
     if sight.panel == PanelAim::Met {
         return None;
     }
     let ray = hand.aim.and_then(Ray::of)?;
     let screen = sight.screen?;
-    let hit = geometry::hit(ray, screen.pose, screen.size)?;
-    Some(Aimed { ray, hit })
+    let Some(depth) = sight.depth else {
+        let hit = geometry::hit(ray, screen.pose, screen.size)?;
+        return Some(Aimed { ray, point: hit.point, shares: hit.shares });
+    };
+    let meeting = trace(ray, depth, screen)?;
+    Some(Aimed { ray, point: meeting.point, shares: meeting.mouse })
 }

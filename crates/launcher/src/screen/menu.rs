@@ -1,6 +1,7 @@
 //! The screen menu: a panel fixed to one controller whose buttons set the screen's distance and
 //! width, and the laser of the other controller that points at them. The caller replaces the laser
-//! of [`Shown`] with the laser of the game's pointer while that pointer's ray hits the screen.
+//! of [`Shown`] with the laser of the game's pointer while that pointer's ray meets the game's
+//! picture in the depth the picture shows, or with no such depth while that ray hits the screen.
 //!
 //! `model.rs` decides what the menu does in each frame, `rows.rs` holds its rows and their steps,
 //! `place.rs` places its two quads and `save.rs` decides when the player file is written. This
