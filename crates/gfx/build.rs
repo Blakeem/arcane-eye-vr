@@ -27,7 +27,7 @@ struct Shader {
     output: &'static str,
 }
 
-const SHADERS: [Shader; 8] = [
+const SHADERS: [Shader; 10] = [
     Shader {
         source: "layer.slang",
         entry: "vertex_main",
@@ -76,6 +76,13 @@ const SHADERS: [Shader; 8] = [
         profile: "ps_5_0",
         output: "pointer.ps.dxbc",
     },
+    Shader {
+        source: "mesh.slang",
+        entry: "vertex_main",
+        profile: "vs_5_0",
+        output: "mesh.vs.dxbc",
+    },
+    Shader { source: "mesh.slang", entry: "pixel_main", profile: "ps_5_0", output: "mesh.ps.dxbc" },
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -127,7 +134,8 @@ fn pinned_compiler() -> Result<PathBuf, BuildError> {
 }
 
 /// Compiles one entry point. The matrix layout is named because the Slang language default
-/// (row-major) and the `slangc` default (column-major) differ. glam stores matrices column-major.
+/// (row-major) and the `slangc` default (column-major) differ. The mesh draw's matrices are stored
+/// column-major (`gfx::mesh`).
 fn compile(compiler: &Path, shader: &Shader, out_dir: &Path) -> Result<(), BuildError> {
     let started = Command::new(compiler)
         .arg(Path::new(SHADER_DIR).join(shader.source))

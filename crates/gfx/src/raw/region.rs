@@ -7,9 +7,8 @@
 
 use windows::Win32::Graphics::Direct3D::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_RENDER_TARGET_VIEW_DESC, D3D11_RENDER_TARGET_VIEW_DESC_0, D3D11_RTV_DIMENSION_TEXTURE2D,
-    D3D11_TEX2D_RTV, D3D11_VIEWPORT, ID3D11Device, ID3D11DeviceContext, ID3D11PixelShader,
-    ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader,
+    D3D11_VIEWPORT, ID3D11Device, ID3D11DeviceContext, ID3D11PixelShader, ID3D11RenderTargetView,
+    ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
 use windows::core::HRESULT;
@@ -67,20 +66,7 @@ impl Pipeline {
         target: &ID3D11Texture2D,
         format: DXGI_FORMAT,
     ) -> Result<ID3D11RenderTargetView, RegionError> {
-        let desc = D3D11_RENDER_TARGET_VIEW_DESC {
-            Format: format,
-            ViewDimension: D3D11_RTV_DIMENSION_TEXTURE2D,
-            Anonymous: D3D11_RENDER_TARGET_VIEW_DESC_0 {
-                Texture2D: D3D11_TEX2D_RTV { MipSlice: 0 },
-            },
-        };
-        let mut view = None;
-        // SAFETY: `target` is live, and the descriptor and the out slot are live for the call. The
-        // device rejects a format outside the target's format family with an error code.
-        let created = unsafe {
-            self.device.CreateRenderTargetView(target, Some(&raw const desc), Some(&raw mut view))
-        };
-        made(RegionStep::TargetView, created, view)
+        super::target_view(&self.device, RegionStep::TargetView, target, format)
     }
 
     /// Draws `source` into `target` over `viewport`, then unbinds both views.

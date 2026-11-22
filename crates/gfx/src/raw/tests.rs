@@ -26,6 +26,7 @@ use crate::publish::{Outcome, Present, Publisher, ViewNames};
 mod canvas;
 mod failures;
 mod layer;
+mod mesh;
 mod nearest;
 mod pointer;
 mod tag;

@@ -1,6 +1,6 @@
 [package]
 name = "gfx"
-description = "D3D11 resources, the viewer publisher, the layer draw, the region draw and the pixel canvas."
+description = "D3D11 resources, the viewer publisher, the layer draw, the region draw, the mesh draw and the pixel canvas."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true

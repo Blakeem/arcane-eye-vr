@@ -1,7 +1,7 @@
 //! The gfx crate's unsafe edge: the viewer header mapping, the D3D11 and DXGI calls of the
 //! publisher, the layer draw's calls in `layer`, the nearest read's calls in `nearest`, the pointer
 //! read's calls in `pointer`, the calls both reads share in `row`, the region draw's calls in
-//! `region` and the pixel canvas's GDI calls in `canvas`.
+//! `region`, the mesh draw's calls in `mesh` and the pixel canvas's GDI calls in `canvas`.
 
 #![expect(
     unsafe_code,
@@ -18,9 +18,11 @@ use windows::Win32::Foundation::{
     E_INVALIDARG, E_POINTER, INVALID_HANDLE_VALUE, WAIT_ABANDONED, WAIT_TIMEOUT,
 };
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_SHADER_RESOURCE, D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX,
-    D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC,
-    D3D11_USAGE_DEFAULT, D3D11_USAGE_IMMUTABLE, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+    D3D11_BIND_SHADER_RESOURCE, D3D11_RENDER_TARGET_VIEW_DESC, D3D11_RENDER_TARGET_VIEW_DESC_0,
+    D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX, D3D11_RESOURCE_MISC_SHARED_NTHANDLE,
+    D3D11_RTV_DIMENSION_TEXTURE2D, D3D11_SUBRESOURCE_DATA, D3D11_TEX2D_RTV, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_DEFAULT, D3D11_USAGE_IMMUTABLE, ID3D11Device, ID3D11DeviceContext,
+    ID3D11RenderTargetView, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC,
@@ -39,6 +41,7 @@ use crate::publish::{PublishError, SetupError, Step};
 
 pub(crate) mod canvas;
 pub(crate) mod layer;
+pub(crate) mod mesh;
 pub(crate) mod nearest;
 pub(crate) mod pointer;
 pub(crate) mod region;
@@ -339,6 +342,28 @@ pub(crate) fn image<S: CreateStep + Copy>(
         device.CreateTexture2D(&raw const desc, Some(&raw const data), Some(&raw mut texture))
     };
     made(step, created, texture)
+}
+
+/// A `format` view of the first level of `target`, a texture of `device` that can be drawn into.
+/// `step` names a failure, such as for a format the target's format family does not hold.
+pub(crate) fn target_view<S: CreateStep>(
+    device: &ID3D11Device,
+    step: S,
+    target: &ID3D11Texture2D,
+    format: DXGI_FORMAT,
+) -> Result<ID3D11RenderTargetView, S::Error> {
+    let desc = D3D11_RENDER_TARGET_VIEW_DESC {
+        Format: format,
+        ViewDimension: D3D11_RTV_DIMENSION_TEXTURE2D,
+        Anonymous: D3D11_RENDER_TARGET_VIEW_DESC_0 { Texture2D: D3D11_TEX2D_RTV { MipSlice: 0 } },
+    };
+    let mut view = None;
+    // SAFETY: `target` is live, and the descriptor and the out slot are live for the call. The
+    // device rejects a format outside the target's format family with an error code.
+    let created = unsafe {
+        device.CreateRenderTargetView(target, Some(&raw const desc), Some(&raw mut view))
+    };
+    made(step, created, view)
 }
 
 #[cfg(test)]

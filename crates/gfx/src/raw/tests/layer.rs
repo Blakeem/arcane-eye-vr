@@ -59,7 +59,7 @@ fn filled(gpu: &Gpu, width: u32, height: u32, color: [u8; 4]) -> ID3D11Texture2D
 }
 
 /// The pixels of `texture` in row order.
-fn pixels(gpu: &Gpu, texture: &ID3D11Texture2D) -> Vec<[u8; 4]> {
+pub(super) fn pixels(gpu: &Gpu, texture: &ID3D11Texture2D) -> Vec<[u8; 4]> {
     let mut staging_desc = texture_desc(texture);
     staging_desc.Usage = D3D11_USAGE_STAGING;
     staging_desc.BindFlags = 0;
