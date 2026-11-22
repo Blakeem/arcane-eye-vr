@@ -6,7 +6,8 @@
 //! the keyboard focus stays where it was. The window stays topmost after the copy, until it closes.
 //! A window lowered after each copy is raised again before the next, and the desktop may compose
 //! that order on a later frame than the copy reads (untested). The copy is the window's client area
-//! in physical pixels, without a frame.
+//! in physical pixels, without a frame. `launcher_window.rs` copies the Larian launcher's window
+//! with the same calls.
 
 use std::path::Path;
 
@@ -26,11 +27,31 @@ pub struct WindowPicture {
     pub rgb: Vec<u8>,
 }
 
+/// Whether a change of a window's order waits for the window's thread to take it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Delivery {
+    /// The call returns once the window's thread took the change.
+    Wait,
+    /// The call posts the change to the window's thread and returns at once, so a window whose
+    /// thread does not answer never holds a caller that runs each frame.
+    Post,
+}
+
 /// Why a found window was not copied.
 #[derive(Debug, thiserror::Error)]
 pub enum WindowCopyError {
     #[error("could not make the window \"{title}\" topmost")]
     Topmost { title: String, source: windows::core::Error },
+    #[error("could not end the topmost order of the window \"{title}\"")]
+    EndTopmost { title: String, source: windows::core::Error },
+    #[error(
+        "the window \"{title}\" is hidden or minimized, so the screen shows none of its pixels"
+    )]
+    Hidden { title: String },
+    #[error(
+        "the thread kept its DPI awareness, so the window's place on a scaled display is unknown"
+    )]
+    Awareness,
     #[error("could not read the client area of the window \"{title}\"")]
     Rect { title: String, source: windows::core::Error },
     #[error(
@@ -56,7 +77,7 @@ pub fn copy(process: &str, title: &str) -> Result<Option<WindowPicture>, WindowC
     let Some(window) = raw_copy::find(title, |program| is_program(program, process)) else {
         return Ok(None);
     };
-    raw_copy::make_topmost(window, title)?;
+    raw_copy::make_topmost(window, title, Delivery::Wait)?;
     let picture = raw_copy::copy_from_screen(window, title)?;
     let (width, height) = (picture.width, picture.height);
     info!(process, title, width, height, "copied a window from the screen");

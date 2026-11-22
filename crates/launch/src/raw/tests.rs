@@ -1,52 +1,32 @@
 //! Tests of the launch crate's unsafe edge: the token mapping, the registry reads and the stop calls
-//! against stand-in child processes that own a window. `key_tests.rs` shares the stand-in.
+//! against stand-in child processes that own a window, which `stand_in.rs` starts.
 
-use std::ffi::OsStr;
-use std::io::{BufRead as _, BufReader, Write as _};
-use std::os::windows::process::CommandExt as _;
-use std::process::{Child, ChildStdout, Command, Stdio};
+pub(super) mod stand_in;
+
 use std::time::Duration;
-use std::{env, fs, io, process, ptr, thread};
+use std::{process, ptr, thread};
 
 use ipc_layout::launch_token::{self, LaunchToken, Mode, STATUS_OFFSET, Status};
-use test_support::TestDir;
-use windows::Win32::Foundation::{
-    CloseHandle, HINSTANCE, HWND, LPARAM, LRESULT, S_FALSE, S_OK, WPARAM,
-};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, S_FALSE, S_OK, WPARAM};
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Memory::{
     FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, OpenFileMappingW,
     UnmapViewOfFile,
 };
-use windows::Win32::System::Threading::{CREATE_NO_WINDOW, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE};
-use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, MSG, PostQuitMessage,
-    RegisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_DESTROY, WNDCLASSW, WNDPROC,
-    WS_OVERLAPPEDWINDOW,
-};
-use windows::core::{HSTRING, PCWSTR};
+use windows::Win32::System::Threading::{PROCESS_SYNCHRONIZE, PROCESS_TERMINATE};
+use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
+use windows::core::HSTRING;
 
+use self::stand_in::{CLOSE_TIMEOUT, HIDDEN, StandIn, close_on_request, run_stand_in};
 use super::{ComInit, ENDED_EXIT_CODE, Process, TokenCreateError, TokenMapping};
 use crate::registry::{Hive, RegistryValue};
 use crate::stop::{self, ProcessState, StopError};
-use crate::test_dir;
 
 const CURRENT_VERSION: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
 
 /// The libtest names of the tests that a child process runs as a stand-in for the game.
 const CLOSING_STAND_IN: &str = "raw::tests::stand_in_window_closes_on_request";
 const STUBBORN_STAND_IN: &str = "raw::tests::stand_in_window_ignores_the_close";
-
-/// The line a stand-in writes to standard output once its window exists.
-const READY_LINE: &str = "stand-in window ready";
-
-/// The name of the test binary copy that a stand-in child runs as. A stand-in test that runs in any
-/// other exe returns at once, since nothing would close its window.
-const STAND_IN_EXE: &str = "launch-stand-in.exe";
-
-/// Long enough for a stand-in to process one message on a loaded test machine.
-pub(super) const CLOSE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// A mapping name that only this test process and test use, never the real token's.
 fn test_name(test: &str) -> String {
@@ -173,81 +153,11 @@ fn registry_value_of_another_type_is_an_error_that_names_it() {
     );
 }
 
-pub(super) extern "system" fn close_on_request(
-    window: HWND,
-    message: u32,
-    w: WPARAM,
-    l: LPARAM,
-) -> LRESULT {
-    if message == WM_DESTROY {
-        // SAFETY: PostQuitMessage has no pointer arguments.
-        unsafe { PostQuitMessage(0) };
-        return LRESULT(0);
-    }
-    // SAFETY: the arguments are the ones Windows passed to this window procedure.
-    unsafe { DefWindowProcW(window, message, w, l) }
-}
-
 extern "system" fn ignore_close(window: HWND, message: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     if message == WM_CLOSE {
         return LRESULT(0);
     }
     close_on_request(window, message, w, l)
-}
-
-/// The styles of a stand-in's window.
-pub(super) type WindowStyles = (WINDOW_STYLE, WINDOW_EX_STYLE);
-
-/// The styles of a hidden stand-in window.
-pub(super) const HIDDEN: WindowStyles = (WS_OVERLAPPEDWINDOW, WINDOW_EX_STYLE(0));
-
-/// Creates a window with `procedure` and `styles`, reports it ready and runs its messages until it
-/// quits.
-pub(super) fn run_stand_in(class: &str, procedure: WNDPROC, styles: WindowStyles) {
-    let exe = env::current_exe().expect("the test binary path");
-    if exe.file_name() != Some(OsStr::new(STAND_IN_EXE)) {
-        return;
-    }
-    // SAFETY: no module name means this exe's own module.
-    let module = unsafe { GetModuleHandleW(PCWSTR::null()) }.expect("this exe's module");
-    let instance = HINSTANCE::from(module);
-    let class = HSTRING::from(class);
-    let class_info = WNDCLASSW {
-        lpfnWndProc: procedure,
-        hInstance: instance,
-        lpszClassName: PCWSTR(class.as_ptr()),
-        ..WNDCLASSW::default()
-    };
-    // SAFETY: `class_info` and the class name it points to outlive the call.
-    assert_ne!(unsafe { RegisterClassW(&raw const class_info) }, 0, "register the class");
-    let (style, ex_style) = styles;
-    // The window has no size, so a visible stand-in covers nothing on the desktop.
-    // SAFETY: the class is registered above, and every pointer argument is a live string or null.
-    unsafe {
-        CreateWindowExW(
-            ex_style,
-            &class,
-            &class,
-            style,
-            0,
-            0,
-            0,
-            0,
-            None,
-            None,
-            Some(instance),
-            None,
-        )
-    }
-    .expect("create the stand-in window");
-    let mut stdout = io::stdout();
-    writeln!(stdout, "{READY_LINE}").and_then(|()| stdout.flush()).expect("report ready");
-    let mut message = MSG::default();
-    // SAFETY: `message` is a writable local, and the loop reads every window of this thread.
-    while unsafe { GetMessageW(&raw mut message, None, 0, 0) }.0 > 0 {
-        // SAFETY: `message` is the message GetMessageW filled in.
-        unsafe { DispatchMessageW(&raw const message) };
-    }
 }
 
 #[test]
@@ -260,50 +170,6 @@ fn stand_in_window_closes_on_request() {
 #[ignore = "runs only as the child process of another test"]
 fn stand_in_window_ignores_the_close() {
     run_stand_in("arcane-eye-launch-test-ignores", Some(ignore_close), HIDDEN);
-}
-
-/// A stand-in child process. Dropping it ends a child that a failed assertion left running and
-/// removes its folder.
-pub(super) struct StandIn {
-    pub(super) child: Child,
-    // Held open, since libtest exits with a failure when its last lines meet a closed pipe.
-    pub(super) stdout: BufReader<ChildStdout>,
-    // Dropped after `drop` waits for the child, since the stand-in's exe stays locked until then.
-    _dir: TestDir,
-}
-
-impl StandIn {
-    /// Starts the child test `child_test` in a copy of this test binary in the folder of the calling
-    /// test `test_name` and returns once its window exists.
-    pub(super) fn start(child_test: &str, test_name: &str) -> Self {
-        let dir = test_dir(test_name);
-        let exe = dir.path().join(STAND_IN_EXE);
-        let test_binary = env::current_exe().expect("the test binary path");
-        fs::copy(test_binary, &exe).expect("copy the test binary as the stand-in");
-        // CREATE_NO_WINDOW gives the child no console window, so the close cannot reach a console.
-        let mut child = Command::new(exe)
-            .args(["--exact", child_test, "--ignored"])
-            .creation_flags(CREATE_NO_WINDOW.0)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("start the stand-in");
-        let mut stdout = BufReader::new(child.stdout.take().expect("the stand-in's output"));
-        // A serial libtest run prints the test's name with no line end before the test's own output.
-        let stand_in_ready =
-            (&mut stdout).lines().map_while(Result::ok).any(|line| line.ends_with(READY_LINE));
-        let stand_in = Self { child, stdout, _dir: dir };
-        assert!(stand_in_ready, "the stand-in ended before its window existed");
-        stand_in
-    }
-}
-
-impl Drop for StandIn {
-    fn drop(&mut self) {
-        // A kill of a child that already exited also returns Ok.
-        self.child.kill().unwrap_or_default();
-        self.child.wait().unwrap_or_default();
-    }
 }
 
 #[test]

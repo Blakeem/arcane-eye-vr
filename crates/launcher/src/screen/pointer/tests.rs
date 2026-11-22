@@ -1,6 +1,8 @@
 //! The game's pointer across frames of controller input: the place it points at, the pointing
-//! hand, its moves, presses, releases and wheel turns. `turn.rs` holds the tests of its turn keys.
+//! hand, its moves, presses, releases and wheel turns. `turn.rs` holds the tests of its turn keys,
+//! and `launcher.rs` the tests of its input to the Larian launcher's window.
 
+mod launcher;
 mod turn;
 
 use std::time::Duration;
@@ -11,7 +13,7 @@ use openxr::{Posef, Quaternionf, Vector2f, Vector3f};
 use xr::input::{ButtonState, HandInput, Input};
 use xr::quad::{self, ScreenQuad};
 
-use super::model::{Action, Model, PanelAim, Sent, Sight, Update};
+use super::model::{Action, Model, PanelAim, Sent, Sight, Update, Window};
 use crate::screen::controls::{ControllerWatch, Frame};
 use crate::screen::geometry::Shares;
 
@@ -32,7 +34,7 @@ fn aiming(x: f32, y: f32) -> HandInput {
 
 /// The screen with the menu closed.
 fn closed() -> Sight {
-    Sight { menu: None, panel: PanelAim::Missed, screen: Some(screen()) }
+    Sight { menu: None, panel: PanelAim::Missed, screen: Some(screen()), window: Window::Game }
 }
 
 /// A hand that aims at the screen's center.
@@ -50,12 +52,18 @@ fn stick(x: f32, hand: HandInput) -> HandInput {
     HandInput { scroll: Vector2f { x, y: 0.0 }, ..hand }
 }
 
-/// A pointer, the controllers' watch, every action sent and what each send returns.
+/// A pointer, the controllers' watch, the window that takes the input, every action sent and what
+/// each send returns.
 struct Run {
     model: Model,
     watch: ControllerWatch,
+    /// The window of the sight of each frame that [`Run::right`] runs.
+    window: Window,
     sent: Vec<Action>,
+    /// What each send of an action other than a move returns.
     result: Sent,
+    /// What each send of a move returns.
+    move_result: Sent,
 }
 
 impl Run {
@@ -63,8 +71,10 @@ impl Run {
         Self {
             model: Model::new(),
             watch: ControllerWatch::default(),
+            window: Window::Game,
             sent: Vec::new(),
             result: Sent::Done,
+            move_result: Sent::Done,
         }
     }
 
@@ -73,16 +83,17 @@ impl Run {
         let input = Input { left, right, head: None };
         let (left_buttons, right_buttons) = self.watch.update(&input, |_| {});
         let frame = Frame { input, left: left_buttons, right: right_buttons };
-        let (sent, result) = (&mut self.sent, self.result);
+        let (sent, result, move_result) = (&mut self.sent, self.result, self.move_result);
         self.model.update(&frame, sight, FRAME, &mut |action| {
             sent.push(action);
-            result
+            if matches!(action, Action::Move(_)) { move_result } else { result }
         })
     }
 
-    /// Runs one frame of the right hand `right` on the closed menu's screen.
+    /// Runs one frame of the right hand `right` on the closed menu's screen of [`Run::window`].
     fn right(&mut self, right: HandInput) -> Update {
-        self.frame(HandInput::default(), right, closed())
+        let sight = Sight { window: self.window, ..closed() };
+        self.frame(HandInput::default(), right, sight)
     }
 
     /// Ends the session.
@@ -155,7 +166,7 @@ fn a_ray_that_meets_the_menu_s_panel_or_misses_the_screen_acts_on_nothing() {
 #[test]
 fn with_a_projection_layer_shown_no_mouse_or_turn_key_input_is_sent_and_no_laser_shows() {
     // A frame that shows the projection layer closes the menu and gives the pointer no screen.
-    let projection = Sight { menu: None, panel: PanelAim::Missed, screen: None };
+    let projection = Sight { screen: None, ..closed() };
     let mut run = Run::new();
     let up = Vector2f { x: 0.0, y: 1.0 };
     for right in [
@@ -174,7 +185,7 @@ fn with_a_projection_layer_shown_no_mouse_or_turn_key_input_is_sent_and_no_laser
 fn the_left_button_held_on_the_screen_is_released_once_when_a_projection_layer_shows() {
     let mut run = Run::new();
     run.hold_left();
-    let projection = Sight { menu: None, panel: PanelAim::Missed, screen: None };
+    let projection = Sight { screen: None, ..closed() };
     let held = HandInput { select: 1.0, ..centered() };
     run.frame(HandInput::default(), held, projection);
     run.frame(HandInput::default(), held, projection);
@@ -224,9 +235,9 @@ fn a_place_0_0004_from_the_last_move_sends_nothing_and_one_0_001_away_moves_the_
 #[test]
 fn a_failed_move_is_sent_again_in_the_next_frame() {
     let mut run = Run::new();
-    run.result = Sent::Failed;
+    run.move_result = Sent::Failed;
     run.right(centered());
-    run.result = Sent::Done;
+    run.move_result = Sent::Done;
     run.right(centered());
     run.right(centered());
     assert_eq!(run.moves(), 2);

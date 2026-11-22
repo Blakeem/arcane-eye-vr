@@ -6,7 +6,9 @@
 //! otherwise. A release goes out whichever window is in the foreground, since a press holds its
 //! button down in the system's input state and only the release ends it. A move names a place in
 //! the game window's client area as shares of its width and height. Windows takes an absolute move
-//! as coordinates from 0 to 65535 across the virtual desktop.
+//! as coordinates from 0 to 65535 across the virtual desktop. `launcher_window.rs` sends moves and
+//! presses of the same shape to the Larian launcher's window, and its releases go out through
+//! `release`.
 
 use std::path::Path;
 
@@ -77,12 +79,24 @@ pub enum MouseError {
     NotForeground { program: &'static str },
     #[error("the place {x},{y} lies outside the shares 0 to 1 of the client area")]
     Place { x: f32, y: f32 },
-    #[error("could not read the client area of the game window")]
+    #[error("could not read the client area of the window that takes the input")]
     ClientArea(#[source] windows::core::Error),
-    #[error("could not map the client area of the game window to the screen")]
+    #[error("could not map the client area of the window that takes the input to the screen")]
     ToScreen,
-    #[error("the client area of the game window is {width}x{height} pixels, so it holds no place")]
+    #[error(
+        "the client area of the window that takes the input is {width}x{height} pixels, so it \
+         holds no place"
+    )]
     EmptyArea { width: i32, height: i32 },
+    #[error(
+        "the window at the desktop point {x},{y} belongs to neither the launcher window nor a \
+         window it owns, so the input would reach another window"
+    )]
+    Covered { x: i32, y: i32 },
+    #[error("the launcher window closed, so no input goes to it")]
+    WindowGone,
+    #[error("could not read the mouse pointer's position")]
+    Cursor(#[source] windows::core::Error),
     #[error("the virtual desktop of {width}x{height} pixels gives no absolute mouse coordinates")]
     Desktop { width: i32, height: i32 },
     #[error(
@@ -173,8 +187,17 @@ fn move_event(window: HWND, place: ClientShares) -> Result<Event, MouseError> {
     let Some(_physical) = PhysicalPixels::try_start() else {
         return Err(MouseError::Awareness);
     };
-    let area = raw_cursor::client_area(window)?;
-    let (x, y) = coordinates(raw_mouse::virtual_desktop(), screen_pixel(area, place)?)?;
+    move_event_at(place_pixel(window, place)?)
+}
+
+/// The screen pixel at `place` in the client area of `window`, in the thread's DPI awareness.
+pub(crate) fn place_pixel(window: HWND, place: ClientShares) -> Result<(i32, i32), MouseError> {
+    screen_pixel(raw_cursor::client_area(window)?, place)
+}
+
+/// The move of the pointer to the screen pixel `pixel`.
+pub(crate) fn move_event_at(pixel: (i32, i32)) -> Result<Event, MouseError> {
+    let (x, y) = coordinates(raw_mouse::virtual_desktop(), pixel)?;
     Ok(Event::Move { x, y })
 }
 
@@ -253,6 +276,13 @@ mod tests {
         let (x, y) = coordinates(DESKTOP, pixel).expect("a desktop");
         // 1060 * 65535 / 3839 = 18095.6 and 590 * 65535 / 2159 = 17909.1.
         assert!((x - 18_095).abs() <= 1 && (y - 17_909).abs() <= 1, "{x}, {y}");
+    }
+
+    #[test]
+    fn a_place_of_a_client_area_off_the_desktop_s_corner_is_offset_by_the_area_s_corner() {
+        let area = ClientArea { left: 200, top: 100, width: 1000, height: 600 };
+        let pixel = screen_pixel(area, ClientShares { x: 0.25, y: 0.5 }).expect("a place");
+        assert_eq!(pixel, (450, 400));
     }
 
     #[test]

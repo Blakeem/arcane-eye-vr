@@ -5,7 +5,8 @@
 //! files again. The trial runner also runs on a desktop of its own (`desktop.rs`), moves the cursor
 //! in the game window (`cursor.rs`) and copies another process's window from the screen
 //! (`window_copy.rs`). The headset screen sends the game its mouse input (`mouse.rs`) and its
-//! camera turn keys (`turn.rs`). The pure decisions are in `decide.rs` and `vdf.rs`. `raw.rs` and
+//! camera turn keys (`turn.rs`), and shows and clicks the Larian launcher's window
+//! (`launcher_window.rs`). The pure decisions are in `decide.rs` and `vdf.rs`. `raw.rs` and
 //! the files under `raw\` hold every unsafe Windows call.
 
 /// Baldur's Gate 3's Steam app id, as a literal so `concat!` can build the names that hold it.
@@ -22,6 +23,7 @@ pub mod desktop;
 pub mod direct;
 pub mod game_dir;
 pub mod key;
+pub mod launcher_window;
 pub mod mouse;
 mod raw;
 pub mod recycle;

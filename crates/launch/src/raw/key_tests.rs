@@ -9,7 +9,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_POPUP, WS_VISIBLE,
 };
 
-use super::tests::{CLOSE_TIMEOUT, HIDDEN, StandIn, WindowStyles, close_on_request, run_stand_in};
+use super::tests::stand_in::{
+    CLOSE_TIMEOUT, HIDDEN, StandIn, WindowStyles, close_on_request, run_stand_in,
+};
 use crate::key;
 use crate::stop::{self, ProcessState};
 

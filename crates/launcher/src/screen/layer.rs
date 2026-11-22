@@ -1,5 +1,5 @@
 //! The layer a drawn frame shows on, the projection layer of its immersive choice or the screen
-//! quad, and whether the controllers point while it shows.
+//! quad, the screen quad of a picture's size, and whether the controllers point while it shows.
 
 use settings::player::ScreenSettings;
 use stereo_core::eye::PerEye;
@@ -29,8 +29,7 @@ impl Layer {
         if let Some(Choice::Projection(views)) = choice {
             return Some(Self::Projection(views));
         }
-        let (distance_m, width_m) = (settings.distance_m.meters(), settings.width_m.meters());
-        quad::screen(distance_m, width_m, frame).map(Self::Screen)
+        quad_of(frame, settings).map(Self::Screen)
     }
 
     /// The screen quad, which the pointer points at, or `None` for a projection layer.
@@ -48,6 +47,13 @@ impl Layer {
             Self::Screen(quad) => Shown::Screen { swapchains, quad },
         }
     }
+}
+
+/// The screen quad of `settings` for a picture of the size `picture`, or `None` for a size the quad
+/// refuses. The game's frames and the launcher's picture share it.
+pub(super) fn quad_of(picture: (u32, u32), settings: ScreenSettings) -> Option<ScreenQuad> {
+    let (distance_m, width_m) = (settings.distance_m.meters(), settings.width_m.meters());
+    quad::screen(distance_m, width_m, picture)
 }
 
 /// Whether the controllers point in a frame whose immersive choice is `choice`. They rest while a

@@ -1,4 +1,5 @@
 //! The window copy calls: the search for a window by its title and its process's program file, the
+//! list of top-level windows the launcher window's search chooses from, whether a window shows, the
 //! topmost order and the copy of the window's client area from the screen through GDI.
 
 use std::ffi::OsString;
@@ -17,15 +18,19 @@ use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HWND_TOPMOST, IsWindowVisible,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HWND_BOTTOM, HWND_TOPMOST,
+    IsIconic, IsWindowVisible, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
 };
 use windows::core::PWSTR;
 
 use super::cursor::{AreaFailure, client_area};
 use super::top_level_windows;
 use crate::cursor::ClientArea;
-use crate::window_copy::{BITMAP_PIXEL_BYTES, WindowCopyError, WindowPicture, bitmap_to_rgb};
+use crate::launcher_window::{Candidate, Showing};
+use crate::window_copy::{
+    BITMAP_PIXEL_BYTES, Delivery, WindowCopyError, WindowPicture, bitmap_to_rgb,
+};
 
 /// The longest program path `QueryFullProcessImageNameW` returns, in UTF-16 units.
 const LONGEST_PATH: usize = 32_768;
@@ -51,8 +56,39 @@ pub(crate) fn find(title: &str, is_program: impl Fn(&Path) -> bool) -> Option<HW
     })
 }
 
+/// Every top-level window as the launcher window's search reads it. A window gone since the list
+/// was taken is left out. The program file is read only for a visible window that is not
+/// minimized, since the search chooses no other window.
+pub(crate) fn candidates() -> Vec<Candidate<HWND>> {
+    top_level_windows(None).into_iter().filter_map(candidate).collect()
+}
+
+/// `window` as the launcher window's search reads it, or `None` for a window gone since the list
+/// was taken, whose client area cannot be read.
+fn candidate(window: HWND) -> Option<Candidate<HWND>> {
+    let Ok(area) = client_area(window) else {
+        return None;
+    };
+    let showing = showing(window);
+    let program = if showing == Showing::Visible { program_of(window) } else { None };
+    Some(Candidate { window, showing, program, area: (area.width, area.height) })
+}
+
+/// How `window` shows on the desktop. A window gone since the caller read it is hidden.
+pub(crate) fn showing(window: HWND) -> Showing {
+    // SAFETY: IsWindowVisible has no pointer arguments.
+    let visible = unsafe { IsWindowVisible(window) }.as_bool();
+    // SAFETY: IsIconic has no pointer arguments.
+    let minimized = unsafe { IsIconic(window) }.as_bool();
+    match (visible, minimized) {
+        (false, _) => Showing::Hidden,
+        (true, true) => Showing::Minimized,
+        (true, false) => Showing::Visible,
+    }
+}
+
 /// The title of `window`, empty for a window gone since the search.
-fn window_title(window: HWND) -> String {
+pub(crate) fn window_title(window: HWND) -> String {
     // SAFETY: GetWindowTextLengthW has no pointer arguments.
     let length = unsafe { GetWindowTextLengthW(window) };
     let mut text = vec![0_u16; usize::try_from(length).unwrap_or(0).saturating_add(1)];
@@ -88,13 +124,40 @@ pub(crate) fn program_of(window: HWND) -> Option<PathBuf> {
 }
 
 /// Puts `window`, titled `title`, above every window that is not topmost, without activating it.
-pub(crate) fn make_topmost(window: HWND, title: &str) -> Result<(), WindowCopyError> {
-    let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
-    // SAFETY: SetWindowPos has no pointer arguments, and a window gone since the search fails it.
-    match unsafe { SetWindowPos(window, Some(HWND_TOPMOST), 0, 0, 0, 0, flags) } {
+pub(crate) fn make_topmost(
+    window: HWND,
+    title: &str,
+    delivery: Delivery,
+) -> Result<(), WindowCopyError> {
+    match set_order(window, HWND_TOPMOST, delivery) {
         Ok(()) => Ok(()),
         Err(source) => Err(WindowCopyError::Topmost { title: title.to_owned(), source }),
     }
+}
+
+/// Ends the topmost order of `window`, titled `title`, and places it below every other window,
+/// without activating it. The order after every window that is not topmost, as `HWND_NOTOPMOST`
+/// gives it, would leave the window above a game window that was activated while it was topmost.
+pub(crate) fn end_topmost(
+    window: HWND,
+    title: &str,
+    delivery: Delivery,
+) -> Result<(), WindowCopyError> {
+    match set_order(window, HWND_BOTTOM, delivery) {
+        Ok(()) => Ok(()),
+        Err(source) => Err(WindowCopyError::EndTopmost { title: title.to_owned(), source }),
+    }
+}
+
+/// Places `window` in the order `after` names, without moving, sizing or activating it.
+fn set_order(window: HWND, after: HWND, delivery: Delivery) -> windows::core::Result<()> {
+    let post = match delivery {
+        Delivery::Wait => SET_WINDOW_POS_FLAGS(0),
+        Delivery::Post => SWP_ASYNCWINDOWPOS,
+    };
+    let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | post;
+    // SAFETY: SetWindowPos has no pointer arguments, and a window gone since the search fails it.
+    unsafe { SetWindowPos(window, Some(after), 0, 0, 0, 0, flags) }
 }
 
 /// The pixels of the screen in the client area of `window`, titled `title`. The client area leaves

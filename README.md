@@ -36,10 +36,10 @@ The launch app shows the game in 3D on a flat screen in the headset.
 1. Connect the headset.
 2. In Steam, choose Add a Non-Steam Game and pick `arcane-eye-vr.exe` from the `dist` folder.
 3. Open the Properties of the new library entry and set its Launch Options to `--mode screen`.
-4. Start the entry. The launch app starts SteamVR when it does not run. The headset shows "Starting Baldur's Gate 3" until the game's first picture.
-5. When the Larian launcher opens, choose DirectX 11 and click Play.
+4. Start the entry. The launch app starts SteamVR when it does not run. The headset shows "Starting Baldur's Gate 3" until the Larian launcher or the game's first picture shows.
+5. When the Larian launcher opens, it shows on the screen in the headset. Point a controller at it, choose DirectX 11 and click Play with the trigger.
 
-The screen appears in the headset once the game runs. It closes when the game ends.
+The game shows on the screen once it runs. The screen closes when the game ends.
 
 The menu button of a controller opens a menu on that controller, and a second press closes it. The menu is fixed to the hand that opened it and turns with that hand. On a Steam Frame, the menu button of the left controller is the View button. Point the other controller at a button of the menu and press its trigger. The buttons set the distance and the size of the screen, and the launch app keeps the values for the next start.
 
@@ -56,8 +56,8 @@ The launch app shows the game around the player. Turn the head to look around fr
 
 1. Connect the headset.
 2. Add a library entry for `arcane-eye-vr.exe` as for the headset screen, and set its Launch Options to `--mode vr`.
-3. Start the entry. The launch app starts SteamVR when it does not run. The headset shows "Starting Baldur's Gate 3" until the game's first picture.
-4. When the Larian launcher opens, choose DirectX 11 and click Play.
+3. Start the entry. The launch app starts SteamVR when it does not run. The headset shows "Starting Baldur's Gate 3" until the Larian launcher or the game's first picture shows.
+4. When the Larian launcher opens, it shows on the screen in the headset. Point a controller at it, choose DirectX 11 and click Play with the trigger.
 
 The keyboard and the mouse work as in the game. The picture keeps the game's own field of view, so it covers a part of the view. Loading screens and videos show on the flat screen of the headset screen, where the menu and the controller's mouse pointer work. This mode is a first stage.
 

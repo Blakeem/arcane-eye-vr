@@ -173,9 +173,9 @@ fn fit_client_area(window: HWND) {
     unsafe { SetWindowPos(window, None, 0, 0, width, height, flags) }.expect("size the window");
 }
 
-/// Whether `window` is topmost.
-fn is_topmost(window: HWND) -> bool {
-    // SAFETY: GetWindowLongPtrW has no pointer arguments, and this thread's window is live.
+/// Whether `window` is topmost. `mouse/launcher_tests.rs` reads a stand-in's window with it.
+pub(super) fn is_topmost(window: HWND) -> bool {
+    // SAFETY: GetWindowLongPtrW has no pointer arguments, and a window gone gives 0.
     let ex_style = unsafe { GetWindowLongPtrW(window, GWL_EXSTYLE) };
     let topmost = isize::try_from(WS_EX_TOPMOST.0).expect("a small flag");
     ex_style & topmost != 0
@@ -201,7 +201,7 @@ fn run_messages() {
 
 /// Whether this session has a desktop that takes input and shows windows. A service session or a
 /// locked screen has none, and a screen copy there holds no window.
-fn input_desktop_visible() -> bool {
+pub(super) fn input_desktop_visible() -> bool {
     // SAFETY: OpenInputDesktop has no pointer arguments.
     match unsafe { OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS) } {
         Ok(desktop) => {

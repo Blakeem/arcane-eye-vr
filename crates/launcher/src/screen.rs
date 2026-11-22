@@ -20,7 +20,8 @@
 //! frames, and Steam's report that it does not run ends no screen. `game.rs` chooses a running
 //! game at the start and watches Steam's report. `status.rs` shows the status panel until the
 //! game's first frame shows, and `panel_image.rs` draws the pictures of the status panel and of
-//! the menu into their panels.
+//! the menu into their panels. `launcher.rs` shows the Larian launcher's window on the screen in
+//! place of the status panel while it exists during the start wait, and the pointer clicks it.
 
 mod controls;
 mod eyes;
@@ -28,6 +29,7 @@ pub(crate) mod failure;
 pub(crate) mod game;
 mod geometry;
 mod immersive;
+mod launcher;
 mod layer;
 mod menu;
 mod panel_image;
@@ -63,11 +65,12 @@ use self::eyes::{Eyes, EyesError};
 use self::failure::ScreenFailure;
 use self::game::GameWatch;
 use self::immersive::Immersive;
+use self::launcher::{LauncherScreen, Wait};
 use self::layer::Layer;
 use self::menu::{PlayerFile, ScreenMenu};
 use self::panel_image::Gpu;
 use self::picture::{Link, Unshowable};
-use self::pointer::{PanelAim, Pointer, Sight};
+use self::pointer::{PanelAim, Pointer, Seen};
 use self::status::StatusPanel;
 use crate::start::{self, Start, StartError};
 
@@ -133,6 +136,7 @@ pub(crate) fn run(
     let shown = screen.show_until_end(&mut GameWatch::new(Instant::now()));
     screen.pointer.finish();
     screen.menu.finish();
+    screen.launcher.finish();
     shown
 }
 
@@ -166,6 +170,7 @@ fn open(
         eyes: None,
         immersive,
         status_panel,
+        launcher: LauncherScreen::new(),
         menu: ScreenMenu::new(settings, file, root),
         pointer: Pointer::new(),
         link: Link::new(names),
@@ -208,6 +213,7 @@ struct Screen {
     /// `None` in the view [`View::Screen`].
     immersive: Option<Immersive>,
     status_panel: StatusPanel,
+    launcher: LauncherScreen,
     menu: ScreenMenu,
     pointer: Pointer,
     link: Link,
@@ -250,10 +256,11 @@ impl Screen {
 
     /// Waits for the session's next frame, reads the controllers, writes the head pose in the view
     /// [`View::Immersive`], draws the newest published frame into the swapchains once the start is
-    /// done and the runtime shows the frame, chooses its layer, updates the menu, sends the game
-    /// the pointer's mouse and turn key input, draws the menu's quads and the laser, and ends the
-    /// frame with the frame's layer, then the status panel until a game frame showed, then the
-    /// menu's panels.
+    /// done and the runtime shows the frame, chooses its layer, updates the menu, shows the newest
+    /// copy of the launcher window during the start wait, sends the pointer's input to the game or
+    /// the launcher window, draws the menu's quads and the laser, and ends the frame with the frame's
+    /// layer, then the launcher's picture or else the status panel until a game frame showed, then
+    /// the menu's panels.
     fn frame(&mut self) -> Result<(), FrameError> {
         let timing = self.session.wait_frame()?;
         let controls = self.controllers.read(&self.session, timing)?;
@@ -262,6 +269,7 @@ impl Screen {
             eyes,
             immersive,
             status_panel,
+            launcher,
             menu,
             pointer,
             link,
@@ -283,13 +291,16 @@ impl Screen {
         let mut menu_shown = menu.update(&controls, now, layer::pointing(choice.as_ref()));
         let frame_layer = drawn.and_then(|drawn| Layer::of(drawn.frame, choice, menu.screen()));
         let shown = drawn.zip(frame_layer).map(|(drawn, on)| on.shown(drawn.swapchains));
+        let gpu = Gpu { session, draw, context: device.context() };
+        let wait = if start.is_done() { Wait::Done } else { Wait::Running };
+        launcher.update(now, wait, menu.screen(), &gpu);
+        let target =
+            launcher::target(wait, launcher.shown(), frame_layer.and_then(Layer::screen_quad));
         let panel = if menu_shown.points_at_panel() { PanelAim::Met } else { PanelAim::Missed };
-        let screen = frame_layer.and_then(Layer::screen_quad);
-        let sight = Sight { menu: menu.hand(), panel, screen };
-        if let Some(laser) = pointer.update(&controls, sight, now) {
+        let seen = Seen { menu: menu.hand(), panel, target };
+        if let Some(laser) = pointer.update(&controls, seen, now) {
             menu_shown.laser = Some(laser);
         }
-        let gpu = Gpu { session, draw, context: device.context() };
         menu.draw(menu_shown, &gpu);
         if let Some(Shown::Screen { swapchains, .. } | Shown::Projection { swapchains, .. }) = shown
         {
@@ -297,8 +308,8 @@ impl Screen {
             once!(*first_shown, Level::INFO, width, height, "first frame shown in the headset");
             status_panel.close();
         }
-        let status_quad = status_panel.panel(|| status::make(&gpu));
-        let panels: Vec<&Panel> = status_quad.into_iter().chain(menu.panels()).collect();
+        let start_quad = launcher.panel().or_else(|| status_panel.panel(|| status::make(&gpu)));
+        let panels: Vec<&Panel> = start_quad.into_iter().chain(menu.panels()).collect();
         session.end_frame(timing, shown, &panels)?;
         if let Some(immersive) = immersive.as_mut() {
             immersive.end_frame();

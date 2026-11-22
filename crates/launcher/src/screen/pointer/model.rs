@@ -1,10 +1,13 @@
 //! The game's pointer across frames: the pointing hand, the place its ray points at on the screen,
-//! the buttons the pointer holds pressed in the game, the wheel's turn and the camera turn key.
+//! the window that takes its input, the buttons it holds pressed, the wheel's turn and the camera
+//! turn key.
 //!
 //! The pointing hand is the hand whose `select` was pressed last, and the right hand before any
 //! press. While the menu is open, the hand the menu is not on points, and the menu hand acts on
 //! nothing. A ray that meets the menu's panel acts on the menu only. The camera turns while the
-//! screen quad shows and the ray misses the menu's panel, whether or not the ray meets the screen.
+//! screen quad shows the game and the ray misses the menu's panel, whether or not the ray meets the
+//! screen. While the screen quad shows the Larian launcher's window, the ray moves the pointer in
+//! it and `select` is its left button, and no other control sends it input.
 
 use std::time::Duration;
 
@@ -21,13 +24,14 @@ use crate::screen::controls::{Buttons, Frame, rose};
 use crate::screen::geometry::{self, QuadHit, Ray, Shares};
 
 /// The smallest change of the filtered place, as a share of the client area's width or height,
-/// that moves the game's pointer. A controller at rest moves less, so a hand mouse keeps working.
+/// that moves the mouse pointer. A controller at rest moves less, so a hand mouse keeps working.
 const MOVE_THRESHOLD: f32 = 0.0005;
 
-/// A mouse or turn key input the pointer sends to the game.
+/// A mouse or turn key input the pointer sends to the window the screen shows, the game or the
+/// launcher window.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Action {
-    /// A move of the pointer to a place of the game window's client area.
+    /// A move of the pointer to a place of the client area of the window the screen shows.
     Move(Shares),
     Press(Button),
     Release(Button),
@@ -37,11 +41,18 @@ pub(crate) enum Action {
     ReleaseTurn(TurnKey),
 }
 
-/// Whether an action reached the game.
+/// Whether the send of an action succeeded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Sent {
     Done,
     Failed,
+}
+
+/// The window whose picture the screen quad shows, which takes the pointer's input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Window {
+    Game,
+    Launcher,
 }
 
 /// Whether the pointing hand's ray meets the open menu's panel.
@@ -52,12 +63,14 @@ pub(crate) enum PanelAim {
 }
 
 /// What the rest of the screen shows in a frame: the hand the open menu is on, whether the
-/// pointing hand's ray meets the menu's panel, and the screen quad, when the screen is shown.
+/// pointing hand's ray meets the menu's panel, the screen quad, when the screen is shown, and the
+/// window that takes the input.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Sight {
     pub(crate) menu: Option<Hand>,
     pub(crate) panel: PanelAim,
     pub(crate) screen: Option<ScreenQuad>,
+    pub(crate) window: Window,
 }
 
 /// The pointing hand's ray and where it meets the screen quad.
@@ -75,7 +88,7 @@ pub(crate) struct Update {
     pub(crate) changed: Option<Hand>,
 }
 
-/// The pointed place's filter on each axis and the place of the last move the game took.
+/// The pointed place's filter on each axis and the place of the last move that was sent.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Place {
     x: OneEuro,
@@ -91,7 +104,9 @@ pub(crate) struct Model {
     pointing: Hand,
     /// The hand the open menu was on in the frame before.
     menu: Option<Hand>,
-    /// The game's buttons the pointer holds pressed, in the order of [`BUTTONS`].
+    /// The window that took the input in the frame before.
+    window: Window,
+    /// The mouse buttons the pointer holds pressed, in the order of [`BUTTONS`].
     held: [ButtonState; 2],
     /// The turn key the pointer holds pressed in the game.
     turning: Option<TurnKey>,
@@ -99,7 +114,7 @@ pub(crate) struct Model {
     wheel: Wheel,
 }
 
-/// The game's buttons, in the order of [`Model::held`].
+/// The mouse buttons, in the order of [`Model::held`].
 const BUTTONS: [Button; 2] = [Button::Left, Button::Right];
 
 impl Model {
@@ -109,6 +124,7 @@ impl Model {
             last_select: Hand::Right,
             pointing: Hand::Right,
             menu: None,
+            window: Window::Game,
             held: [ButtonState::Released; 2],
             turning: None,
             place: Place::default(),
@@ -117,8 +133,9 @@ impl Model {
     }
 
     /// Takes the controllers' `frame`, `step` after the frame before, with what the screen shows in
-    /// `sight`, and sends the game's mouse and turn key input through `send`. A button or a turn
-    /// key whose release failed stays held, so a later frame releases it again.
+    /// `sight`, and sends the mouse and turn key input through `send`. A button or a turn key whose
+    /// release failed stays held, so a later frame releases it again. A change of the window that
+    /// takes the input releases each held button.
     pub(crate) fn update(
         &mut self,
         frame: &Frame,
@@ -129,15 +146,23 @@ impl Model {
         let changed = self.choose_hand(frame, sight.menu);
         let opened = sight.menu.is_some() && self.menu.is_none();
         self.menu = sight.menu;
+        let window = sight.window;
+        let switched = window != self.window;
+        self.window = window;
         let hand = frame.input.hand(self.pointing);
-        let turns = sight.screen.is_some() && sight.panel == PanelAim::Missed && changed.is_none();
+        let on_game = window == Window::Game;
+        let turns = on_game
+            && sight.screen.is_some()
+            && sight.panel == PanelAim::Missed
+            && changed.is_none();
         let turn_x = if turns { hand.scroll.x } else { 0.0 };
         self.turn_camera(turn_x, send);
         let aimed = aim(hand, sight);
-        if aimed.is_none() || changed.is_some() || opened {
+        let restart = aimed.is_none() || changed.is_some() || switched;
+        if restart || opened {
             self.release_buttons(send);
         }
-        if aimed.is_none() || changed.is_some() {
+        if restart {
             self.place = Place::default();
             self.wheel.stop();
         }
@@ -145,9 +170,11 @@ impl Model {
             return Update { aimed, changed };
         };
         let seconds = step.as_secs_f32();
-        self.move_to(on_screen.hit.shares, seconds, send);
-        self.press_and_release(frame.buttons(self.pointing), send);
-        self.turn_wheel(hand, seconds, send);
+        let moved = self.move_to(on_screen.hit.shares, seconds, send);
+        self.press_and_release(frame.buttons(self.pointing), window, moved, send);
+        if on_game {
+            self.turn_wheel(hand, seconds, send);
+        }
         Update { aimed, changed }
     }
 
@@ -196,9 +223,15 @@ impl Model {
         (self.pointing != before).then_some(self.pointing)
     }
 
-    /// Moves the game's pointer to the filtered `shares` once it differs from the last move by
-    /// more than [`MOVE_THRESHOLD`].
-    fn move_to(&mut self, shares: Shares, seconds: f32, send: &mut impl FnMut(Action) -> Sent) {
+    /// Moves the mouse pointer to the filtered `shares` once it differs from the last move by
+    /// more than [`MOVE_THRESHOLD`]. Returns [`Sent::Failed`] when that move failed, so the pointer
+    /// is still at the place of an earlier move, and [`Sent::Done`] otherwise.
+    fn move_to(
+        &mut self,
+        shares: Shares,
+        seconds: f32,
+        send: &mut impl FnMut(Action) -> Sent,
+    ) -> Sent {
         let place = &mut self.place;
         let filtered =
             Shares { x: place.x.filter(shares.x, seconds), y: place.y.filter(shares.y, seconds) };
@@ -206,19 +239,38 @@ impl Model {
             (filtered.x - moved.x).abs() > MOVE_THRESHOLD
                 || (filtered.y - moved.y).abs() > MOVE_THRESHOLD
         });
-        if far && send(Action::Move(filtered)) == Sent::Done {
+        if !far {
+            return Sent::Done;
+        }
+        let result = send(Action::Move(filtered));
+        if result == Sent::Done {
             place.moved = Some(filtered);
         }
+        result
     }
 
-    /// Presses each game button whose control the pointing hand pressed in this frame, and releases
-    /// each held button whose control the hand released.
-    fn press_and_release(&mut self, buttons: Buttons, send: &mut impl FnMut(Action) -> Sent) {
+    /// Presses each button whose control the pointing hand pressed in this frame, and releases each
+    /// held button whose control the hand released. On the launcher `secondary` counts as released,
+    /// so the right button is never pressed there. A frame whose move failed, as `moved` says,
+    /// presses no button, since the pointer is not at the place the ray points at.
+    fn press_and_release(
+        &mut self,
+        buttons: Buttons,
+        window: Window,
+        moved: Sent,
+        send: &mut impl FnMut(Action) -> Sent,
+    ) {
         let (before, now) = (buttons.before, buttons.now);
-        let controls = [(before.select, now.select), (before.secondary, now.secondary)];
+        let secondary = match window {
+            Window::Game => (before.secondary, now.secondary),
+            Window::Launcher => (ButtonState::Released, ButtonState::Released),
+        };
+        let controls = [(before.select, now.select), secondary];
         for ((button, held), (was, is)) in BUTTONS.into_iter().zip(&mut self.held).zip(controls) {
             let action = match (*held, is) {
-                (ButtonState::Released, ButtonState::Pressed) if rose(was, is) => {
+                (ButtonState::Released, ButtonState::Pressed)
+                    if rose(was, is) && moved == Sent::Done =>
+                {
                     Action::Press(button)
                 }
                 (ButtonState::Pressed, ButtonState::Released) => Action::Release(button),

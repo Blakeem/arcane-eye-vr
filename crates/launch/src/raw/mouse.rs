@@ -1,15 +1,16 @@
-//! The mouse calls: the foreground window of a program, the virtual desktop's rectangle and the
-//! input sent through `SendInput`.
+//! The mouse calls: the foreground window of a program, the root owner of a window and of the
+//! window at a desktop point, the pointer's position, the virtual desktop's rectangle and the input
+//! sent through `SendInput`.
 
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_MOUSE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
     MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
     MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    WHEEL_DELTA,
+    GA_ROOTOWNER, GetAncestor, GetCursorPos, GetSystemMetrics, SM_CXVIRTUALSCREEN,
+    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WHEEL_DELTA, WindowFromPoint,
 };
 
 use super::cursor::foreground_window;
@@ -28,6 +29,36 @@ const _: () = assert!(NOTCH.cast_unsigned() == WHEEL_DELTA);
 pub(crate) fn foreground_window_of_program(program: &str) -> Option<HWND> {
     let window = foreground_window()?;
     program_of(window).is_some_and(|file| is_named(&file, program)).then_some(window)
+}
+
+/// The root owner of the visible window that `WindowFromPoint` finds at the desktop point `point`,
+/// or `None` when no window holds it.
+pub(crate) fn root_owner_at(point: (i32, i32)) -> Option<HWND> {
+    let (x, y) = point;
+    // SAFETY: WindowFromPoint takes the point by value and has no pointer arguments.
+    let window = unsafe { WindowFromPoint(POINT { x, y }) };
+    if window.is_invalid() {
+        return None;
+    }
+    root_owner(window)
+}
+
+/// The window at the end of the chain of parents and owners of `window`, which is `window` itself
+/// for a top-level window that no window owns. `None` for a window gone since the caller read it.
+pub(crate) fn root_owner(window: HWND) -> Option<HWND> {
+    // SAFETY: GetAncestor has no pointer arguments, and a window gone since the read gives null.
+    let root = unsafe { GetAncestor(window, GA_ROOTOWNER) };
+    (!root.is_invalid()).then_some(root)
+}
+
+/// The mouse pointer's position on the desktop, in the thread's DPI awareness.
+pub(crate) fn cursor_position() -> Result<(i32, i32), MouseError> {
+    let mut point = POINT::default();
+    // SAFETY: `point` is a writable local.
+    match unsafe { GetCursorPos(&raw mut point) } {
+        Ok(()) => Ok((point.x, point.y)),
+        Err(source) => Err(MouseError::Cursor(source)),
+    }
 }
 
 /// The virtual desktop. A failed read gives 0 for its value, which the coordinates refuse.
@@ -85,5 +116,7 @@ const fn released(button: Button) -> MOUSE_EVENT_FLAGS {
     }
 }
 
+#[cfg(test)]
+mod launcher_tests;
 #[cfg(test)]
 mod tests;
