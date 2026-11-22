@@ -8,17 +8,10 @@ use ipc_layout::launch_token::{LaunchToken, Status, TokenError, UnknownStatus};
 
 use crate::checks::{GameRunning, RuntimeError};
 use crate::registry::RegistryError;
-use crate::status::{Goal, WaitError};
+use crate::status::{Goal, Poll, WaitError};
 
 /// The manifest file name SteamVR registers as the active OpenXR runtime.
 const STEAMVR_RUNTIME_FILE: &str = "steamxr_win64.json";
-
-/// What a wait does after one status poll.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Poll {
-    Wait,
-    Done,
-}
 
 /// Checks that `active_runtime`, the registry's active OpenXR runtime manifest path, is SteamVR's,
 /// and returns that path. Windows file names ignore case.
@@ -90,19 +83,14 @@ mod tests {
     use crate::checks::{GameRunning, RuntimeError};
     use crate::registry::{Hive, RegistryError, RegistryValue};
     use crate::status::{Goal, WaitError};
-    use ipc_layout::launch_token::{LaunchToken, Mode, STATUS_OFFSET, Status, TokenError};
+    use crate::token_with_status as token;
+    use ipc_layout::launch_token::{Status, TokenError};
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
     const STARTED: Duration = Duration::ZERO;
     const TIMEOUT: Duration = Duration::from_mins(10);
     const LATE: Duration = Duration::from_secs(599);
-
-    fn token(status: u32) -> Result<LaunchToken, TokenError> {
-        let mut bytes = LaunchToken::new(Mode::Vr, 1, 2).encode();
-        bytes[STATUS_OFFSET..STATUS_OFFSET + 4].copy_from_slice(&status.to_le_bytes());
-        LaunchToken::decode(&bytes)
-    }
 
     fn runtime(path: &str) -> Result<PathBuf, RuntimeError> {
         check_runtime(Some(path.to_owned()))

@@ -18,6 +18,7 @@ use viewer_client::HeaderViewError;
 
 use crate::args::{ArgsError, LaunchMode};
 use crate::screen::failure::ScreenFailure;
+use crate::start::StartError;
 
 const SECONDS_PER_MINUTE: u64 = 60;
 
@@ -157,6 +158,16 @@ impl From<TokenCreateError> for Failure {
         match error {
             TokenCreateError::Exists => Self::TokenExists,
             TokenCreateError::Create(_) | TokenCreateError::Map(_) => Self::TokenCreate(error),
+        }
+    }
+}
+
+impl From<StartError> for Failure {
+    fn from(error: StartError) -> Self {
+        match error {
+            StartError::Token(source) => source.into(),
+            StartError::Steam(source) => source.into(),
+            StartError::Wait(source) => source.into(),
         }
     }
 }

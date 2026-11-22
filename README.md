@@ -33,10 +33,10 @@ The mod runs only when the launch app starts the game. A normal start through St
 
 The launch app shows the game in 3D on a flat screen in the headset.
 
-1. Start SteamVR with the headset connected.
+1. Connect the headset.
 2. In Steam, choose Add a Non-Steam Game and pick `arcane-eye-vr.exe` from the `dist` folder.
 3. Open the Properties of the new library entry and set its Launch Options to `--mode screen`.
-4. Start the entry.
+4. Start the entry. The launch app starts SteamVR when it does not run. The headset shows "Starting Baldur's Gate 3" until the game's first picture.
 5. When the Larian launcher opens, choose DirectX 11 and click Play.
 
 The screen appears in the headset once the game runs. It closes when the game ends.
@@ -54,9 +54,9 @@ A controller that points at the screen moves the mouse pointer to the place it p
 
 The launch app shows the game around the player. Turn the head to look around from the place of the game's camera.
 
-1. Start SteamVR with the headset connected.
+1. Connect the headset.
 2. Add a library entry for `arcane-eye-vr.exe` as for the headset screen, and set its Launch Options to `--mode vr`.
-3. Start the entry.
+3. Start the entry. The launch app starts SteamVR when it does not run. The headset shows "Starting Baldur's Gate 3" until the game's first picture.
 4. When the Larian launcher opens, choose DirectX 11 and click Play.
 
 The keyboard and the mouse work as in the game. The picture keeps the game's own field of view, so it covers a part of the view. Loading screens and videos show on the flat screen of the headset screen, where the menu and the controller's mouse pointer work. This mode is a first stage.

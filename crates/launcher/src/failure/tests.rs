@@ -18,6 +18,7 @@ use xr::session::SessionError;
 
 use crate::args::{ArgsError, LaunchMode};
 use crate::screen::failure::ScreenFailure;
+use crate::start::StartError;
 
 fn log_error() -> LogError {
     let source = io::Error::new(io::ErrorKind::PermissionDenied, "access denied");
@@ -72,6 +73,22 @@ fn existing_token_is_its_own_failure() {
     assert!(matches!(Failure::from(TokenCreateError::Exists), Failure::TokenExists));
     let create = TokenCreateError::Create(windows::core::Error::empty());
     assert!(matches!(Failure::from(create), Failure::TokenCreate(_)));
+}
+
+#[test]
+fn a_start_from_the_headset_session_fails_with_the_failure_of_its_step() {
+    let token = Failure::from(StartError::Token(TokenCreateError::Exists));
+    assert!(matches!(token, Failure::TokenExists), "{token:?}");
+    let wait = Failure::from(StartError::Wait(WaitError::WrongRenderer));
+    assert!(matches!(wait, Failure::WrongRenderer), "{wait:?}");
+    let last = Status::HooksInstalled;
+    let timeout = Duration::from_mins(10);
+    let timed_out =
+        StartError::Wait(WaitError::Timeout { goal: Goal::FirstPresent, last, timeout });
+    assert!(matches!(
+        Failure::from(timed_out),
+        Failure::Timeout { last: Status::HooksInstalled, .. }
+    ));
 }
 
 #[test]

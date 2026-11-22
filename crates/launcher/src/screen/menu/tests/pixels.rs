@@ -13,7 +13,8 @@ use windows::Win32::Graphics::Dxgi::Common::{
 use windows::core::HSTRING;
 
 use super::screen;
-use crate::screen::menu::{Source, prepare, rows, target_format};
+use crate::screen::menu::rows;
+use crate::screen::panel_image::{Source, prepare, target_format};
 
 /// The pixels of a painted menu after the menu's draw into a typeless image of `typeless`, whose
 /// view comes from the swapchain format `srgb`, read back as `read`.

@@ -1,6 +1,6 @@
 //! Every way the headset session fails. The player reads each message in a message box, so it names
-//! the cause and the fix. The game keeps running after each of them. The screen mode and the
-//! immersive mode share each failure, so a fix gets the `--mode` name of the mode the player
+//! the cause and the fix. A game that runs keeps running after each of them. The screen mode and
+//! the immersive mode share each failure, so a fix gets the `--mode` name of the mode the player
 //! started from its caller.
 
 use std::io;

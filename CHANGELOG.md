@@ -11,6 +11,7 @@ These changes are on the main branch. No headset has tested them yet.
 - The interface comes forward only when the scene under it stays nearer, so a thing that passes the camera does not move it.
 - In `--mode screen`, the menu button of a controller opens a menu that sets the distance and the size of the screen.
 - In `--mode screen`, a controller that points at the screen works as the mouse, and its thumbstick's left and right turn the camera.
+- In `--mode screen` and `--mode vr`, the launch app opens the headset before it starts the game, and starts SteamVR when it does not run. The headset shows "Starting Baldur's Gate 3" until the game's first picture.
 - Controllers are described by files in `profiles`, for the Steam Frame, the HTC Vive and the Khronos simple controller.
 - `arcane-eye-vr.exe --mode vr` starts a first stage of the immersive mode, where the head looks around from the place of the game's camera.
 

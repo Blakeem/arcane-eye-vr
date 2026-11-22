@@ -19,7 +19,7 @@ use xr::input::{ButtonState, HandInput, Input};
 use super::model::{Event, Model, Place, Pointing, Shown, toggled};
 use super::place::PANEL_SIZE;
 use super::save::{PlayerFile, Saver, Saving};
-use super::{MenuError, ScreenMenu, rows};
+use super::{MenuError, PanelImageError, ScreenMenu, rows};
 use crate::screen::controls::{ControllerWatch, Frame};
 use crate::screen::geometry::rotate;
 use crate::screen::geometry::test_support::{assert_near, vector};
@@ -390,7 +390,7 @@ fn a_session_that_ends_with_the_menu_closed_writes_nothing() {
 fn a_failed_menu_closes_writes_its_change_and_shows_no_panel() {
     let dir = test_dir("menu-failure");
     let mut menu = stepped_menu(&dir);
-    menu.fail(&MenuError::NoImage { index: 7 });
+    menu.fail(&MenuError::Image(PanelImageError::NoImage { index: 7 }));
     assert!(menu.drawing.is_none(), "the menu is gone for the session");
     assert_eq!(menu.model.close(), None, "the menu was closed");
     assert!(menu.panels().is_empty());

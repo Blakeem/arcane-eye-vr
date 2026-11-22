@@ -40,3 +40,14 @@ pub mod window_copy;
 fn test_dir(name: &str) -> test_support::TestDir {
     test_support::TestDir::in_temp("arcane-eye-launch", name).expect("create the test folder")
 }
+
+/// A launch token of the mode `vr` whose status word holds `status`, as the game writes it.
+#[cfg(test)]
+fn token_with_status(
+    status: u32,
+) -> Result<ipc_layout::launch_token::LaunchToken, ipc_layout::launch_token::TokenError> {
+    use ipc_layout::launch_token::{LaunchToken, Mode, STATUS_OFFSET};
+    let mut bytes = LaunchToken::new(Mode::Vr, 1, 2).encode();
+    bytes[STATUS_OFFSET..STATUS_OFFSET + 4].copy_from_slice(&status.to_le_bytes());
+    LaunchToken::decode(&bytes)
+}

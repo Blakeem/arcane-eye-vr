@@ -1,6 +1,6 @@
 [package]
 name = "overlay"
-description = "The menu panel: a menu of stepper rows, its layout, the hit test of a point and its painter."
+description = "The panels' pixels: the menu panel's stepper rows, its layout, the hit test of a point and its painter, and the status panel's line of text."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true

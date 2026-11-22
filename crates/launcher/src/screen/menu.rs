@@ -20,7 +20,7 @@ use std::time::Instant;
 use device_profile::profile::Hand;
 use diag::error_chain;
 use gfx::canvas::CanvasError;
-use gfx::region::{Placement, RegionDraw, RegionError};
+use gfx::region::RegionError;
 use openxr::{Extent2Df, Posef};
 use overlay::layout::{PANEL_HEIGHT, PANEL_WIDTH};
 use overlay::menu::TooManyRows;
@@ -28,14 +28,9 @@ use overlay::painter::{Change, Painter};
 use settings::file::{self, SETTINGS_FILE};
 use settings::player::ScreenSettings;
 use tracing::{info, warn};
-use windows::Win32::Graphics::Direct3D11::{
-    ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D,
-};
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
+use windows::Win32::Graphics::Direct3D11::ID3D11RenderTargetView;
 use xr::error::XrError;
-use xr::format::{Sampling, SwapchainFormat};
 use xr::panel::Panel;
-use xr::session::Session;
 
 use self::model::{Event, Model};
 pub(crate) use self::model::{Pointing, Shown};
@@ -44,6 +39,7 @@ pub(crate) use self::place::{Laser, laser};
 pub(crate) use self::save::PlayerFile;
 use self::save::{Saver, Saving};
 use super::controls::Frame;
+use super::panel_image::{Gpu, PanelImageError, Source, show, views};
 
 /// The side of the laser's swapchain images in pixels, which hold one color.
 const LASER_SIDE: u16 = 4;
@@ -53,13 +49,6 @@ const LASER_COLOR: [u8; 4] = [140, 200, 255, 255];
 
 const LASER_PIXELS: [[u8; 4]; 16] = [LASER_COLOR; 16];
 const _: () = assert!(LASER_PIXELS.len() == LASER_SIDE as usize * LASER_SIDE as usize);
-
-/// The objects the menu draws with in a frame.
-pub(crate) struct Gpu<'a> {
-    pub(crate) session: &'a Session,
-    pub(crate) draw: &'a RegionDraw,
-    pub(crate) context: &'a ID3D11DeviceContext,
-}
 
 /// Why the menu stopped.
 #[derive(Debug, thiserror::Error)]
@@ -72,10 +61,8 @@ enum MenuError {
     Draw(#[from] RegionError),
     #[error("the menu could not be laid out")]
     Rows(#[from] TooManyRows),
-    #[error("the runtime gave a menu quad the swapchain image {index}, which its image list lacks")]
-    NoImage { index: u32 },
-    #[error("a menu picture of {width} by {height} pixels has no placement")]
-    Size { width: u16, height: u16 },
+    #[error("a menu quad could not be drawn")]
+    Image(#[from] PanelImageError),
 }
 
 /// Whether a quad is shown in this frame.
@@ -312,58 +299,6 @@ impl Panels {
         let laser_targets = views(&laser, gpu)?;
         show(&mut laser, &laser_targets, Source { texture: &texture, width, height }, gpu)?;
         Ok(Self { targets, menu, laser })
-    }
-}
-
-/// A view of each image of `panel` in the format [`target_format`] names.
-fn views(panel: &Panel, gpu: &Gpu<'_>) -> Result<Vec<ID3D11RenderTargetView>, RegionError> {
-    let format = target_format(gpu.session.format());
-    panel.images().iter().map(|image| gpu.draw.target_view(image, format)).collect()
-}
-
-/// The view format of a panel image of `format` that stores the values a draw writes, since the
-/// pixels of the painter and of the laser are sRGB-encoded.
-const fn target_format(format: SwapchainFormat) -> DXGI_FORMAT {
-    format.target_view(Sampling::Stored)
-}
-
-/// A texture to draw into a panel, as large as the panel's images.
-#[derive(Clone, Copy)]
-struct Source<'a> {
-    texture: &'a ID3D11Texture2D,
-    width: u16,
-    height: u16,
-}
-
-/// A view of `source` to draw, and its placement over an entire target of its size.
-fn prepare(
-    draw: &RegionDraw,
-    source: Source<'_>,
-) -> Result<(ID3D11ShaderResourceView, Placement), MenuError> {
-    let Source { texture, width, height } = source;
-    let placement = Placement::new((0, 0), (u32::from(width), u32::from(height)))
-        .ok_or(MenuError::Size { width, height })?;
-    Ok((draw.source_view(texture)?, placement))
-}
-
-/// Draws `source` into the next image of `panel`, whose views are `targets`, and releases the
-/// image.
-fn show(
-    panel: &mut Panel,
-    targets: &[ID3D11RenderTargetView],
-    source: Source<'_>,
-    gpu: &Gpu<'_>,
-) -> Result<(), MenuError> {
-    let (view, placement) = prepare(gpu.draw, source)?;
-    let index = panel.acquire()?;
-    let target = usize::try_from(index).ok().and_then(|slot| targets.get(slot));
-    if let Some(target) = target {
-        gpu.draw.draw(gpu.context, target, &view, placement);
-    }
-    panel.release()?;
-    match target {
-        Some(_) => Ok(()),
-        None => Err(MenuError::NoImage { index }),
     }
 }
 

@@ -4,7 +4,7 @@
 use std::process;
 use std::time::SystemTime;
 
-use ipc_layout::launch_token::{self, LaunchToken, Mode};
+use ipc_layout::launch_token::{self, LaunchToken, Mode, TokenError};
 
 pub use crate::raw::{TokenCreateError, TokenMapping};
 
@@ -19,6 +19,15 @@ pub use crate::raw::{TokenCreateError, TokenMapping};
 pub fn create(mode: Mode) -> Result<TokenMapping, TokenCreateError> {
     let token = LaunchToken::new(mode, process::id(), unix_ms_now());
     TokenMapping::create(launch_token::MAPPING_NAME, &token)
+}
+
+/// The token in `mapping`, with the status the game wrote last.
+///
+/// # Errors
+///
+/// Returns the [`TokenError`] of bytes that are not a launch token of this layout.
+pub fn read(mapping: &TokenMapping) -> Result<LaunchToken, TokenError> {
+    LaunchToken::decode(&mapping.read())
 }
 
 /// Milliseconds since the Unix epoch. A clock set before 1970 reads as 0, since the token's

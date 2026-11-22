@@ -12,8 +12,8 @@ use crate::layout::{
 };
 use crate::menu::{Button, ButtonState, Menu};
 
-const BACKGROUND: Rgb = Rgb { red: 24, green: 26, blue: 32 };
-const TITLE_COLOR: Rgb = Rgb { red: 240, green: 240, blue: 245 };
+pub(crate) const BACKGROUND: Rgb = Rgb { red: 24, green: 26, blue: 32 };
+pub(crate) const TITLE_COLOR: Rgb = Rgb { red: 240, green: 240, blue: 245 };
 const LABEL_COLOR: Rgb = Rgb { red: 200, green: 202, blue: 210 };
 const VALUE_COLOR: Rgb = Rgb { red: 255, green: 255, blue: 255 };
 const BUTTON_COLOR: Rgb = Rgb { red: 56, green: 60, blue: 72 };

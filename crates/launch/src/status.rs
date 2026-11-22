@@ -1,4 +1,5 @@
-//! The wait for the game to report a goal status in the launch token.
+//! The wait for the game to report a goal status in the launch token, as a blocking loop or as a
+//! wait its caller polls from a loop of its own.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -6,8 +7,8 @@ use std::time::{Duration, Instant};
 use ipc_layout::launch_token::{LaunchToken, Mode, Status, TokenError};
 use tracing::info;
 
-use crate::decide::{self, Poll};
-use crate::token::TokenMapping;
+use crate::decide;
+use crate::token::{self, TokenMapping};
 
 /// A status at which a wait is done.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +34,13 @@ impl Goal {
     }
 }
 
+/// What a wait does after one poll.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Poll {
+    Wait,
+    Done,
+}
+
 /// Why the wait stopped before the game reported the goal status.
 #[derive(Debug, thiserror::Error)]
 pub enum WaitError {
@@ -53,60 +61,85 @@ pub enum WaitError {
     Timeout { goal: Goal, last: Status, timeout: Duration },
 }
 
+/// A wait for a goal status that reads the token at most once per interval and logs each status
+/// change.
+#[derive(Debug)]
+pub struct GoalWait {
+    goal: Goal,
+    interval: Duration,
+    timeout: Duration,
+    started: Instant,
+    next_read: Instant,
+    last_status: Option<Status>,
+}
+
+impl GoalWait {
+    /// A wait for `goal` that starts at `now`, reads the token at most once per `interval` and fails
+    /// once `timeout` passed.
+    pub const fn new(goal: Goal, interval: Duration, timeout: Duration, now: Instant) -> Self {
+        Self { goal, interval, timeout, started: now, next_read: now, last_status: None }
+    }
+
+    /// The earliest time at which [`GoalWait::poll`] reads the token again.
+    pub const fn next_read(&self) -> Instant {
+        self.next_read
+    }
+
+    /// What the wait does at `now`. Once the interval since the last read passed, the wait reads
+    /// the token with `read` and decides with its status. Before that, it waits.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`WaitError`] variant of the failure status the game reported,
+    /// [`WaitError::Token`] or [`WaitError::UnknownStatus`] for a token this crate cannot read, and
+    /// [`WaitError::Timeout`] when the timeout passed first.
+    pub fn poll(
+        &mut self,
+        now: Instant,
+        read: impl FnOnce() -> Result<LaunchToken, TokenError>,
+    ) -> Result<Poll, WaitError> {
+        if now < self.next_read {
+            return Ok(Poll::Wait);
+        }
+        self.next_read = now.checked_add(self.interval).unwrap_or(now);
+        let token = read();
+        if let Ok(decoded) = &token {
+            let status = decoded.status().ok();
+            if status != self.last_status {
+                info!(status = ?status, game_pid = decoded.game_pid(), "game status changed");
+                self.last_status = status;
+            }
+        }
+        let elapsed = now.saturating_duration_since(self.started);
+        let poll = decide::poll(self.goal, token, elapsed, self.timeout)?;
+        if poll == Poll::Done {
+            info!(goal = ?self.goal, "goal status reached");
+        }
+        Ok(poll)
+    }
+}
+
 /// Polls the token's status every `interval` until the game reports `goal`, a failure or `timeout`.
 ///
 /// # Errors
 ///
-/// Returns the [`WaitError`] variant of the failure status the game reported,
-/// [`WaitError::Token`] or [`WaitError::UnknownStatus`] for a token this crate cannot read, and
-/// [`WaitError::Timeout`] when `timeout` passes first.
+/// Returns the [`WaitError`] of [`GoalWait::poll`].
 pub fn wait_for_goal(
     mapping: &TokenMapping,
     goal: Goal,
     interval: Duration,
     timeout: Duration,
 ) -> Result<(), WaitError> {
-    let started = Instant::now();
-    let mut last_status: Option<Status> = None;
+    let mut wait = GoalWait::new(goal, interval, timeout, Instant::now());
     loop {
-        let token = LaunchToken::decode(&mapping.read());
-        if let Ok(read) = token {
-            let status = read.status().ok();
-            if status != last_status {
-                info!(status = ?status, game_pid = read.game_pid(), "game status changed");
-                last_status = status;
-            }
-        }
-        if decide::poll(goal, token, started.elapsed(), timeout)? == Poll::Done {
-            info!(goal = ?goal, "goal status reached");
+        if wait.poll(Instant::now(), || token::read(mapping))? == Poll::Done {
             return Ok(());
         }
-        // thread::sleep is banned for game threads. Parking waits the same, and an early wake only
-        // polls early.
-        thread::park_timeout(interval);
+        // thread::sleep is banned for game threads. Parking waits the same, and an early wake polls
+        // again before the next read, which reads nothing.
+        thread::park_timeout(wait.next_read().saturating_duration_since(Instant::now()));
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{Goal, WaitError};
-    use ipc_layout::launch_token::{Mode, Status};
-    use std::time::Duration;
-
-    #[test]
-    fn each_mode_waits_for_the_first_present_status() {
-        assert_eq!(Goal::of(Mode::DesktopStereo), Goal::FirstPresent);
-        assert_eq!(Goal::of(Mode::Vr), Goal::FirstPresent);
-        assert_eq!(Goal::FirstPresent.status(), Status::FirstPresent);
-        assert_eq!(Goal::VrSessionRunning.status(), Status::VrSessionRunning);
-    }
-
-    #[test]
-    fn timeout_message_names_the_goal_the_wait_and_the_last_status() {
-        let timeout = Duration::from_secs(180);
-        let error = WaitError::Timeout { goal: Goal::FirstPresent, last: Status::Waiting, timeout };
-        let expected =
-            "the game did not report FirstPresent within 180s, and its last status was Waiting";
-        assert_eq!(error.to_string(), expected);
-    }
-}
+mod tests;

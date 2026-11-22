@@ -14,16 +14,26 @@
 //! are of a kind it cannot show. The game window keeps the keyboard, since the session has no
 //! window, and the pointer's input reaches the game only while the game window is in the
 //! foreground.
+//!
+//! A game that the launch app starts starts in the first pass of the frame loop after the session
+//! runs (`crate::start`). Until the game reports its goal status, the session shows none of its
+//! frames, and Steam's report that it does not run ends no screen. `game.rs` chooses a running
+//! game at the start and watches Steam's report. `status.rs` shows the status panel until the
+//! game's first frame shows, and `panel_image.rs` draws the pictures of the status panel and of
+//! the menu into their panels.
 
 mod controls;
 mod eyes;
 pub(crate) mod failure;
+pub(crate) mod game;
 mod geometry;
 mod immersive;
 mod layer;
 mod menu;
+mod panel_image;
 mod picture;
 mod pointer;
+mod status;
 
 use std::path::Path;
 use std::thread;
@@ -33,16 +43,17 @@ use diag::error_chain;
 use diag::once;
 use diag::rate::Once;
 use gfx::region::RegionDraw;
+use ipc_layout::viewer_header::AdapterLuid;
 use ipc_layout::viewer_header::pose::FrameTag;
-use ipc_layout::viewer_header::{self, AdapterLuid};
 use launch::checks;
-use launch::registry::RegistryError;
+use launch::token::{self, TokenMapping};
 use settings::file::SETTINGS_FILE;
 use settings::player::ScreenSettings;
 use tracing::{Level, info, warn};
 use viewer_client::header::Names;
-use viewer_client::{Device, HeaderView, HeaderViewError, heartbeat};
+use viewer_client::{Device, heartbeat};
 use xr::error::XrError;
+use xr::panel::Panel;
 use xr::runtime::Runtime;
 use xr::session::{Lifecycle, Session, Shown};
 use xr::swapchain::Swapchains;
@@ -50,17 +61,18 @@ use xr::swapchain::Swapchains;
 use self::controls::Controllers;
 use self::eyes::{Eyes, EyesError};
 use self::failure::ScreenFailure;
+use self::game::GameWatch;
 use self::immersive::Immersive;
 use self::layer::Layer;
-use self::menu::{Gpu, PlayerFile, ScreenMenu};
+use self::menu::{PlayerFile, ScreenMenu};
+use self::panel_image::Gpu;
 use self::picture::{Link, Unshowable};
 use self::pointer::{PanelAim, Pointer, Sight};
+use self::status::StatusPanel;
+use crate::start::{self, Start, StartError};
 
 /// The wait between two event polls while the session is not begun.
 const IDLE_WAIT: Duration = Duration::from_millis(50);
-
-/// The time between two reads of Steam's report that the game runs.
-const GAME_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// How the session shows the game's frames.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,64 +81,6 @@ pub(crate) enum View {
     Screen,
     /// Each frame with a kept head pose around the player, every other frame on the flat screen.
     Immersive,
-}
-
-/// The game the headset session shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum GameChoice {
-    /// A game with the mod runs, so the session shows it and no game starts.
-    Running,
-    /// The launch app starts the game, then the session shows it.
-    Start,
-}
-
-/// Steam's report of whether the game runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SteamReport {
-    Running,
-    NotRunning,
-}
-
-/// Whether the viewer header's mapping exists.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Header {
-    Mapped,
-    Absent,
-}
-
-/// The game the headset session shows, from Steam's report and the viewer header's mapping. A
-/// failed read of Steam's report leaves the choice to the mapping.
-///
-/// # Errors
-///
-/// Returns the [`HeaderViewError`] of a mapping that exists and cannot be opened.
-pub(crate) fn find_game() -> Result<GameChoice, HeaderViewError> {
-    let header = match HeaderView::open(viewer_header::MAPPING_NAME)? {
-        Some(_) => Header::Mapped,
-        None => Header::Absent,
-    };
-    let steam = match checks::game_running() {
-        Ok(true) => SteamReport::Running,
-        Ok(false) => SteamReport::NotRunning,
-        Err(error) => {
-            warn!(
-                error = %error,
-                "could not read whether the game runs, so the viewer header decides"
-            );
-            SteamReport::Running
-        }
-    };
-    Ok(choose_game(steam, header))
-}
-
-/// A running game only when Steam reports it and the header is mapped. The core creates the header
-/// mapping at start, but a reader such as `viewer.exe` keeps it open after the game quits, so the
-/// mapping alone does not show a running game.
-const fn choose_game(steam: SteamReport, header: Header) -> GameChoice {
-    match (steam, header) {
-        (SteamReport::Running, Header::Mapped) => GameChoice::Running,
-        (SteamReport::NotRunning, _) | (_, Header::Absent) => GameChoice::Start,
-    }
 }
 
 /// The table `[screen]` of the player file in the root folder `root`, and whether the file gave it.
@@ -151,15 +105,44 @@ fn settings(root: &Path) -> (ScreenSettings, PlayerFile) {
     (screen, file)
 }
 
-/// Shows the game's frames in the headset as `view` says until the game ends or the runtime ends
-/// the session. `manifest` is the active runtime's manifest, and `root` the root folder that holds
-/// the player file. Before it returns, the screen menu's unsaved changes are written to a player
-/// file that gave its values at the start.
+/// Why the headset session's run stopped before the game or the session ended.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RunFailure {
+    #[error(transparent)]
+    Screen(#[from] ScreenFailure),
+    #[error(transparent)]
+    Start(#[from] StartError),
+}
+
+/// Runs `start` from the session's frame loop and shows the game's frames in the headset as `view`
+/// says until the game ends or the runtime ends the session. `manifest` is the active runtime's
+/// manifest, and `root` the root folder that holds the player file. Before it returns, the screen
+/// menu's unsaved changes are written to a player file that gave its values at the start.
 ///
 /// # Errors
 ///
-/// Returns the [`ScreenFailure`] of a step before the session runs, and of a session that failed.
-pub(crate) fn run(manifest: &Path, root: &Path, view: View) -> Result<(), ScreenFailure> {
+/// Returns the [`ScreenFailure`] of a step before the session runs and of a session that failed,
+/// and the [`StartError`] of the game's start.
+pub(crate) fn run(
+    manifest: &Path,
+    root: &Path,
+    view: View,
+    start: Start<TokenMapping>,
+) -> Result<(), RunFailure> {
+    let mut screen = open(manifest, root, view, start)?;
+    let shown = screen.show_until_end(&mut GameWatch::new(Instant::now()));
+    screen.pointer.finish();
+    screen.menu.finish();
+    shown
+}
+
+/// Reads the screen settings, starts the heartbeat thread and opens the session.
+fn open(
+    manifest: &Path,
+    root: &Path,
+    view: View,
+    start: Start<TokenMapping>,
+) -> Result<Screen, ScreenFailure> {
     let (settings, file) = settings(root);
     let names = Names::default();
     if let Err(error) = heartbeat::spawn(names.mapping.clone()) {
@@ -178,9 +161,11 @@ pub(crate) fn run(manifest: &Path, root: &Path, view: View) -> Result<(), Screen
         View::Screen => None,
         View::Immersive => Some(Immersive::new()),
     };
-    let mut screen = Screen {
+    let status_panel = if start.is_done() { StatusPanel::closed() } else { StatusPanel::new() };
+    Ok(Screen {
         eyes: None,
         immersive,
+        status_panel,
         menu: ScreenMenu::new(settings, file, root),
         pointer: Pointer::new(),
         link: Link::new(names),
@@ -189,11 +174,8 @@ pub(crate) fn run(manifest: &Path, root: &Path, view: View) -> Result<(), Screen
         device,
         controllers: Controllers::new(),
         first_shown: Once::new(),
-    };
-    let shown = screen.show_until_end(&mut GameWatch::new(Instant::now()));
-    screen.pointer.finish();
-    screen.menu.finish();
-    shown
+        start,
+    })
 }
 
 /// Why a session frame failed.
@@ -219,12 +201,13 @@ impl FrameError {
     }
 }
 
-/// Everything the screen opened. Fields drop in declaration order, so the swapchains and the menu's
+/// Everything the screen opened. Fields drop in declaration order, so the swapchains and the
 /// panels go before the session and the device goes last.
 struct Screen {
     eyes: Option<Eyes>,
     /// `None` in the view [`View::Screen`].
     immersive: Option<Immersive>,
+    status_panel: StatusPanel,
     menu: ScreenMenu,
     pointer: Pointer,
     link: Link,
@@ -233,16 +216,18 @@ struct Screen {
     device: Device,
     controllers: Controllers,
     first_shown: Once,
+    /// Holds the launch token until the goal status, so the session's end drops it.
+    start: Start<TokenMapping>,
 }
 
 impl Screen {
-    fn show_until_end(&mut self, game: &mut GameWatch) -> Result<(), ScreenFailure> {
+    fn show_until_end(&mut self, game: &mut GameWatch) -> Result<(), RunFailure> {
         loop {
-            if game.ended(Instant::now(), checks::game_running) {
+            if game.ended(&self.start, Instant::now(), checks::game_running) {
                 info!("Steam reports that the game ended, so the screen ends");
                 return Ok(());
             }
-            let frame = match self.session.poll() {
+            let (lifecycle, frame) = match self.session.poll() {
                 Ok(Lifecycle::Ended) => {
                     info!("the runtime ended the session, so the screen ends");
                     return Ok(());
@@ -251,39 +236,49 @@ impl Screen {
                     // thread::sleep is banned for game threads. Parking waits the same, and an
                     // early wake only polls again.
                     thread::park_timeout(IDLE_WAIT);
-                    Ok(())
+                    (Lifecycle::Idle, Ok(()))
                 }
-                Ok(Lifecycle::Running) => self.frame(),
-                Err(error) => Err(FrameError::Xr(error)),
+                Ok(Lifecycle::Running) => (Lifecycle::Running, self.frame()),
+                Err(error) => return end_or_fail(FrameError::Xr(error)),
             };
-            match frame {
-                Ok(()) => {}
-                Err(error) if error.is_loss() => {
-                    info!(error = %error, "the runtime lost the session, so the screen ends");
-                    return Ok(());
-                }
-                Err(error) => return Err(error.into()),
+            if let Err(error) = frame {
+                return end_or_fail(error);
             }
+            self.start.pass(Instant::now(), lifecycle, start::begin, token::read)?;
         }
     }
 
     /// Waits for the session's next frame, reads the controllers, writes the head pose in the view
-    /// [`View::Immersive`], draws the newest published frame into the swapchains when the runtime
-    /// shows the frame and chooses its layer, updates the menu, sends the game the pointer's mouse
-    /// and turn key input, draws the menu's quads and the laser, and ends the frame with the
-    /// frame's layer, then the menu's panels.
+    /// [`View::Immersive`], draws the newest published frame into the swapchains once the start is
+    /// done and the runtime shows the frame, chooses its layer, updates the menu, sends the game
+    /// the pointer's mouse and turn key input, draws the menu's quads and the laser, and ends the
+    /// frame with the frame's layer, then the status panel until a game frame showed, then the
+    /// menu's panels.
     fn frame(&mut self) -> Result<(), FrameError> {
         let timing = self.session.wait_frame()?;
         let controls = self.controllers.read(&self.session, timing)?;
         let now = Instant::now();
         let Self {
-            eyes, immersive, menu, pointer, link, session, draw, device, first_shown, ..
+            eyes,
+            immersive,
+            status_panel,
+            menu,
+            pointer,
+            link,
+            session,
+            draw,
+            device,
+            first_shown,
+            start,
+            ..
         } = self;
         if let Some(immersive) = immersive.as_mut() {
             immersive.write_head(session.locate_head(timing), link)?;
         }
-        let drawn =
-            if timing.should_render { show(eyes, link, session, draw, device)? } else { None };
+        // A header left by an earlier game holds a texture no process shares, so the link reads
+        // frames only once this start's game reported its goal status.
+        let game = timing.should_render && start.is_done();
+        let drawn = if game { show(eyes, link, session, draw, device)? } else { None };
         let choice = drawn.as_ref().zip(immersive.as_mut()).map(|(drawn, on)| on.choose(drawn.tag));
         let mut menu_shown = menu.update(&controls, now, layer::pointing(choice.as_ref()));
         let frame_layer = drawn.and_then(|drawn| Layer::of(drawn.frame, choice, menu.screen()));
@@ -294,18 +289,31 @@ impl Screen {
         if let Some(laser) = pointer.update(&controls, sight, now) {
             menu_shown.laser = Some(laser);
         }
-        menu.draw(menu_shown, &Gpu { session, draw, context: device.context() });
+        let gpu = Gpu { session, draw, context: device.context() };
+        menu.draw(menu_shown, &gpu);
         if let Some(Shown::Screen { swapchains, .. } | Shown::Projection { swapchains, .. }) = shown
         {
             let (width, height) = swapchains.size();
             once!(*first_shown, Level::INFO, width, height, "first frame shown in the headset");
+            status_panel.close();
         }
-        session.end_frame(timing, shown, &menu.panels())?;
+        let status_quad = status_panel.panel(|| status::make(&gpu));
+        let panels: Vec<&Panel> = status_quad.into_iter().chain(menu.panels()).collect();
+        session.end_frame(timing, shown, &panels)?;
         if let Some(immersive) = immersive.as_mut() {
             immersive.end_frame();
         }
         Ok(())
     }
+}
+
+/// Ends the screen with no failure when the runtime lost the session, and with `error` otherwise.
+fn end_or_fail(error: FrameError) -> Result<(), RunFailure> {
+    if error.is_loss() {
+        info!(error = %error, "the runtime lost the session, so the screen ends");
+        return Ok(());
+    }
+    Err(ScreenFailure::from(error).into())
 }
 
 /// The swapchains that hold each eye's half of a published frame, the entire frame's size and the
@@ -332,44 +340,6 @@ fn show<'eyes>(
     let swapchains = eyes::show(eyes, session, draw, device.context(), picture)?;
     let (frame, tag) = (picture.size(), picture.tag());
     Ok(swapchains.map(|swapchains| Drawn { swapchains, frame, tag }))
-}
-
-/// The screen's reads of Steam's report that the game runs, at most one per
-/// [`GAME_CHECK_INTERVAL`].
-struct GameWatch {
-    next_check: Instant,
-    read_failure: Once,
-}
-
-impl GameWatch {
-    const fn new(now: Instant) -> Self {
-        Self { next_check: now, read_failure: Once::new() }
-    }
-
-    /// Whether `game_running`, called once the interval passed, reports that the game ended. A
-    /// failed read keeps the screen running.
-    fn ended(
-        &mut self,
-        now: Instant,
-        game_running: impl FnOnce() -> Result<bool, RegistryError>,
-    ) -> bool {
-        if now < self.next_check {
-            return false;
-        }
-        self.next_check = now.checked_add(GAME_CHECK_INTERVAL).unwrap_or(now);
-        match game_running() {
-            Ok(running) => !running,
-            Err(error) => {
-                once!(
-                    self.read_failure,
-                    Level::WARN,
-                    error = %error,
-                    "could not read whether the game runs, so the screen keeps running"
-                );
-                false
-            }
-        }
-    }
 }
 
 #[cfg(test)]

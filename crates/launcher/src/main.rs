@@ -3,12 +3,14 @@
 //!
 //! `arcane-eye-vr.exe` creates the launch token, opens the game's Steam URL, then polls the token's
 //! status until the game reports the mode's goal status or a failure. The token is removed once the
-//! wait ends. In the modes `screen` and `vr`, the app skips those steps when a game with the mod
-//! already runs. It then shows the game's frames in the headset, on a screen or around the player,
-//! until the game or the OpenXR session ends. `arcane-eye-vr.exe --reload-settings` instead asks
-//! the running game to read the settings files again, and exits. The `launch` crate runs each
-//! launch step and the reload request, and `screen.rs` runs the headset session. This crate holds
-//! the command line, the player's messages and the message box in `raw.rs`.
+//! wait ends. In the modes `screen` and `vr`, the app opens the OpenXR session first and runs
+//! those steps from the session's frame loop once the session runs, or skips them when a game with
+//! the mod already runs. It shows the game's frames in the headset, on a screen or around the
+//! player, until the game or the OpenXR session ends. `arcane-eye-vr.exe --reload-settings`
+//! instead asks the running game to read the settings files again, and exits. The `launch` crate
+//! runs each launch step and the reload request, `start.rs` orders the start's steps, and
+//! `screen.rs` runs the headset session. This crate holds the command line, the player's messages
+//! and the message box in `raw.rs`.
 
 #![windows_subsystem = "windows"]
 
@@ -16,27 +18,23 @@ mod args;
 mod failure;
 mod raw;
 mod screen;
+mod start;
 
 use std::env;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use diag::logging::{self, LogName, Logging};
 use diag::root::Root;
 use ipc_layout::launch_token::Mode;
 use launch::status::{self, Goal};
-use launch::{checks, reload, steam, token};
+use launch::{checks, reload};
 use tracing::{dispatcher, error, info};
 
 use crate::args::{ArgsError, Command, LaunchMode};
 use crate::failure::Failure;
-use crate::screen::{GameChoice, View};
-
-/// The time between two reads of the launch token's status.
-const POLL_INTERVAL: Duration = Duration::from_millis(250);
-
-/// The longest wait for the goal status. Steam can hold a launch for an update or a cloud sync.
-const TIMEOUT: Duration = Duration::from_mins(10);
+use crate::screen::game::{self, GameChoice};
+use crate::screen::{RunFailure, View};
+use crate::start::{POLL_INTERVAL, Start, TIMEOUT};
 
 fn main() -> ExitCode {
     let parsed = args::parse(env::args_os().skip(1));
@@ -98,13 +96,15 @@ const fn headset_mode(view: View) -> LaunchMode {
     }
 }
 
-/// Checks the runtime, starts the game in the token mode of the launch mode of `view` unless a
-/// game with the mod runs, and shows its frames in the headset as `view` says until the session
-/// ends. A failure's fix names that launch mode.
+/// Checks the runtime, then opens the headset session and, unless a game with the mod runs, starts
+/// the game in the token mode of the launch mode of `view` once the session runs. It shows the
+/// game's frames in the headset as `view` says until the session ends. A failure's fix names that
+/// launch mode.
 fn headset(view: View, root: &Root) -> Result<(), Failure> {
     let mode = headset_mode(view);
     let manifest = checks::check_runtime()?;
-    match screen::find_game()? {
+    let choice = game::find_game()?;
+    match choice {
         GameChoice::Running => {
             info!("a game with the mod runs, so the headset shows it and no game starts");
             if view == View::Immersive {
@@ -114,19 +114,19 @@ fn headset(view: View, root: &Root) -> Result<(), Failure> {
                 );
             }
         }
-        GameChoice::Start => start_game(mode.token_mode())?,
+        GameChoice::Start => checks::check_game_not_running()?,
     }
-    match screen::run(&manifest, root.path(), view) {
+    match screen::run(&manifest, root.path(), view, Start::new(choice, mode.token_mode())) {
         Ok(()) => Ok(()),
-        Err(cause) => Err(Failure::Headset { cause, mode }),
+        Err(RunFailure::Screen(cause)) => Err(Failure::Headset { cause, mode }),
+        Err(RunFailure::Start(error)) => Err(error.into()),
     }
 }
 
 /// Starts the game through Steam in `mode` and waits until it reports the mode's goal status.
 fn start_game(mode: Mode) -> Result<(), Failure> {
     checks::check_game_not_running()?;
-    let mapping = token::create(mode)?;
-    steam::start()?;
+    let mapping = start::begin(mode)?;
     status::wait_for_goal(&mapping, Goal::of(mode), POLL_INTERVAL, TIMEOUT)?;
     Ok(())
 }

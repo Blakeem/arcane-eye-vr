@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use diag::logging::{self, LogName};
 use gfx::region::RegionDraw;
+use ipc_layout::launch_token::Mode;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose};
 use ipc_layout::viewer_header::{
     AdapterLuid, EyeRect, FRAME_TAG_OFFSETS, TextureInfo, ViewerHeader,
@@ -29,14 +30,14 @@ use windows::Win32::Graphics::Dxgi::Common::{
 };
 use windows::core::HSTRING;
 use xr::error::{XrError, XrStep};
+use xr::session::Lifecycle;
 
 use super::eyes::{EyesError, draw_half};
+use super::game::{GAME_CHECK_INTERVAL, GameChoice, GameWatch, Header, SteamReport, choose_game};
 use super::menu::PlayerFile;
 use super::picture::{Link, Picture, Unshowable};
-use super::{
-    FrameError, GAME_CHECK_INTERVAL, GameChoice, GameWatch, Header, SteamReport, choose_game,
-    settings,
-};
+use super::{FrameError, settings};
+use crate::start::{Start, token_with_status};
 
 /// The pair's size: two columns per half and two rows.
 const PAIR: (u32, u32) = (4, 2);
@@ -305,6 +306,11 @@ fn registry_error() -> RegistryError {
     RegistryError { value, source: windows::core::Error::empty() }
 }
 
+/// The start of a session that shows a game that ran at its start, which waits for nothing.
+fn done() -> Start<()> {
+    Start::new(GameChoice::Running, Mode::DesktopStereo)
+}
+
 #[test]
 fn the_game_watch_reads_steam_at_most_once_per_interval() {
     let start = Instant::now();
@@ -314,12 +320,26 @@ fn the_game_watch_reads_steam_at_most_once_per_interval() {
         Ok(true)
     };
     let mut watch = GameWatch::new(start);
-    assert!(!watch.ended(start, running), "a running game");
+    assert!(!watch.ended(&done(), start, running), "a running game");
     let soon = start.checked_add(Duration::from_millis(10)).expect("a test time");
-    assert!(!watch.ended(soon, running));
+    assert!(!watch.ended(&done(), soon, running));
     assert_eq!(reads.get(), 1, "no read inside the interval");
     let later = start.checked_add(GAME_CHECK_INTERVAL).expect("a test time");
-    assert!(watch.ended(later, || Ok(false)), "Steam reports that the game ended");
+    assert!(watch.ended(&done(), later, || Ok(false)), "Steam reports that the game ended");
+}
+
+#[test]
+fn no_running_game_ends_no_screen_during_the_start_wait_and_ends_it_after_the_goal_status() {
+    let now = Instant::now();
+    let mut watch = GameWatch::new(now);
+    let mut start = Start::<()>::new(GameChoice::Start, Mode::DesktopStereo);
+    assert!(!watch.ended(&start, now, || Ok(false)), "no game before the session runs");
+    let first_present = |&(): &()| token_with_status(3);
+    start.pass(now, Lifecycle::Running, |_| Ok(()), first_present).expect("the start");
+    assert!(!watch.ended(&start, now, || Ok(false)), "no game during the start wait");
+    start.pass(now, Lifecycle::Running, |_| Ok(()), first_present).expect("the goal");
+    assert!(start.is_done());
+    assert!(watch.ended(&start, now, || Ok(false)), "the game ended after the goal status");
 }
 
 #[test]
@@ -341,7 +361,7 @@ fn the_screen_uses_a_running_game_only_when_steam_reports_it_and_the_header_is_m
 fn a_failed_read_of_steam_keeps_the_screen_running() {
     let start = Instant::now();
     let mut watch = GameWatch::new(start);
-    assert!(!watch.ended(start, || Err(registry_error())));
+    assert!(!watch.ended(&done(), start, || Err(registry_error())));
 }
 
 #[test]

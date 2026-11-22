@@ -21,11 +21,13 @@ const SCREEN_NAME: &str = "screen";
 pub(crate) enum LaunchMode {
     /// Starts the game in the desktop stereo mode and exits once the game drew its first frame.
     DesktopStereo,
-    /// Starts the game in the desktop stereo mode, or finds it running with the mod, then shows its
-    /// frames on a screen in the headset until the game or the OpenXR session ends.
+    /// Opens the OpenXR session, then starts the game in the desktop stereo mode once the session
+    /// runs, or finds it running with the mod, and shows its frames on a screen in the headset
+    /// until the game or the session ends.
     Screen,
-    /// Starts the game in the launch token's mode `vr`, or finds it running with the mod, then
-    /// shows its frames around the player in the headset until the game or the OpenXR session ends.
+    /// Opens the OpenXR session, then starts the game in the launch token's mode `vr` once the
+    /// session runs, or finds it running with the mod, and shows its frames around the player in
+    /// the headset until the game or the session ends.
     Immersive,
 }
 
