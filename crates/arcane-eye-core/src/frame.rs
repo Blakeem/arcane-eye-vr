@@ -3,7 +3,8 @@
 //! On the first frame it takes the device and the immediate context. On every frame it tracks the
 //! swapchain, its device and its back buffer, and hands the frame with its tag to the debug viewer
 //! link, with the game source when the dev flag `viewer.source` names one. Before that hand-over the
-//! UI layer draws into the back buffer. It logs once which feature's failure made the stereo pair
+//! UI layer draws into the back buffer and publishes the frame's depth map, or with no UI layer the
+//! handler publishes a map of no cell. It logs once which feature's failure made the stereo pair
 //! flat. It times each call and logs the perf summary line once per window of frames, after the
 //! lines of `lines`. [`on_failed_present_call`] is its work after `present-hook` failed.
 //!
@@ -307,19 +308,39 @@ fn on_frame(
         "first present"
     );
     if let Some(devices) = &state.devices {
-        if let Some(layer) = &mut state.ui_layer {
-            let target = Target { swapchain, devices, size: back_buffer, window };
-            let screen = state.viewer.parallel_share(now);
-            let offset = state.vr.depth_offset(input.stereo, screen);
-            let eye_m = state.vr.depth_eye_m(input.stereo);
-            let (camera, mode) = (input.camera, state.vr.mode());
-            let depth = DepthInput { offset, eye_m, camera, now, mode };
-            layer.on_frame(input.health, input.next, &depth, &target);
-        }
+        let target = Target { swapchain, devices, size: back_buffer, window };
+        let layer = state.ui_layer.as_mut();
+        draw_and_map(layer, &mut state.viewer, &state.vr, &target, (input, now));
         let tag = state.vr.tag(input.head_sequence, input.camera);
         state.viewer.on_frame(swapchain, devices, state.game_source.as_mut(), tag);
     }
     if first { FrameReport::FirstPresent } else { FrameReport::Later }
+}
+
+/// Runs the UI layer's frame on `target` with the depth input of `vr` and publishes the frame's
+/// depth map into the section of `viewer` while a viewing program's heartbeat runs. A core with no
+/// UI layer writes a map of no cell, so a viewing program that kept the section open from an
+/// earlier core never reads that core's last map as this frame's.
+fn draw_and_map(
+    ui_layer: Option<&mut UiLayer>,
+    viewer: &mut ViewerLink,
+    vr: &VrView,
+    target: &Target<'_>,
+    (input, now): (FrameInput<'_>, Instant),
+) {
+    let Some(layer) = ui_layer else {
+        if let Some(sink) = viewer.map_sink(now) {
+            sink.section.write_empty(sink.present);
+        }
+        return;
+    };
+    let screen = viewer.parallel_share(now);
+    let offset = vr.depth_offset(input.stereo, screen);
+    let eye_m = vr.depth_eye_m(input.stereo);
+    let (camera, mode) = (input.camera, vr.mode());
+    let depth = DepthInput { offset, eye_m, camera, now, mode };
+    layer.on_frame(input.health, input.next, &depth, target);
+    layer.publish_map(input.health, target, &depth, viewer.map_sink(now));
 }
 
 /// The report of a frame the handler skips before the UI layer runs. The UI layer shows the Windows

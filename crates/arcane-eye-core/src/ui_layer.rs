@@ -4,9 +4,10 @@
 //!
 //! ```text
 //! PRESENT CALL SITE, render thread, before the debug viewer's copy
-//!   [composite stage]   found each frame: pipeline global, special view, stage array, vtable
-//!   [UI enable byte]    read. The composite job of this frame read the same value, since the core
-//!                       writes the byte only here
+//!   [composite stage]   found each frame: pipeline global, special view, stage array, vtable, in
+//!                       `stage`
+//!   [UI enable byte]    read, in `stage`. The composite job of this frame read the same value,
+//!                       since the core writes the byte only here
 //!   [decide]            the pair, the move and the UI texture the core draws into this frame,
 //!                       whether Windows shows its cursor over a drawn cursor, and what the core
 //!                       writes for the next frame
@@ -24,7 +25,9 @@
 //!                       pointer is in the game window's client area, moved by the cursor's columns
 //!   [counter]           the Windows cursor hidden under a drawn cursor as decided, and shown in a
 //!                       frame with no drawn cursor, in `cursor`
-//!   [write]             0 while the feature runs, the game's value when it stops
+//!   [write]             0 while the feature runs, the game's value when it stops, in `stage`
+//!   [depth map]         how deep each cell of the left half looks after the draw, for a viewing
+//!                       program, in `depth_map`
 //! ```
 //!
 //! The feature has no hook of its own. The frame handler runs it once per frame. The engine renders
@@ -40,7 +43,9 @@
 
 pub(crate) mod cursor;
 mod decide;
+pub(crate) mod depth_map;
 pub(crate) mod depth_offset;
+mod stage;
 mod target;
 pub(crate) mod ui_depth;
 
@@ -50,12 +55,9 @@ use std::time::Duration;
 use diag::health::{Feature, Health};
 use diag::rate::RateLimit;
 use diag::warn_every;
-use game_bindings::composite_stage::CompositeStage;
-use game_bindings::pipeline::Pipeline;
-use game_bindings::render_view::RenderView;
 use game_bindings::signatures::{G_PIPELINE, VT_COMPOSITE_STAGE};
 use game_bindings::texture_table::TextureKey;
-use game_mem::{GameAddr, try_read};
+use game_mem::GameAddr;
 use gfx::layer::LayerDraw;
 use settings::dev::SecondView;
 use stereo_core::eye::EyeScale;
@@ -63,7 +65,9 @@ use tracing::{info, warn};
 
 use self::cursor::counter::Marked;
 use self::cursor::{Aim, Canvas, Cursor};
-use self::decide::{Draw, Picture, Seen, Step, Write, crossed, depth_shift, halves, step};
+use self::decide::{Draw, Picture, Step, Write, crossed, depth_shift, drawn_offset, halves, step};
+use self::depth_map::{DepthMap, Drawn, FrameTextures, MapFrame, MapSink, MapSources};
+use self::stage::EnableByte;
 pub(crate) use self::target::{DrawFault, Target};
 use self::ui_depth::{Columns, CursorReport, DepthInput, DepthReport, DrawnUi, UiDepth};
 use crate::config::Config;
@@ -72,14 +76,10 @@ use crate::game_source::GameSource;
 use crate::install::{GameCode, LocateError};
 use crate::pair::PairState;
 use crate::present;
-use crate::raw::composite_stage::stage_writes;
 use crate::raw::{self, BackBuffer};
 
 /// The shortest time between two warnings of one call site.
 pub(crate) const LOG_PERIOD: Duration = Duration::from_secs(10);
-
-/// The UI enable byte that keeps the game's composite job from drawing the UI texture.
-const UI_OFF: u8 = 0;
 
 /// Why the UI layer is not installed.
 #[derive(Debug, thiserror::Error)]
@@ -90,29 +90,22 @@ enum UiLayerError {
     Locate(#[from] LocateError),
 }
 
-/// A composite stage whose UI enable byte the core holds at 0, and the value the game had there.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Cleared {
-    stage: CompositeStage,
-    game_value: u8,
-}
-
 /// The feature's render thread state, held in the frame state.
 pub(crate) struct UiLayer {
-    /// The global that holds the render pipeline.
-    pipeline: GameAddr,
-    /// The composite stage's vtable.
-    vtable: GameAddr,
+    byte: EnableByte,
     source: GameSource,
     /// The layer draw of the device that the last drawn frame had, dropped when the feature stops.
     layer: Option<LayerDraw>,
     /// The layout of the frame at the next Present call site.
     next: Layout,
-    cleared: Option<Cleared>,
     cursor: Cursor,
     depth: UiDepth,
+    /// The draw of this frame that ran to its end, or `None` for none.
+    drawn: Option<Drawn>,
+    /// The textures this frame's draw read, until its depth map takes them.
+    textures: FrameTextures,
+    map: DepthMap,
     stage_log: RateLimit,
-    write_log: RateLimit,
     cursor_log: RateLimit,
 }
 
@@ -127,7 +120,7 @@ pub(crate) fn install(health: &Health, code: &GameCode, config: Config) -> Optio
     match locate(health, code, config) {
         Ok(layer) => {
             health.install_ok(Feature::UiLayer);
-            info!(vtable = format_args!("{:#x}", layer.vtable.get()), "ui layer installed");
+            info!(vtable = format_args!("{:#x}", layer.byte.vtable().get()), "ui layer installed");
             Some(layer)
         }
         Err(error) => {
@@ -151,16 +144,16 @@ impl UiLayer {
     /// `vtable` and brings the UI forward once a nearer scene held for `forward_wait`.
     pub(crate) fn new(pipeline: GameAddr, vtable: GameAddr, forward_wait: Duration) -> Self {
         Self {
-            pipeline,
-            vtable,
+            byte: EnableByte::new(pipeline, vtable),
             source: GameSource::new(TextureKey::UI, pipeline),
             layer: None,
             next: Layout::MainOnly,
-            cleared: None,
             cursor: Cursor::default(),
             depth: UiDepth::new(pipeline, forward_wait),
+            drawn: None,
+            textures: FrameTextures::default(),
+            map: DepthMap::new(),
             stage_log: RateLimit::default(),
-            write_log: RateLimit::default(),
             cursor_log: RateLimit::default(),
         }
     }
@@ -179,6 +172,8 @@ impl UiLayer {
     ) {
         let layout = mem::replace(&mut self.next, next);
         self.depth.keep_offset(input.offset);
+        self.drawn = None;
+        self.textures = FrameTextures::default();
         if PairState::of(health).is_flat() {
             self.release();
             return;
@@ -233,8 +228,8 @@ impl UiLayer {
             Layout::MainOnly => Picture::Flat,
         };
         let shift = depth_shift(target.size.width, target.size.height, input.offset);
-        let read = self.stage().and_then(|stage| Some((stage, stage.ui_enabled()?)));
-        let seen = read.map(|(stage, enabled)| self.see(stage, enabled));
+        let read = self.byte.read();
+        let seen = read.map(|read| read.seen);
         if seen.is_none() && picture == Picture::SideBySide {
             warn_every!(
                 self.stage_log,
@@ -248,34 +243,11 @@ impl UiLayer {
         }
         let aim = self.cursor.aim(target.window);
         self.draw(step, aim, target, input)?;
-        if let (Write::Clear, Some((stage, enabled))) = (step.write, read) {
-            self.write(stage, UI_OFF);
-            self.cleared = Some(Cleared { stage, game_value: enabled });
+        self.drawn = Some(Drawn { draw: step.draw, seen });
+        if let (Write::Clear, Some(read)) = (step.write, read) {
+            self.byte.clear(read);
         }
         Ok(())
-    }
-
-    /// Who drew the UI of this frame, from the byte `enabled` of `stage`. Forgets a held 0 that the
-    /// game overwrote or that belongs to a stage the pipeline no longer holds.
-    fn see(&mut self, stage: CompositeStage, enabled: u8) -> Seen {
-        let held = self.cleared.filter(|cleared| cleared.stage == stage && enabled == UI_OFF);
-        self.cleared = held;
-        match (enabled, held) {
-            (UI_OFF, Some(_)) => Seen::LeftToCore,
-            (UI_OFF, None) => Seen::OffByGame,
-            _ => Seen::DrawnByGame,
-        }
-    }
-
-    /// The composite stage of the pipeline's special view, or `None` when a read fails or the view
-    /// holds none.
-    fn stage(&self) -> Option<CompositeStage> {
-        let pipeline = try_read::<usize>(self.pipeline)?;
-        let views = Pipeline::new(GameAddr::new(pipeline)).views()?;
-        if views.special.get() == 0 {
-            return None;
-        }
-        CompositeStage::of(RenderView::new(views.special), self.vtable)
     }
 
     /// Runs the draw of `step` and then the cursor of `aim` on each half of the back buffer, then
@@ -314,7 +286,8 @@ impl UiLayer {
     /// frame into each half, then the cursor of `aim` into each half, each moved by its columns the
     /// UI depth gives a side by side frame. The UI texture is read before the pair and the
     /// move, so a failed read leaves the frame as the game drew it. A fault of the cursor's read,
-    /// conversion or placed draw skips only the cursor. Returns whether the cursor was drawn.
+    /// conversion or placed draw skips only the cursor. Keeps the UI texture and the distance
+    /// texture the frame read for its depth map. Returns whether the cursor was drawn.
     fn draw_halves(
         &mut self,
         draw: Draw,
@@ -338,8 +311,11 @@ impl UiLayer {
             Some(ui) if draw.draws_side_by_side_ui() => {
                 let [left, _] = rects;
                 let pointer = aim.map(|aim| aim.spot.shares());
-                let drawn = DrawnUi { ui, half_width: left.width, pointer };
-                self.depth.on_frame(target.devices, input, &drawn)
+                let offset = drawn_offset(draw);
+                let drawn = DrawnUi { ui, half_width: left.width, offset, pointer };
+                let followed = self.depth.on_frame(target.devices, input, &drawn);
+                self.textures.distances = followed.distances;
+                followed.columns
             }
             _ => Columns::SURFACE,
         };
@@ -354,40 +330,61 @@ impl UiLayer {
             layer.draw_copy_placed(context, &back_buffer, shift.source, &[shift.picture])?;
             layer.draw_black(context, &back_buffer, &[shift.uncovered])?;
         }
-        if let Some(ui) = ui {
-            layer.draw_placed(context, &back_buffer, &ui, &crossed(&rects, columns.ui))?;
+        if let Some(ui) = &ui {
+            layer.draw_placed(context, &back_buffer, ui, &crossed(&rects, columns.ui))?;
         }
+        self.textures.ui = ui;
         let Some(aim) = aim else { return Ok(Marked::Nothing) };
         let moves = columns.cursor;
         let canvas = Canvas { context, back_buffer: &back_buffer, halves: &rects, moves };
         Ok(self.cursor.draw(layer, &canvas, aim))
     }
 
-    /// Writes `enabled` to the UI enable byte of `stage`. The game's composite job of the next frame
-    /// reads it.
-    fn write(&mut self, stage: CompositeStage, enabled: u8) {
-        if let Err(error) = CompositeStage::write_ui_enabled(stage_writes(stage), enabled) {
-            warn_every!(
-                self.write_log,
-                LOG_PERIOD,
-                error = %error,
-                "ui layer write of the UI enable byte failed"
-            );
-        }
-    }
-
-    /// Drops the layer draw, whose copy of the back buffer holds video memory, the cursor's texture
-    /// and the UI depth's reads, sets the UI depth's values in use to no UI disparity and the full
-    /// eye distance, gives the cursor display counter the game's value back, and gives the UI enable
-    /// byte the game's value back when the core still holds it at 0 in the stage the pipeline holds
-    /// now. The frame handler also runs it after the Present call-site hook failed.
+    /// Drops the layer draw, whose copy of the back buffer holds video memory, the cursor's texture,
+    /// the UI depth's reads and the depth map's objects, sets the UI depth's values in use to no UI
+    /// disparity and the full eye distance, gives the cursor display counter the game's value back,
+    /// and gives the UI enable byte the game's value back when the core still holds it at 0 in the
+    /// stage the pipeline holds now. The frame handler also runs it after the Present call-site
+    /// hook failed.
     pub(crate) fn release(&mut self) {
         self.layer = None;
         self.depth.release();
+        self.map.release();
         self.cursor.release();
-        let Some(cleared) = self.cleared.take() else { return };
-        if self.stage() == Some(cleared.stage) && cleared.stage.ui_enabled() == Some(UI_OFF) {
-            self.write(cleared.stage, cleared.game_value);
+        self.byte.give_back();
+    }
+
+    /// The depth map of the frame the UI layer ran on with `input`, through the devices of `target`
+    /// and at its size, into the section `sink` holds. With no sink it forgets the maps that wait
+    /// for the GPU.
+    ///
+    /// The map runs inside the feature's `catch_unwind`, so a panic in it latches `ui-layer` off. A
+    /// feature that is off publishes a map of no cell. The frame's textures are dropped here.
+    pub(crate) fn publish_map(
+        &mut self,
+        health: &Health,
+        target: &Target<'_>,
+        input: &DepthInput,
+        sink: Option<MapSink<'_>>,
+    ) {
+        let textures = mem::take(&mut self.textures);
+        let Some(sink) = sink else {
+            self.map.forget();
+            return;
+        };
+        let frame = MapFrame {
+            pair: PairState::of(health),
+            drawn: self.drawn,
+            devices: target.devices,
+            size: target.size,
+            input,
+        };
+        let sources = MapSources { textures, depth: &mut self.depth };
+        let map = &mut self.map;
+        present::guarded(health, Feature::UiLayer, || map.publish(&sink, sources, &frame));
+        if !health.is_running(Feature::UiLayer) {
+            sink.section.write_empty(sink.present);
+            self.release();
         }
     }
 }

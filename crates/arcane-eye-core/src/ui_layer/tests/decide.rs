@@ -1,12 +1,16 @@
 //! The UI layer's decisions for each pair of picture and UI enable byte state, and the halves.
 
 use gfx::layer::{Area, Placement, Rect};
+use gfx::pointer::Pointed;
 use ipc_layout::viewer_header::screen::ParallelShare;
 use settings::player::DepthOffsetPercent;
 
 use crate::ui_layer::cursor::counter::WindowsCursor;
-use crate::ui_layer::decide::{Draw, Picture, Seen, Shift, Step, Write, depth_shift, halves, step};
+use crate::ui_layer::decide::{
+    Draw, Moves, Picture, Seen, Shift, Step, Write, depth_shift, drawn_offset, halves, step,
+};
 use crate::ui_layer::depth_offset::DepthOffset;
+use crate::ui_layer::ui_depth::decide::cursor_moves;
 
 fn depth(percent: f32) -> DepthOffset {
     DepthOffset::of_setting(DepthOffsetPercent::try_from(percent).expect("an offset in range"))
@@ -153,6 +157,30 @@ fn a_move_that_rounds_to_0_columns_or_a_size_without_halves_is_no_move() {
     assert_eq!(depth_shift(64, 32, depth(1.5)), None, "0.48 columns round to 0");
     assert_eq!(depth_shift(0, 32, depth(5.0)), None);
     assert_eq!(depth_shift(65_536, 32, depth(5.0)), None);
+}
+
+#[test]
+fn the_depth_offset_of_a_frame_is_the_entire_columns_its_move_drew() {
+    let shift = depth_shift(2560, 1600, depth(1.5)).expect("a move");
+
+    // 1.5 percent of a half of 1280 columns is 19.2 columns, which the move rounds to 19.
+    let moved = drawn_offset(Draw::MoveThenUi(shift));
+    assert!((moved - 19.0 / 1280.0).abs() < 1e-7, "{moved}");
+    assert!((drawn_offset(Draw::Move(shift)) - moved).abs() < f32::EPSILON);
+    for drawn in [Draw::Nothing, Draw::Ui, Draw::Pair, Draw::PairThenUi] {
+        assert!(drawn_offset(drawn).abs() < f32::EPSILON, "{drawn:?} moves nothing");
+    }
+}
+
+#[test]
+fn a_cursor_over_the_scene_moves_with_the_entire_columns_the_move_drew() {
+    let shift = depth_shift(2560, 1600, depth(1.5)).expect("a 19-column move");
+    let over_scene = Some(Pointed { alpha: 0.1, hit: 0.6 / 1280.0 });
+
+    let moves = cursor_moves(over_scene, 5, drawn_offset(Draw::Move(shift)), 1280);
+
+    // The hit is 0.6 columns. 19 less 0.6 rounds to 18, where 19.2 less 0.6 would round to 19.
+    assert_eq!(moves, Moves { left: 1, right: 18 });
 }
 
 #[test]

@@ -24,6 +24,7 @@ use super::{HeaderView, adapter_luid, texture_desc};
 use crate::publish::{Outcome, Present, Publisher, ViewNames};
 
 mod canvas;
+mod depth_map;
 mod failures;
 mod layer;
 mod mesh;
@@ -59,8 +60,8 @@ fn warp() -> Gpu {
 }
 
 fn names(test: &str) -> ViewNames {
-    let prefix = format!(r"Local\arcane-eye-vr-gfx-test-{}-{test}", process::id());
-    ViewNames { mapping: format!("{prefix}-view"), texture: format!("{prefix}-texture") }
+    let name = |part| format!(r"Local\arcane-eye-vr-gfx-test-{}-{test}-{part}", process::id());
+    ViewNames { mapping: name("view"), texture: name("texture"), depth_map: name("depth") }
 }
 
 fn desc(width: u32, height: u32, samples: u32) -> D3D11_TEXTURE2D_DESC {

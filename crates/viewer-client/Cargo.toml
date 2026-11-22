@@ -1,6 +1,6 @@
 [package]
 name = "viewer-client"
-description = "The reading side of the viewer link: the header view, the heartbeat, the shared texture copy and the frame read."
+description = "The reading side of the viewer link: the header view, the heartbeat, the shared texture copy, the frame read and the depth map read."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true

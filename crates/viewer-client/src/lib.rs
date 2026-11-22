@@ -4,8 +4,10 @@
 //! headset, and a test runner reads them back to save them. This crate owns the header view, the
 //! heartbeat thread, the head pose write, the screen write, the device on the core's adapter, the
 //! open of the shared texture, its private copy, the copy out of it or one region of it under its
-//! keyed mutex and the frame read. The `raw` module and its submodules hold every unsafe Windows call.
+//! keyed mutex, the frame read and the depth map read. The `raw` module and its submodules hold
+//! every unsafe Windows call.
 
+pub mod depth_map;
 pub mod frame;
 pub mod header;
 pub mod heartbeat;

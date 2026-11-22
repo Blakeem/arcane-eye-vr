@@ -12,8 +12,8 @@ Texture2D<float> distances : register(t1);
 static const uint SPACING = 8;
 
 // A layer texel covers the scene when its alpha is above this value. `COVERING` in
-// crates/arcane-eye-core/src/ui_layer/ui_depth/decide.rs judges the pointer's UI texel with the
-// same value.
+// crates/arcane-eye-core/src/ui_layer/ui_depth/decide.rs judges the pointer's UI texel and
+// `COVERING` in shaders/depth_map.slang judges the depth map's cells with the same value.
 static const float COVERING = 0.25;
 
 // The column's distance when no texel of it covers, below every distance.

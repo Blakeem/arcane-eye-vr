@@ -3,6 +3,7 @@
 mod camera;
 mod depth;
 mod failed;
+mod map;
 mod source;
 mod vr;
 
@@ -261,7 +262,7 @@ fn a_published_frame_keeps_no_back_buffer_reference_and_a_resize_recreates_the_t
 fn a_viewer_header_that_cannot_be_created_is_logged_once_and_the_frames_go_on() {
     let test = TestSwapchain::new(64, 64);
     let mapping = r"NoSuchNamespace\arcane-eye-vr-view".to_owned();
-    let names = ViewNames { mapping, texture: String::new() };
+    let names = ViewNames { mapping, texture: String::new(), depth_map: String::new() };
     let mut state = FrameState { viewer: ViewerLink::new(names), ..FrameState::default() };
     let mut reports = Vec::new();
     let lines = log_lines("viewer-setup", || {

@@ -7,7 +7,7 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::core::HRESULT;
 
-use super::row::{Row, RowDraw};
+use super::row::{Size, Target, TargetDraw};
 use super::{CreateStep, made};
 use crate::pointer::{PointerError, PointerStep, Probe};
 
@@ -33,7 +33,7 @@ pub(crate) struct Pipeline {
     pixel: ID3D11PixelShader,
     constants: ID3D11Buffer,
     /// The row of one texel the draw writes the read's two values into.
-    row: Row,
+    row: Target,
     device: ID3D11Device,
 }
 
@@ -60,7 +60,8 @@ impl Pipeline {
         let constants_made =
             unsafe { device.CreateBuffer(&raw const desc, None, Some(&raw mut constants)) };
         let constants = made(PointerStep::Constants, constants_made, constants)?;
-        let row = Row::create(device, 1, PointerStep::Row, PointerStep::RowView)?;
+        let one = Size::new(PointerStep::Row, 1, 1)?;
+        let row = Target::create(device, one, PointerStep::Row, PointerStep::RowView)?;
         Ok(Self { vertex, pixel, constants, row, device: device.clone() })
     }
 
@@ -68,7 +69,7 @@ impl Pipeline {
         &self.device
     }
 
-    pub(crate) const fn row(&self) -> &Row {
+    pub(crate) const fn row(&self) -> &Target {
         &self.row
     }
 
@@ -95,7 +96,7 @@ impl Pipeline {
                 0,
             );
         }
-        let draw = RowDraw {
+        let draw = TargetDraw {
             vertex: &self.vertex,
             pixel: &self.pixel,
             resources: [Some(layer.clone()), Some(distances.clone())],

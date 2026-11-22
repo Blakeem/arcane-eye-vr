@@ -5,6 +5,7 @@ mod cursor;
 mod cursor_depth;
 mod decide;
 mod depth;
+mod depth_map;
 mod flat;
 mod pair;
 mod ui_depth;

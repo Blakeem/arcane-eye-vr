@@ -80,7 +80,7 @@ impl CursorDepth {
     }
 
     /// The cursor's moves in each half of `half_width` columns, from the newest result, the UI's
-    /// columns `ui_columns` and the depth offset `offset` as a share.
+    /// columns `ui_columns` and the depth offset `offset` the frame's move drew, as a share.
     pub(super) fn moves(&mut self, ui_columns: u16, offset: f32, half_width: u16) -> Moves {
         self.moves = cursor_moves(self.newest, ui_columns, offset, half_width);
         self.moves

@@ -34,7 +34,7 @@
 //! layer and the stereo pair running.
 
 mod cursor_depth;
-mod decide;
+pub(super) mod decide;
 
 use std::mem;
 use std::time::{Duration, Instant};
@@ -112,6 +112,9 @@ pub(crate) struct DrawnUi<'frame> {
     pub(crate) ui: &'frame ID3D11Texture2D,
     /// The width of each half of the back buffer in columns.
     pub(crate) half_width: u16,
+    /// The depth offset the frame's move drew, as a share of the right half's width: its entire
+    /// columns, and 0 in a frame with no move.
+    pub(crate) offset: f32,
     /// The pointer's place as shares of the client area's width and height, or `None` in a frame
     /// that draws no cursor.
     pub(crate) pointer: Option<[f32; 2]>,
@@ -131,6 +134,14 @@ impl Columns {
     pub(crate) const SURFACE: Self = Self { ui: 0, cursor: Moves::ZERO };
 }
 
+/// What the UI depth gives a side by side frame that draws the UI: the columns the UI and the
+/// cursor move by, and the outcome of its read of the distance texture, or `None` when it read
+/// none.
+pub(crate) struct Followed {
+    pub(crate) columns: Columns,
+    pub(crate) distances: Option<Result<ID3D11Texture2D, DistanceSkip>>,
+}
+
 /// A frame's main view camera and its usable distance texture.
 struct Scene {
     camera: Camera,
@@ -139,7 +150,7 @@ struct Scene {
 
 /// Why a frame's distance texture was not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-enum DistanceSkip {
+pub(crate) enum DistanceSkip {
     #[error(transparent)]
     Source(#[from] SourceFault),
     #[error(transparent)]
@@ -224,16 +235,22 @@ impl UiDepth {
         self.cursor.report()
     }
 
+    /// The eye scale at which the eye cameras rendered the frame the UI layer draws now.
+    pub(crate) const fn rendered_eye_scale(&self) -> EyeScale {
+        self.rendered
+    }
+
     /// A side by side frame that draws `drawn` into each half through `devices`: follows the
     /// newest results, starts this frame's reads and returns the columns the UI and the cursor move
-    /// by in each half.
+    /// by in each half, with the outcome of the frame's read of the distance texture.
     pub(crate) fn on_frame(
         &mut self,
         devices: &Devices,
         input: &DepthInput,
         drawn: &DrawnUi<'_>,
-    ) -> Columns {
-        let scene = self.scene(input, drawn);
+    ) -> Followed {
+        let read = self.read_distances(input, drawn);
+        let scene = scene_of(input, read.as_ref());
         if let (Run::Running, Some(scene)) = (self.run, &scene) {
             if let Err(error) = self.measure(devices, drawn.ui, input, scene) {
                 self.stop(error);
@@ -246,8 +263,9 @@ impl UiDepth {
         self.columns = ui_columns(self.following.in_use.disparity, drawn.half_width);
         let start = scene.as_ref().and_then(|scene| self.cursor_start(input, drawn, scene));
         self.cursor.read(devices, start);
-        let cursor = self.cursor.moves(self.columns, input.offset.share(), drawn.half_width);
-        Columns { ui: self.columns, cursor }
+        let cursor = self.cursor.moves(self.columns, drawn.offset, drawn.half_width);
+        let columns = Columns { ui: self.columns, cursor };
+        Followed { columns, distances: read }
     }
 
     /// The start of the pointer read of `scene` under `drawn`'s UI, or `None` in a frame with no
@@ -291,16 +309,28 @@ impl UiDepth {
         }
     }
 
-    /// The frame's camera and distance texture, or `None` in a frame with no camera, with a
-    /// missing or unusable distance texture, or with no read that runs and needs them.
-    fn scene(&mut self, input: &DepthInput, drawn: &DrawnUi<'_>) -> Option<Scene> {
+    /// The outcome of the frame's read of its distance texture, or `None` in a frame with no
+    /// camera or with no read that runs and needs it. A missing or unusable distance texture logs
+    /// a rate-limited warning.
+    fn read_distances(
+        &mut self,
+        input: &DepthInput,
+        drawn: &DrawnUi<'_>,
+    ) -> Option<Result<ID3D11Texture2D, DistanceSkip>> {
         let cursor_reads = drawn.pointer.is_some() && self.cursor.runs();
-        if self.run == Run::Stopped && !cursor_reads {
+        if (self.run == Run::Stopped && !cursor_reads) || input.camera.is_none() {
             return None;
         }
-        let camera = input.camera?;
-        let distances = self.usable_distances()?;
-        Some(Scene { camera, distances })
+        let read = self.distances();
+        if let Err(skip) = &read {
+            warn_every!(
+                self.texture_log,
+                LOG_PERIOD,
+                skip = %skip,
+                "ui depth read no distance texture, so the UI and the cursor keep their depth"
+            );
+        }
+        Some(read)
     }
 
     /// Follows the newest result of the nearest read and starts this frame's read of `scene` under
@@ -329,24 +359,8 @@ impl UiDepth {
         read.start(context, ui, &scene.distances, scene.camera.far)
     }
 
-    /// The frame's distance texture, or `None` with a rate-limited warning when it is missing or
-    /// unusable.
-    fn usable_distances(&mut self) -> Option<ID3D11Texture2D> {
-        match self.distances() {
-            Ok(distances) => Some(distances),
-            Err(skip) => {
-                warn_every!(
-                    self.texture_log,
-                    LOG_PERIOD,
-                    skip = %skip,
-                    "ui depth read no distance texture, so the UI and the cursor keep their depth"
-                );
-                None
-            }
-        }
-    }
-
-    fn distances(&mut self) -> Result<ID3D11Texture2D, DistanceSkip> {
+    /// The frame's distance texture, which the depth map also reads.
+    pub(super) fn distances(&mut self) -> Result<ID3D11Texture2D, DistanceSkip> {
         let distances = self.distances.texture()?;
         check_distance(&distances)?;
         Ok(distances)
@@ -365,5 +379,17 @@ impl UiDepth {
         self.run = Run::Stopped;
         self.forget();
         self.read = None;
+    }
+}
+
+/// The frame's camera of `input` and the distance texture `read` gave, or `None` when either is
+/// missing.
+fn scene_of(
+    input: &DepthInput,
+    read: Option<&Result<ID3D11Texture2D, DistanceSkip>>,
+) -> Option<Scene> {
+    match (input.camera, read) {
+        (Some(camera), Some(Ok(distances))) => Some(Scene { camera, distances: distances.clone() }),
+        _ => None,
     }
 }

@@ -27,7 +27,7 @@ struct Shader {
     output: &'static str,
 }
 
-const SHADERS: [Shader; 10] = [
+const SHADERS: [Shader; 12] = [
     Shader {
         source: "layer.slang",
         entry: "vertex_main",
@@ -83,6 +83,18 @@ const SHADERS: [Shader; 10] = [
         output: "mesh.vs.dxbc",
     },
     Shader { source: "mesh.slang", entry: "pixel_main", profile: "ps_5_0", output: "mesh.ps.dxbc" },
+    Shader {
+        source: "depth_map.slang",
+        entry: "vertex_main",
+        profile: "vs_5_0",
+        output: "depth_map.vs.dxbc",
+    },
+    Shader {
+        source: "depth_map.slang",
+        entry: "pixel_main",
+        profile: "ps_5_0",
+        output: "depth_map.ps.dxbc",
+    },
 ];
 
 #[derive(Debug, thiserror::Error)]

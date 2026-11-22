@@ -20,7 +20,7 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_R32_FLOAT}
 use windows::core::HRESULT;
 
 use crate::raw::nearest::Pipeline;
-use crate::raw::row::{Row, Texel, sampled_view};
+use crate::raw::row::{ReadSteps, Size, Target, Texel, sampled_view};
 use crate::raw::texture_desc;
 use crate::readback::Readback;
 
@@ -41,6 +41,7 @@ pub enum NearestStep {
     ColumnsView,
     Staging,
     Map,
+    Rows,
 }
 
 impl NearestStep {
@@ -54,6 +55,7 @@ impl NearestStep {
             Self::ColumnsView => "creating a view of the row texture of the grid columns",
             Self::Staging => "creating a staging texture of the grid columns",
             Self::Map => "mapping a staging texture of the grid columns",
+            Self::Rows => "reading the row of a mapped staging texture of the grid columns",
         }
     }
 }
@@ -118,7 +120,7 @@ pub fn check_distance(texture: &ID3D11Texture2D) -> Result<(), DistanceFault> {
 pub struct NearestRead {
     pipeline: Pipeline,
     /// The row texture of the last start, made again when the grid's width changes.
-    columns: Option<Row>,
+    columns: Option<Target>,
     /// The staging textures and the waiting reads, each with the scale its start named.
     readback: Readback<f32>,
 }
@@ -162,11 +164,12 @@ impl NearestRead {
         }
         let device = self.pipeline.device();
         let width = texture_desc(layer).Width.div_ceil(SPACING);
+        let size = Size::new(NearestStep::Columns, width, 1)?;
         let layer_view = sampled_view(device, NearestStep::LayerView, layer)?;
         let distance_view = sampled_view(device, NearestStep::DistanceView, distances)?;
-        let columns = match self.columns.take().filter(|columns| columns.width() == width) {
+        let columns = match self.columns.take().filter(|columns| columns.size() == size) {
             Some(columns) => columns,
-            None => Row::create(device, width, NearestStep::Columns, NearestStep::ColumnsView)?,
+            None => Target::create(device, size, NearestStep::Columns, NearestStep::ColumnsView)?,
         };
         let columns = self.columns.insert(columns);
         self.pipeline.draw(context, columns, &layer_view, &distance_view);
@@ -180,12 +183,15 @@ impl NearestRead {
     /// # Errors
     ///
     /// Returns [`NearestStep::Map`] with the code of a map that failed for another reason than a
-    /// GPU that still draws, such as a removed device.
+    /// GPU that still draws, such as a removed device, and [`NearestStep::Rows`] for a mapped
+    /// staging texture whose row pitch cannot hold its row.
     pub fn newest(
         &mut self,
         context: &ID3D11DeviceContext,
     ) -> Result<Option<Nearest>, NearestError> {
-        self.readback.newest(context, NearestStep::Map, found)
+        let steps = ReadSteps { map: NearestStep::Map, rows: NearestStep::Rows };
+        self.readback
+            .newest(context, steps, |texels, scale| found(texels.row(0).unwrap_or_default(), scale))
     }
 
     /// Forgets every read that waits for the GPU, so [`Self::newest`] gives no result of a read

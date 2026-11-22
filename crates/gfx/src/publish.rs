@@ -5,10 +5,10 @@
 //! every frame it handles, so the present number of each published frame shows the frames it did
 //! not publish. It writes each published frame's tag beside the present number.
 //! [`Publisher::head_pose`] reads the head pose and [`Publisher::parallel_share`] the screen's
-//! parallel share that the viewer writes while the same heartbeat rule finds the viewer running.
-//! With no viewer, each of [`Publisher::on_frame`], [`Publisher::head_pose`] and
-//! [`Publisher::parallel_share`] costs one read of the header. The heartbeat's decision is in
-//! `publish/heartbeat.rs`, the head pose's in `publish/head.rs` and the share's in
+//! parallel share that the viewer writes, and [`Publisher::next_present`] gives the next frame's
+//! present number, while the same heartbeat rule finds the viewer running. With no viewer, each of
+//! these three calls and [`Publisher::on_frame`] costs one read of the header. The heartbeat's
+//! decision is in `publish/heartbeat.rs`, the head pose's in `publish/head.rs` and the share's in
 //! `publish/screen.rs`.
 
 mod head;
@@ -22,7 +22,7 @@ use ipc_layout::viewer_header::pose::{FrameTag, HeadSample};
 use ipc_layout::viewer_header::screen::ParallelShare;
 use ipc_layout::viewer_header::{
     self, Acquire, EyeRect, FRAME_OFFSET, FRAME_TAG_OFFSETS, PRESENT_OFFSET,
-    SCREEN_SEQUENCE_OFFSET, STALE_AFTER, TextureInfo, ViewerHeader, WIDTH_OFFSET,
+    SCREEN_SEQUENCE_OFFSET, STALE_AFTER, TextureInfo, ViewerHeader, WIDTH_OFFSET, depth_map,
 };
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D};
 use windows::core::{HRESULT, HSTRING};
@@ -32,11 +32,12 @@ use self::heartbeat::Heartbeat;
 use self::screen::KeptShare;
 use crate::raw::{self, HeaderView, SharedTexture, SourceKey};
 
-/// The names of the viewer header mapping and the shared texture.
+/// The names of the viewer header mapping, the shared texture and the depth map's mapping.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewNames {
     pub mapping: String,
     pub texture: String,
+    pub depth_map: String,
 }
 
 impl Default for ViewNames {
@@ -44,6 +45,7 @@ impl Default for ViewNames {
         Self {
             mapping: viewer_header::MAPPING_NAME.to_owned(),
             texture: viewer_header::TEXTURE_NAME.to_owned(),
+            depth_map: depth_map::MAPPING_NAME.to_owned(),
         }
     }
 }
@@ -315,6 +317,12 @@ impl Publisher {
             Ok(again) => Reads::Running(first, again),
             Err(_overwritten) => Reads::Other,
         }
+    }
+
+    /// The present number [`Self::on_frame`] gives the next frame, read at `now`, or `None` while
+    /// the heartbeat did not advance within [`STALE_AFTER`] or the header holds another layout.
+    pub fn next_present(&mut self, now: Instant) -> Option<u32> {
+        self.viewer_runs(now).then(|| self.presents.wrapping_add(1))
     }
 
     fn viewer_runs(&mut self, now: Instant) -> bool {

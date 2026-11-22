@@ -5,12 +5,15 @@
 //! when the frame handler holds one and it yields a texture, with the frame's tag. The texture
 //! reference it takes drops before the frame handler returns. Once the header exists, the link reads
 //! the head pose and the screen's parallel share the viewing side wrote into it while the viewing
-//! side's heartbeat runs.
+//! side's heartbeat runs. While it runs, the link also gives the frame handler the depth map's
+//! section, which it makes at the first such frame, for each frame's depth map. The UI layer writes
+//! that map, or the frame handler writes a map of no cell in a core with no UI layer.
 
 use std::time::{Duration, Instant};
 
 use diag::rate::{Once, RateLimit};
 use diag::{error_every, once, warn_every};
+use gfx::depth_map::MapSection;
 use gfx::publish::{Outcome, Present, Publisher, ViewNames};
 use ipc_layout::viewer_header::pose::{FrameTag, HeadSample};
 use ipc_layout::viewer_header::screen::ParallelShare;
@@ -19,6 +22,7 @@ use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 
 use crate::game_source::GameSource;
 use crate::raw::{self, Devices};
+use crate::ui_layer::depth_map::MapSink;
 
 /// The shortest time between two lines of one rate-limited call site.
 const LOG_PERIOD: Duration = Duration::from_secs(10);
@@ -40,11 +44,22 @@ struct LinkLogs {
     source_fault: RateLimit,
     abandoned: RateLimit,
     publish_failed: RateLimit,
+    map_failed: Once,
+}
+
+/// The depth map's section across frames, made at the first frame that publishes a map.
+enum MapLink {
+    /// The section does not exist yet, and its name.
+    Pending(String),
+    Ready(MapSection),
+    /// The section could not be created, so the core publishes no depth map for its life.
+    Failed,
 }
 
 /// The viewer link's render thread state, held in the frame state.
 pub(crate) struct ViewerLink {
     link: Link,
+    map: MapLink,
     logs: LinkLogs,
 }
 
@@ -56,7 +71,35 @@ impl Default for ViewerLink {
 
 impl ViewerLink {
     pub(crate) fn new(names: ViewNames) -> Self {
-        Self { link: Link::Pending(names), logs: LinkLogs::default() }
+        let map = MapLink::Pending(names.depth_map.clone());
+        Self { link: Link::Pending(names), map, logs: LinkLogs::default() }
+    }
+
+    /// Where the depth map of the frame at `now` goes: the depth map's section and the present
+    /// number the frame gets, while the viewing side's heartbeat runs. `None` before the header
+    /// exists, after its creation failed, while no viewing side beats, or after the section's
+    /// creation failed, which one warning names.
+    pub(crate) fn map_sink(&mut self, now: Instant) -> Option<MapSink<'_>> {
+        let Link::Ready(publisher) = &mut self.link else { return None };
+        let present = publisher.next_present(now)?;
+        if let MapLink::Pending(name) = &self.map {
+            self.map = match MapSection::create(name) {
+                Ok(section) => MapLink::Ready(section),
+                Err(error) => {
+                    once!(
+                        self.logs.map_failed,
+                        Level::WARN,
+                        error = %error,
+                        "the depth map's section could not be created, so the viewer gets no depth map"
+                    );
+                    MapLink::Failed
+                }
+            };
+        }
+        match &self.map {
+            MapLink::Ready(section) => Some(MapSink { section, present }),
+            MapLink::Pending(_) | MapLink::Failed => None,
+        }
     }
 
     /// The head pose the viewing side wrote last into the header, read at `now`, or `None` before the
@@ -89,7 +132,7 @@ impl ViewerLink {
         game: Option<&mut GameSource>,
         tag: FrameTag,
     ) {
-        let Self { link, logs } = self;
+        let Self { link, logs, .. } = self;
         let publisher = match link {
             Link::Ready(publisher) => publisher,
             Link::Failed => return,

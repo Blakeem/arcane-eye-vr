@@ -37,7 +37,8 @@ const RISE_PER_SECOND: f32 = 0.5;
 const LIMIT_NOISE: f32 = 1e-5;
 
 /// A UI texel under the pointer covers the scene when its alpha is above this value, as `COVERING`
-/// in `shaders/nearest.slang` decides for the nearest read.
+/// in `shaders/nearest.slang` decides for the nearest read and in `shaders/depth_map.slang` for
+/// the depth map.
 const COVERING: f32 = 0.25;
 
 /// The UI disparity and the eye scale of one moment, as targets or as the values in use.
@@ -139,13 +140,18 @@ impl View {
     /// the full eye distance `eye_m` in the launch mode `mode`.
     pub(crate) fn of(camera: &Camera, offset: DepthOffset, eye_m: f32, mode: Mode) -> Self {
         Self {
-            lens: (camera.aspect * (camera.fov_y_rad / 2.0).tan()).recip(),
+            lens: lens(camera),
             eye_m,
             offset: offset.share(),
             limit: offset.ui_limit(),
             eye_distance: EyeDistance::of(mode),
         }
     }
+}
+
+/// The lens of the main view's `camera`, `1 / (aspect * tan(fov_y / 2))`.
+pub(crate) fn lens(camera: &Camera) -> f32 {
+    (camera.aspect * (camera.fov_y_rad / 2.0).tan()).recip()
 }
 
 /// The values in use and the wait after a frame whose newest result is `found`, `elapsed` after
@@ -306,7 +312,8 @@ pub(crate) fn probe(place: [f32; 2], view: View, eye_scale: EyeScale, far_m: f32
 }
 
 /// The cursor's moves in each half of `half_width` columns, from the newest pointer read's result
-/// `pointed`, the UI's columns `ui_columns` and the depth offset in use `offset` as a share. A
+/// `pointed`, the UI's columns `ui_columns` and the depth offset `offset` the frame's move drew, as a
+/// share of the right half's width, so the cursor moves with the entire columns of the move. A
 /// cursor over no result or over the UI moves as the UI does. A cursor over the scene sits where
 /// each eye sees the hit: `hit` to the right in the left half, and `hit` to the left of the right
 /// half's scene, which the depth offset moves right. A hit outside 0 to 1 or a move past the half

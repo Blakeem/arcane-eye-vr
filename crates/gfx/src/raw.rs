@@ -1,7 +1,8 @@
-//! The gfx crate's unsafe edge: the viewer header mapping, the D3D11 and DXGI calls of the
-//! publisher, the layer draw's calls in `layer`, the nearest read's calls in `nearest`, the pointer
-//! read's calls in `pointer`, the calls both reads share in `row`, the region draw's calls in
-//! `region`, the mesh draw's calls in `mesh` and the pixel canvas's GDI calls in `canvas`.
+//! The gfx crate's unsafe edge: the shared sections of the viewer header and the depth map, the
+//! D3D11 and DXGI calls of the publisher, the layer draw's calls in `layer`, the nearest read's
+//! calls in `nearest`, the pointer read's calls in `pointer`, the depth map's calls in
+//! `depth_map`, the calls those three share in `row`, the region draw's calls in `region`, the mesh
+//! draw's calls in `mesh` and the pixel canvas's GDI calls in `canvas`.
 
 #![expect(
     unsafe_code,
@@ -40,6 +41,7 @@ use windows::core::{HRESULT, HSTRING, Interface as _};
 use crate::publish::{PublishError, SetupError, Step};
 
 pub(crate) mod canvas;
+pub(crate) mod depth_map;
 pub(crate) mod layer;
 pub(crate) mod mesh;
 pub(crate) mod nearest;
@@ -55,55 +57,118 @@ const _: () = assert!(SHARED_ACCESS == DXGI_SHARED_RESOURCE_READ.0 | DXGI_SHARED
 const _: () = assert!(viewer_header::WAIT_TIMEOUT == WAIT_TIMEOUT.0);
 const _: () = assert!(viewer_header::WAIT_ABANDONED == WAIT_ABANDONED.0);
 
-/// A read-write view of the viewer header mapping this process created or opened. The view and the
-/// mapping close on drop.
+/// A read-write view of a named section this process created or opened, which another process
+/// shares. The view and the mapping close on drop.
 ///
 /// The address is a plain number, so a publisher in the core context stays `Send + Sync`.
-pub(crate) struct HeaderView {
+pub(crate) struct Section {
     address: usize,
+    /// The bytes the view spans.
+    len: usize,
     _mapping: OwnedHandle,
+}
+
+/// The call that failed to make a [`Section`].
+#[derive(Debug)]
+pub(crate) enum SectionFault {
+    Create(windows::core::Error),
+    Map(windows::core::Error),
+}
+
+impl From<SectionFault> for SetupError {
+    fn from(fault: SectionFault) -> Self {
+        match fault {
+            SectionFault::Create(source) => Self::Create(source),
+            SectionFault::Map(source) => Self::Map(source),
+        }
+    }
+}
+
+impl Section {
+    /// Creates the pagefile-backed mapping `name` of `len` bytes, or opens it when it exists, and
+    /// maps a view of its `len` bytes.
+    pub(crate) fn create(name: &str, len: u32) -> Result<Self, SectionFault> {
+        let name = HSTRING::from(name);
+        // SAFETY: a pagefile-backed mapping with default security and a NUL-terminated name.
+        let created = unsafe {
+            CreateFileMappingW(INVALID_HANDLE_VALUE, None, PAGE_READWRITE, 0, len, &name)
+        };
+        let handle = match created {
+            Ok(handle) => handle,
+            Err(source) => return Err(SectionFault::Create(source)),
+        };
+        // SAFETY: `handle` is the mapping handle the create call opened, and only `mapping` closes it.
+        let mapping = unsafe { OwnedHandle::from_raw_handle(handle.0) };
+        let access = FILE_MAP_READ | FILE_MAP_WRITE;
+        let len = usize::try_from(len).unwrap_or(0);
+        // SAFETY: `handle` stays open while `mapping` lives, and the view spans the mapping's bytes.
+        let view = unsafe { MapViewOfFile(handle, access, 0, 0, len) };
+        if view.Value.is_null() {
+            return Err(SectionFault::Map(windows::core::Error::from_thread()));
+        }
+        Ok(Self { address: view.Value.expose_provenance(), len, _mapping: mapping })
+    }
+
+    /// Reads the word at the byte offset `offset`, or `None` for an offset that names no word of
+    /// the view. The read is volatile, since the other process writes the section.
+    pub(crate) fn read_word(&self, offset: usize) -> Option<u32> {
+        let field = self.word(offset)?;
+        // SAFETY: `word` gave a 4-aligned word inside the view.
+        Some(unsafe { ptr::read_volatile(field) })
+    }
+
+    /// Writes each word at its byte offset, in the order given. Each write is volatile, since the
+    /// other process reads the section, so it sees the writes in this order. An offset that names
+    /// no word of the view is skipped.
+    pub(crate) fn write_words(&self, words: impl IntoIterator<Item = (usize, u32)>) {
+        for (offset, word) in words {
+            if let Some(field) = self.word(offset) {
+                // SAFETY: `word` gave a 4-aligned word inside the view.
+                unsafe { ptr::write_volatile(field, word) };
+            }
+        }
+    }
+
+    /// The word at the byte offset `offset`, or `None` when it is not a multiple of 4 or the word
+    /// does not lie inside the page-aligned view.
+    fn word(&self, offset: usize) -> Option<*mut u32> {
+        let end = offset.checked_add(WORD_SIZE)?;
+        if end > self.len || !offset.is_multiple_of(WORD_SIZE) {
+            return None;
+        }
+        Some(ptr::with_exposed_provenance_mut::<u32>(self.address).wrapping_byte_add(offset))
+    }
+}
+
+impl Drop for Section {
+    fn drop(&mut self) {
+        let view =
+            MEMORY_MAPPED_VIEW_ADDRESS { Value: ptr::with_exposed_provenance_mut(self.address) };
+        // A failed unmap leaves this one view mapped until the process exits.
+        // SAFETY: `address` is the base of the view `create` mapped, and only this drop unmaps it.
+        drop(unsafe { UnmapViewOfFile(view) });
+    }
+}
+
+/// A read-write view of the viewer header mapping this process created or opened.
+pub(crate) struct HeaderView {
+    section: Section,
 }
 
 impl HeaderView {
     /// Creates the mapping `name`, or opens it when it exists.
     pub(crate) fn create(name: &str) -> Result<Self, SetupError> {
-        let name = HSTRING::from(name);
-        // SAFETY: a pagefile-backed mapping with default security and a NUL-terminated name.
-        let created = unsafe {
-            CreateFileMappingW(
-                INVALID_HANDLE_VALUE,
-                None,
-                PAGE_READWRITE,
-                0,
-                HEADER_MAPPING_SIZE,
-                &name,
-            )
-        };
-        let handle = match created {
-            Ok(handle) => handle,
-            Err(source) => return Err(SetupError::Create(source)),
-        };
-        // SAFETY: `handle` is the mapping handle the create call opened, and only `mapping` closes it.
-        let mapping = unsafe { OwnedHandle::from_raw_handle(handle.0) };
-        let access = FILE_MAP_READ | FILE_MAP_WRITE;
-        // SAFETY: `handle` stays open while `mapping` lives, and the view spans the header's bytes.
-        let view = unsafe { MapViewOfFile(handle, access, 0, 0, SIZE) };
-        if view.Value.is_null() {
-            return Err(SetupError::Map(windows::core::Error::from_thread()));
-        }
-        Ok(Self { address: view.Value.expose_provenance(), _mapping: mapping })
+        Ok(Self { section: Section::create(name, HEADER_MAPPING_SIZE)? })
     }
 
     /// Copies the header's words in ascending offset order, so the head pose's sequence number is
     /// read before the pose. Each read is volatile, since the viewer writes the heartbeat and the
     /// head pose.
     pub(crate) fn read_words(&self) -> [u32; WORDS] {
-        let base = ptr::with_exposed_provenance::<u32>(self.address);
         let mut words = [0; WORDS];
-        for (index, word) in words.iter_mut().enumerate() {
-            // SAFETY: `index` is below `WORDS`, and the page-aligned view spans the header's `SIZE`
-            // bytes, so the word is in bounds and aligned.
-            *word = unsafe { ptr::read_volatile(base.wrapping_add(index)) };
+        let offsets = (0..SIZE).step_by(WORD_SIZE);
+        for (word, offset) in words.iter_mut().zip(offsets) {
+            *word = self.section.read_word(offset).unwrap_or(0);
         }
         words
     }
@@ -111,25 +176,7 @@ impl HeaderView {
     /// Writes each word at its byte offset, in the order given. Each write is volatile, since the
     /// viewer reads the header. An offset that names no word of the header is skipped.
     pub(crate) fn write_words(&self, words: impl IntoIterator<Item = (usize, u32)>) {
-        let base = ptr::with_exposed_provenance_mut::<u32>(self.address);
-        for (offset, word) in words {
-            if offset >= SIZE || !offset.is_multiple_of(WORD_SIZE) {
-                continue;
-            }
-            // SAFETY: `offset` is a multiple of 4 below `SIZE`, and the page-aligned view spans the
-            // header's `SIZE` bytes, so the word is in bounds and aligned.
-            unsafe { ptr::write_volatile(base.wrapping_byte_add(offset), word) };
-        }
-    }
-}
-
-impl Drop for HeaderView {
-    fn drop(&mut self) {
-        let view =
-            MEMORY_MAPPED_VIEW_ADDRESS { Value: ptr::with_exposed_provenance_mut(self.address) };
-        // A failed unmap leaves this one view mapped until the process exits.
-        // SAFETY: `address` is the base of the view `create` mapped, and only this drop unmaps it.
-        drop(unsafe { UnmapViewOfFile(view) });
+        self.section.write_words(words);
     }
 }
 

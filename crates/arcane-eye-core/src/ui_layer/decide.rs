@@ -1,7 +1,8 @@
 //! The UI layer's decisions: the pair, the move and the UI texture the core draws into a frame, what
 //! it writes to the composite stage's UI enable byte, whether Windows shows its cursor, the halves of
-//! the back buffer each draw covers, the areas of the move, the columns and places of a UI drawn
-//! with a crossed disparity, and the places of a layer moved by its own columns in each half.
+//! the back buffer each draw covers, the areas of the move and the depth offset it drew, the columns
+//! and places of a UI drawn with a crossed disparity, and the places of a layer moved by its own
+//! columns in each half.
 
 use gfx::layer::{Area, Placement, Rect};
 
@@ -177,6 +178,18 @@ pub(crate) fn depth_shift(width: u32, height: u32, offset: DepthOffset) -> Optio
         picture: Placement { area: picture, clip: moved },
         uncovered: Placement { area: black, clip: uncovered },
     })
+}
+
+/// The depth offset in use of a frame whose UI layer drew `drawn`, as a share of the right half's
+/// width: the entire columns by which its move moved the right half's picture, and 0 with no move.
+pub(crate) fn drawn_offset(drawn: Draw) -> f32 {
+    let Some(shift) = drawn.shift() else { return 0.0 };
+    let columns = f32::from(shift.uncovered.clip.width);
+    let half_width = columns + f32::from(shift.source.width);
+    if half_width <= 0.0 {
+        return 0.0;
+    }
+    columns / half_width
 }
 
 /// `columns` rounded to an integer from 0 to `max`, or `None` when it rounds above `max` or is NaN.

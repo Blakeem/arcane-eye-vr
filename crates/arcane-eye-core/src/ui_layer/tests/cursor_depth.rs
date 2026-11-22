@@ -272,11 +272,11 @@ fn the_pointer_read_probes_at_the_eye_scale_the_eye_cameras_rendered_the_frame_a
     }
 
     assert!(in_use < EyeScale::FULL, "{in_use:?}");
-    // 5/256 of a 32-column half is 0.63 columns, and 0.05 - 5/256 of it is 0.98 columns.
+    // 5/256 of a 32-column half is 0.63 columns, and the move's 2 columns less those are 1.38.
     let full = CursorReport { over: Over::Scene, moves: Moves { left: 1, right: 1 } };
     assert_eq!(at_full, full, "at the full eye distance");
-    // 3/256 of a 32-column half is 0.38 columns, and 0.05 - 3/256 of it is 1.23 columns.
-    let fallen = CursorReport { over: Over::Scene, moves: Moves { left: 0, right: 1 } };
+    // 3/256 of a 32-column half is 0.38 columns, and the move's 2 columns less those are 1.63.
+    let fallen = CursorReport { over: Over::Scene, moves: Moves { left: 0, right: 2 } };
     assert_eq!(layer.cursor_report(), fallen, "at the eye scale handed over");
 }
 

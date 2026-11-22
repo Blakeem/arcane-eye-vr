@@ -1,5 +1,5 @@
 //! The D3D11 calls of the nearest read: its shaders and its draw over the row of grid columns. The
-//! row, the staging textures and the views are the shared ones of `row`.
+//! row's target, the staging textures and the views are the shared ones of `row`.
 
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11PixelShader, ID3D11ShaderResourceView,
@@ -7,7 +7,7 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::core::HRESULT;
 
-use super::row::{Row, RowDraw};
+use super::row::{Target, TargetDraw};
 use super::{CreateStep, made};
 use crate::nearest::{NearestError, NearestStep};
 
@@ -44,11 +44,11 @@ impl Pipeline {
     pub(crate) fn draw(
         &self,
         context: &ID3D11DeviceContext,
-        columns: &Row,
+        columns: &Target,
         layer: &ID3D11ShaderResourceView,
         distances: &ID3D11ShaderResourceView,
     ) {
-        let draw = RowDraw {
+        let draw = TargetDraw {
             vertex: &self.vertex,
             pixel: &self.pixel,
             resources: [Some(layer.clone()), Some(distances.clone())],

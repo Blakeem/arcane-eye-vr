@@ -81,7 +81,11 @@ impl Drop for TestMapping {
 /// Viewer names that only this test process and test use, never the real viewer's.
 pub(crate) fn test_view_names(test: &str) -> ViewNames {
     let prefix = format!(r"Local\arcane-eye-vr-core-test-{}-{test}", process::id());
-    ViewNames { mapping: format!("{prefix}-view"), texture: format!("{prefix}-texture") }
+    ViewNames {
+        mapping: format!("{prefix}-view"),
+        texture: format!("{prefix}-texture"),
+        depth_map: format!("{prefix}-depth"),
+    }
 }
 
 /// A debug viewer's view of the viewer header, which writes the heartbeat as the viewer does.

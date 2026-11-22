@@ -19,7 +19,7 @@ use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext, ID
 use windows::core::HRESULT;
 
 use crate::raw::pointer::Pipeline;
-use crate::raw::row::{Texel, sampled_view};
+use crate::raw::row::{ReadSteps, Texel, sampled_view};
 use crate::readback::Readback;
 
 /// The pointer read step that failed.
@@ -34,6 +34,7 @@ pub enum PointerStep {
     DistanceView,
     Staging,
     Map,
+    Rows,
 }
 
 impl PointerStep {
@@ -48,6 +49,7 @@ impl PointerStep {
             Self::DistanceView => "creating a view of the distance texture for the pointer read",
             Self::Staging => "creating a staging texture of the pointer read",
             Self::Map => "mapping a staging texture of the pointer read",
+            Self::Rows => "reading the row of a mapped staging texture of the pointer read",
         }
     }
 }
@@ -133,13 +135,16 @@ impl PointerRead {
     /// # Errors
     ///
     /// Returns [`PointerStep::Map`] with the code of a map that failed for another reason than a
-    /// GPU that still draws, such as a removed device.
+    /// GPU that still draws, such as a removed device, and [`PointerStep::Rows`] for a mapped
+    /// staging texture whose row pitch cannot hold its row.
     pub fn newest(
         &mut self,
         context: &ID3D11DeviceContext,
     ) -> Result<Option<Pointed>, PointerError> {
-        let newest =
-            self.readback.newest(context, PointerStep::Map, |texels, ()| pointed(texels))?;
+        let steps = ReadSteps { map: PointerStep::Map, rows: PointerStep::Rows };
+        let newest = self
+            .readback
+            .newest(context, steps, |texels, ()| pointed(texels.row(0).unwrap_or_default()))?;
         Ok(newest.flatten())
     }
 

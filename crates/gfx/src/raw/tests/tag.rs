@@ -1,5 +1,5 @@
-//! The publisher's frame tag and its reads of the head pose and the screen's parallel share that
-//! the viewer writes.
+//! The publisher's frame tag, the next frame's present number, and its reads of the head pose and
+//! the screen's parallel share that the viewer writes.
 
 use std::time::Instant;
 
@@ -33,6 +33,27 @@ fn write_share(viewer: &Viewer, share: ParallelShare) -> u32 {
     let (sequence, writes) = viewer.header().screen().writes(share);
     viewer.header.write_words(writes);
     sequence
+}
+
+#[test]
+fn the_next_present_number_is_the_one_the_next_published_frame_gets_while_the_viewer_beats() {
+    let names = names("next-present");
+    let core = warp();
+    let mut publisher = Publisher::create(&names).expect("create the header");
+    let mut viewer = Viewer::new(&names);
+    let (source, _bytes) = pattern(&core, 4, 4);
+    let start = Instant::now();
+    assert_eq!(publisher.next_present(start), None, "no viewer beats");
+    assert_eq!(publish(&mut publisher, &core, start, &source), Outcome::NoViewer);
+    viewer.beat();
+
+    let next = publisher.next_present(after(start, 16));
+    assert_eq!(publish(&mut publisher, &core, after(start, 16), &source), Outcome::Published);
+
+    assert_eq!(next, Some(2), "the present with no viewer counts");
+    assert_eq!(next, Some(viewer.header().present()));
+    let stalled = after(start, 1_017);
+    assert_eq!(publisher.next_present(stalled), None, "the heartbeat stopped a second ago");
 }
 
 #[test]

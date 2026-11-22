@@ -1,14 +1,16 @@
 //! The viewer client's unsafe edge, which holds every unsafe Windows call of the crate.
 //!
-//! This file holds the viewer header view. `raw/gpu.rs` holds the D3D11 and DXGI calls that open the
-//! shared texture, copy it or one region of it and read the copy back. `raw/fixture.rs` holds the
-//! test fixtures in the core's place.
+//! This file holds the viewer header view and the open of a section the core created.
+//! `raw/depth_map.rs` holds the depth map's view. `raw/gpu.rs` holds the D3D11 and DXGI calls that
+//! open the shared texture, copy it or one region of it and read the copy back. `raw/fixture.rs`
+//! holds the test fixtures in the core's place.
 
 #![expect(
     unsafe_code,
     reason = "the header mapping and the D3D11 and DXGI calls are Windows calls"
 )]
 
+pub(crate) mod depth_map;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
 mod gpu;
@@ -21,8 +23,8 @@ use ipc_layout::viewer_header::{
 };
 use windows::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND};
 use windows::Win32::System::Memory::{
-    FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, OpenFileMappingW,
-    UnmapViewOfFile,
+    FILE_MAP, FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
+    OpenFileMappingW, UnmapViewOfFile,
 };
 use windows::core::HSTRING;
 
@@ -43,6 +45,41 @@ pub enum HeaderViewError {
     Map(#[source] windows::core::Error),
 }
 
+/// The call that failed to open a view of a section the core created.
+enum OpenFault {
+    Open(windows::core::Error),
+    Map(windows::core::Error),
+}
+
+/// Opens the section `name` and maps a view of its first `size` bytes, each with `access`, or
+/// returns `None` when no core created it.
+fn open_view(
+    name: &str,
+    size: usize,
+    access: FILE_MAP,
+) -> Result<Option<MEMORY_MAPPED_VIEW_ADDRESS>, OpenFault> {
+    let name = HSTRING::from(name);
+    // SAFETY: `name` is a NUL-terminated wide string that outlives the call.
+    let mapping = match unsafe { OpenFileMappingW(access.0, false, &name) } {
+        Ok(mapping) => mapping,
+        Err(error) if error.code() == ERROR_FILE_NOT_FOUND.to_hresult() => return Ok(None),
+        Err(error) => return Err(OpenFault::Open(error)),
+    };
+    // SAFETY: `mapping` is the open mapping handle above, and the core made the section at least
+    // `size` bytes long.
+    let address = unsafe { MapViewOfFile(mapping, access, 0, 0, size) };
+    // The error is read before the close, which can overwrite the thread's last error.
+    let map_error = address.Value.is_null().then(windows::core::Error::from_thread);
+    // The view keeps the mapping alive, so the handle closes at once. A failed close leaks one
+    // handle and changes nothing else.
+    // SAFETY: `mapping` is a handle this function opened and closes once.
+    drop(unsafe { CloseHandle(mapping) });
+    match map_error {
+        Some(error) => Err(OpenFault::Map(error)),
+        None => Ok(Some(address)),
+    }
+}
+
 impl HeaderView {
     /// Maps the header in the mapping `name`, or returns `None` when no core created it.
     ///
@@ -51,25 +88,11 @@ impl HeaderView {
     /// Returns [`HeaderViewError`] when opening fails for another cause, such as a viewer without
     /// access to an elevated game's mapping, or when mapping the view fails.
     pub fn open(name: &str) -> Result<Option<Self>, HeaderViewError> {
-        let name = HSTRING::from(name);
-        let access = FILE_MAP_READ | FILE_MAP_WRITE;
-        // SAFETY: `name` is a NUL-terminated wide string that outlives the call.
-        let mapping = match unsafe { OpenFileMappingW(access.0, false, &name) } {
-            Ok(mapping) => mapping,
-            Err(error) if error.code() == ERROR_FILE_NOT_FOUND.to_hresult() => return Ok(None),
-            Err(error) => return Err(HeaderViewError::Open(error)),
-        };
-        // SAFETY: `mapping` is the open mapping handle above, and the view spans the header's bytes.
-        let address = unsafe { MapViewOfFile(mapping, access, 0, 0, SIZE) };
-        // The error is read before the close, which can overwrite the thread's last error.
-        let map_error = address.Value.is_null().then(windows::core::Error::from_thread);
-        // The view keeps the mapping alive, so the handle closes at once. A failed close leaks one
-        // handle and changes nothing else.
-        // SAFETY: `mapping` is a handle this function opened and closes once.
-        drop(unsafe { CloseHandle(mapping) });
-        match map_error {
-            Some(error) => Err(HeaderViewError::Map(error)),
-            None => Ok(Some(Self { address })),
+        // The heartbeat and the head pose are written into the header.
+        match open_view(name, SIZE, FILE_MAP_READ | FILE_MAP_WRITE) {
+            Ok(address) => Ok(address.map(|address| Self { address })),
+            Err(OpenFault::Open(error)) => Err(HeaderViewError::Open(error)),
+            Err(OpenFault::Map(error)) => Err(HeaderViewError::Map(error)),
         }
     }
 

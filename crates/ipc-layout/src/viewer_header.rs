@@ -6,8 +6,9 @@
 //! [`PARALLEL_SHARE_OFFSET`]. The one exception is the screen slot's sequence number, which the core
 //! sets to 0 once when it creates or opens the mapping. Every field is one 32-bit little-endian
 //! word, so each process writes a field with one aligned store, which the other process never reads
-//! torn.
+//! torn. The depth map, a section of its own beside the header, is in [`depth_map`].
 
+pub mod depth_map;
 mod keyed_mutex;
 pub mod pose;
 pub mod screen;

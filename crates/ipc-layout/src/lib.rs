@@ -1,4 +1,4 @@
-//! Contracts shared across processes: the launch token and viewer header byte layouts, the core DLL's init contract, the perf summary, camera and game state log lines, the root folder variable and the settings reload event's name.
+//! Contracts shared across processes: the launch token, viewer header and depth map byte layouts, the core DLL's init contract, the perf summary, camera and game state log lines, the root folder variable and the settings reload event's name.
 
 #![forbid(unsafe_code)]
 

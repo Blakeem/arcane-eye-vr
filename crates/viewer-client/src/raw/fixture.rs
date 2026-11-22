@@ -1,12 +1,13 @@
-//! Test fixtures in the core's place: a viewer header mapping and a WARP device that shares a
-//! texture. Each name holds the test process id, so parallel test processes never meet. A render
-//! target and its read back stand in for a consumer's target, such as an OpenXR swapchain image.
+//! Test fixtures in the core's place: a viewer header mapping, a depth map section and a WARP
+//! device that shares a texture. Each name holds the test process id, so parallel test processes
+//! never meet. A render target and its read back stand in for a consumer's target, such as an
+//! OpenXR swapchain image.
 
 use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
 use std::{process, ptr, slice};
 
 use ipc_layout::viewer_header::{
-    self, AdapterLuid, HEARTBEAT_OFFSET, MUTEX_KEY, SHARED_ACCESS, ViewerHeader,
+    self, AdapterLuid, HEARTBEAT_OFFSET, MUTEX_KEY, SHARED_ACCESS, ViewerHeader, depth_map,
 };
 use windows::Win32::Foundation::{
     CloseHandle, E_INVALIDARG, E_POINTER, HANDLE, HMODULE, INVALID_HANDLE_VALUE,
@@ -41,11 +42,13 @@ pub fn test_name(test: &str) -> String {
     format!(r"Local\arcane-eye-vr-viewer-test-{}-{test}", process::id())
 }
 
-/// A header mapping as the core creates it.
+/// A header mapping or a depth map section as the core creates it.
 pub struct CoreMapping {
     pub name: String,
     handle: HANDLE,
     address: MEMORY_MAPPED_VIEW_ADDRESS,
+    /// The bytes the view spans.
+    size: usize,
 }
 
 impl CoreMapping {
@@ -56,8 +59,25 @@ impl CoreMapping {
     /// Returns the error of a failed create or map call, and the `E_INVALIDARG` of
     /// [`Self::write_header`].
     pub fn create(test: &str, header: &ViewerHeader) -> windows::core::Result<Self> {
+        let mapping = Self::section(test, viewer_header::SIZE)?;
+        mapping.write_header(header)?;
+        Ok(mapping)
+    }
+
+    /// Creates the depth map's section as the core creates it, under the name [`test_name`]
+    /// gives `test`, with no word written.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of a failed create or map call.
+    pub fn depth_map(test: &str) -> windows::core::Result<Self> {
+        Self::section(test, depth_map::SIZE)
+    }
+
+    /// Creates the section [`test_name`] gives `test` of `size` bytes and maps all of them.
+    fn section(test: &str, size: usize) -> windows::core::Result<Self> {
         let name = test_name(test);
-        let Ok(size) = u32::try_from(viewer_header::SIZE) else {
+        let Ok(bytes) = u32::try_from(size) else {
             return Err(E_INVALIDARG.into());
         };
         // SAFETY: a pagefile-backed mapping with default security and a NUL-terminated name.
@@ -67,19 +87,18 @@ impl CoreMapping {
                 None,
                 PAGE_READWRITE,
                 0,
-                size,
+                bytes,
                 &HSTRING::from(&name),
             )
         }?;
         let access = FILE_MAP_READ | FILE_MAP_WRITE;
-        // SAFETY: `handle` is the open mapping above, and the view spans the header's bytes.
-        let address = unsafe { MapViewOfFile(handle, access, 0, 0, viewer_header::SIZE) };
+        // SAFETY: `handle` is the open mapping above, and the view spans the section's bytes.
+        let address = unsafe { MapViewOfFile(handle, access, 0, 0, size) };
         let map_error = address.Value.is_null().then(windows::core::Error::from_thread);
-        let mapping = Self { name, handle, address };
+        let mapping = Self { name, handle, address, size };
         if let Some(error) = map_error {
             return Err(error);
         }
-        mapping.write_header(header)?;
         Ok(mapping)
     }
 
@@ -95,13 +114,13 @@ impl CoreMapping {
         Ok(())
     }
 
-    /// Writes `word` at the byte offset `offset` of the header.
+    /// Writes `word` at the byte offset `offset` of the section.
     ///
     /// # Errors
     ///
-    /// Returns `E_INVALIDARG` when `offset` is not a word inside the header.
+    /// Returns `E_INVALIDARG` when `offset` is not a word inside the section.
     pub fn write_word(&self, offset: usize, word: u32) -> windows::core::Result<()> {
-        if !offset.is_multiple_of(viewer_header::WORD_SIZE) || offset >= viewer_header::SIZE {
+        if !offset.is_multiple_of(viewer_header::WORD_SIZE) || offset >= self.size {
             return Err(E_INVALIDARG.into());
         }
         let field = self.address.Value.wrapping_byte_add(offset).cast::<u32>();

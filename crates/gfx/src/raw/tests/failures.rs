@@ -84,6 +84,7 @@ fn a_mapping_name_in_no_namespace_is_a_setup_error() {
     let names = ViewNames {
         mapping: r"NoSuchNamespace\arcane-eye-vr-view".to_owned(),
         texture: String::new(),
+        depth_map: String::new(),
     };
     let error = Publisher::create(&names).map(|_publisher| ()).expect_err("an invalid name");
     assert!(matches!(error, SetupError::Create(_)), "{error:?}");
