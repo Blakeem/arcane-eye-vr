@@ -25,7 +25,6 @@ const ABSOLUTE_MAX: i64 = 65_535;
 pub enum Button {
     Left,
     Right,
-    Middle,
 }
 
 /// A place in a window's client area as shares of its width and its height from its top left

@@ -44,7 +44,6 @@ fn each_key_of_a_hand_s_table_binds_its_action() {
          menu = \"/user/hand/left/input/menu/click\"\n\
          select = \"/user/hand/left/input/trigger/value\"\n\
          secondary = \"/user/hand/left/input/squeeze/click\"\n\
-         middle = \"/user/hand/left/input/thumbstick/click\"\n\
          scroll = \"/user/hand/left/input/thumbstick\"\n\
          haptic = \"/user/hand/left/output/haptic\"\n\
          [right]\n\
@@ -58,7 +57,6 @@ fn each_key_of_a_hand_s_table_binds_its_action() {
     assert_eq!(left.path(ActionName::Menu), Some("/user/hand/left/input/menu/click"));
     assert_eq!(left.path(ActionName::Select), Some("/user/hand/left/input/trigger/value"));
     assert_eq!(left.path(ActionName::Secondary), Some("/user/hand/left/input/squeeze/click"));
-    assert_eq!(left.path(ActionName::Middle), Some("/user/hand/left/input/thumbstick/click"));
     assert_eq!(left.path(ActionName::Scroll), Some("/user/hand/left/input/thumbstick"));
     assert_eq!(left.path(ActionName::Haptic), Some("/user/hand/left/output/haptic"));
     let right = profile.hand(Hand::Right);
@@ -74,6 +72,16 @@ fn an_unknown_key_rejects_the_file_and_the_reason_names_it() {
         .expect_err("an unknown hand key");
     assert!(hand.to_string().contains("point"), "{hand}");
     assert!(matches!(hand, Rejection::Toml { line: 5, .. }), "{hand:?}");
+}
+
+#[test]
+fn a_hand_has_seven_actions_and_a_middle_key_rejects_the_file_as_an_unknown_key() {
+    let keys = ActionName::ALL.map(ActionName::as_str);
+    assert_eq!(keys, ["aim", "grip", "menu", "select", "secondary", "scroll", "haptic"]);
+    let middle = with("[right]\nmiddle = \"/user/hand/right/input/thumbstick/click\"\n");
+    let rejection = parse(&middle).expect_err("a middle key");
+    assert!(rejection.to_string().contains("middle"), "{rejection}");
+    assert!(matches!(rejection, Rejection::Toml { line: 5, .. }), "{rejection:?}");
 }
 
 #[test]

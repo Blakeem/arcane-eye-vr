@@ -8,11 +8,12 @@
 //! `layer.rs` builds that layer. `immersive/decide.rs` places each eye's view. `controls.rs` reads
 //! the device profiles and logs what the controllers do in each frame. `menu.rs` shows the menu
 //! that sets the screen's distance and width, `pointer.rs` sends the game the mouse input of the
-//! controller that points at the screen, and `geometry.rs` holds the vector math of the quads and
-//! rays. The menu and the pointer rest while a projection layer shows. The session runs until Steam
-//! reports that the game ended, the runtime ends the session or the game's frames are of a kind it
-//! cannot show. The game window keeps the keyboard, since the session has no window, and the
-//! pointer's input reaches the game only while the game window is in the foreground.
+//! controller that points at the screen and the turn key input of the pointing controller's stick,
+//! and `geometry.rs` holds the vector math of the quads and rays. The menu and the pointer rest while a projection layer shows. The session
+//! runs until Steam reports that the game ended, the runtime ends the session or the game's frames
+//! are of a kind it cannot show. The game window keeps the keyboard, since the session has no
+//! window, and the pointer's input reaches the game only while the game window is in the
+//! foreground.
 
 mod controls;
 mod eyes;
@@ -269,8 +270,8 @@ impl Screen {
     /// Waits for the session's next frame, reads the controllers, writes the head pose in the view
     /// [`View::Immersive`], draws the newest published frame into the swapchains when the runtime
     /// shows the frame and chooses its layer, updates the menu, sends the game the pointer's mouse
-    /// input, draws the menu's quads and the laser, and ends the frame with the frame's layer, then
-    /// the menu's panels.
+    /// and turn key input, draws the menu's quads and the laser, and ends the frame with the
+    /// frame's layer, then the menu's panels.
     fn frame(&mut self) -> Result<(), FrameError> {
         let timing = self.session.wait_frame()?;
         let controls = self.controllers.read(&self.session, timing)?;

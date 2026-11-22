@@ -4,9 +4,8 @@
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_MOUSE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
-    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
-    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
-    MOUSEINPUT, SendInput,
+    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+    MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
@@ -17,8 +16,8 @@ use super::cursor::foreground_window;
 use super::window_copy::program_of;
 use crate::mouse::{Button, Desktop, Event, MouseError, is_named};
 
-/// The size of `INPUT` as `SendInput` takes it.
-const INPUT_SIZE: i32 = 40;
+/// The size of `INPUT` as `SendInput` takes it, for a mouse input and a keyboard input alike.
+pub(super) const INPUT_SIZE: i32 = 40;
 const _: () = assert!(INPUT_SIZE.cast_unsigned() as usize == size_of::<INPUT>());
 
 /// The wheel turn of one notch, as a wheel input's `mouseData` counts it.
@@ -76,7 +75,6 @@ const fn pressed(button: Button) -> MOUSE_EVENT_FLAGS {
     match button {
         Button::Left => MOUSEEVENTF_LEFTDOWN,
         Button::Right => MOUSEEVENTF_RIGHTDOWN,
-        Button::Middle => MOUSEEVENTF_MIDDLEDOWN,
     }
 }
 
@@ -84,7 +82,6 @@ const fn released(button: Button) -> MOUSE_EVENT_FLAGS {
     match button {
         Button::Left => MOUSEEVENTF_LEFTUP,
         Button::Right => MOUSEEVENTF_RIGHTUP,
-        Button::Middle => MOUSEEVENTF_MIDDLEUP,
     }
 }
 

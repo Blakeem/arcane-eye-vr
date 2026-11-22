@@ -24,8 +24,8 @@ mod tests {
     }
 
     /// The expected table of `hand`, each component path under the hand's user path.
-    fn expected(hand: &str, components: [Option<&str>; 8]) -> Vec<(&'static str, Option<String>)> {
-        let keys = ["aim", "grip", "menu", "select", "secondary", "middle", "scroll", "haptic"];
+    fn expected(hand: &str, components: [Option<&str>; 7]) -> Vec<(&'static str, Option<String>)> {
+        let keys = ["aim", "grip", "menu", "select", "secondary", "scroll", "haptic"];
         let path = |component: Option<&str>| component.map(|c| format!("/user/hand/{hand}/{c}"));
         keys.into_iter().zip(components.map(path)).collect()
     }
@@ -53,7 +53,6 @@ mod tests {
                 Some(menu),
                 Some("input/trigger/value"),
                 Some("input/squeeze/click"),
-                Some("input/thumbstick/click"),
                 Some("input/thumbstick"),
                 Some("output/haptic"),
             ]
@@ -76,7 +75,6 @@ mod tests {
             Some("input/menu/click"),
             Some("input/trigger/value"),
             Some("input/squeeze/click"),
-            Some("input/trackpad/click"),
             Some("input/trackpad"),
             Some("output/haptic"),
         ];
@@ -95,7 +93,6 @@ mod tests {
             Some("input/grip/pose"),
             Some("input/menu/click"),
             Some("input/select/click"),
-            None,
             None,
             None,
             Some("output/haptic"),

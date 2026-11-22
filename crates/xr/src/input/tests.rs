@@ -84,7 +84,6 @@ fn the_idle_input_has_no_pose_nothing_pressed_and_0() {
                 menu: ButtonState::Released,
                 select: 0.0,
                 secondary: ButtonState::Released,
-                middle: ButtonState::Released,
                 scroll: Vector2f { x: 0.0, y: 0.0 },
             }
         );

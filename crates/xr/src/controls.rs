@@ -26,7 +26,6 @@ struct Actions {
     menu: Action<bool>,
     select: Action<f32>,
     secondary: Action<bool>,
-    middle: Action<bool>,
     scroll: Action<Vector2f>,
     haptic: Action<Haptic>,
 }
@@ -39,7 +38,6 @@ impl Actions {
             menu: create_action(set, ActionName::Menu, hands)?,
             select: create_action(set, ActionName::Select, hands)?,
             secondary: create_action(set, ActionName::Secondary, hands)?,
-            middle: create_action(set, ActionName::Middle, hands)?,
             scroll: create_action(set, ActionName::Scroll, hands)?,
             haptic: create_action(set, ActionName::Haptic, hands)?,
         })
@@ -53,7 +51,6 @@ impl Actions {
             ActionName::Menu => Binding::new(&self.menu, path),
             ActionName::Select => Binding::new(&self.select, path),
             ActionName::Secondary => Binding::new(&self.secondary, path),
-            ActionName::Middle => Binding::new(&self.middle, path),
             ActionName::Scroll => Binding::new(&self.scroll, path),
             ActionName::Haptic => Binding::new(&self.haptic, path),
         }
@@ -189,7 +186,6 @@ impl Controls {
             menu: input::button(state(&actions.menu, path, at)?),
             select: input::amount(state(&actions.select, path, at)?),
             secondary: input::button(state(&actions.secondary, path, at)?),
-            middle: input::button(state(&actions.middle, path, at)?),
             scroll: input::stick(state(&actions.scroll, path, at)?),
         })
     }

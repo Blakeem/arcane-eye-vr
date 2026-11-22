@@ -179,7 +179,6 @@ pub(crate) enum Control {
     Menu,
     Select,
     Secondary,
-    Middle,
 }
 
 impl Control {
@@ -188,7 +187,6 @@ impl Control {
             Self::Menu => "menu",
             Self::Select => "select",
             Self::Secondary => "secondary",
-            Self::Middle => "middle",
         }
     }
 }
@@ -221,7 +219,6 @@ pub(crate) struct HandState {
     /// `select` as the log counts it: pressed above [`SELECT_PRESS`].
     logged_select: ButtonState,
     pub(crate) secondary: ButtonState,
-    pub(crate) middle: ButtonState,
 }
 
 impl HandState {
@@ -236,7 +233,6 @@ impl HandState {
             select: select_state(before.select, input.select),
             logged_select,
             secondary: input.secondary,
-            middle: input.middle,
         }
     }
 }
@@ -279,7 +275,6 @@ fn report(hand: Hand, before: HandState, now: HandState, on_change: &mut impl Fn
         (Control::Menu, before.menu, now.menu),
         (Control::Select, before.logged_select, now.logged_select),
         (Control::Secondary, before.secondary, now.secondary),
-        (Control::Middle, before.middle, now.middle),
     ];
     for (control, _, _) in buttons.into_iter().filter(|(_, was, is)| rose(*was, *is)) {
         on_change(Change::Pressed(hand, control));

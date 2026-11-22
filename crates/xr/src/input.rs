@@ -28,7 +28,6 @@ pub struct HandInput {
     /// How far the select control is pulled, from 0 to 1.
     pub select: f32,
     pub secondary: ButtonState,
-    pub middle: ButtonState,
     /// The scroll control's position, each axis from -1 to 1.
     pub scroll: Vector2f,
 }

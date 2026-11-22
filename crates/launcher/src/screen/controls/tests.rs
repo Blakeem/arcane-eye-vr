@@ -43,17 +43,13 @@ fn a_press_gives_one_change_and_a_held_button_gives_none() {
 #[test]
 fn each_button_of_each_hand_gives_its_own_change() {
     let mut watch = ControllerWatch::default();
-    let hand = HandInput {
-        secondary: ButtonState::Pressed,
-        middle: ButtonState::Pressed,
-        ..HandInput::default()
-    };
+    let hand = HandInput { select: 1.0, secondary: ButtonState::Pressed, ..HandInput::default() };
     let input = Input { left: hand, right: pressed(ButtonState::Pressed), head: None };
     assert_eq!(
         changes(&mut watch, &input),
         [
+            Change::Pressed(Hand::Left, Control::Select),
             Change::Pressed(Hand::Left, Control::Secondary),
-            Change::Pressed(Hand::Left, Control::Middle),
             Change::Pressed(Hand::Right, Control::Menu),
         ]
     );

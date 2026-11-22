@@ -76,7 +76,6 @@ grip = "/user/hand/left/input/grip/pose"                     # the pose of the h
 menu = "/user/hand/left/input/view/click"                    # the menu button
 select = "/user/hand/left/input/trigger/value"               # the trigger, from 0 to 1
 secondary = "/user/hand/left/input/squeeze/click"            # a second button
-middle = "/user/hand/left/input/thumbstick/click"            # a third button
 scroll = "/user/hand/left/input/thumbstick"                  # a stick or pad with two axes
 haptic = "/user/hand/left/output/haptic"                     # the vibration output
 

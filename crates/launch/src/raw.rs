@@ -1,6 +1,6 @@
 //! The launch crate's unsafe edge: registry reads, the launch token mapping, the Steam URL, the
 //! window close, the key post and the process wait and end. The files under `raw\` hold the desktop,
-//! cursor, mouse, Recycle Bin, settings reload event and window copy calls.
+//! cursor, mouse, Recycle Bin, settings reload event, turn key and window copy calls.
 
 #![expect(
     unsafe_code,
@@ -308,8 +308,7 @@ struct WindowSearch {
     windows: Vec<HWND>,
 }
 
-/// The top-level windows of process `owner`, or of every process for `None`, hidden windows
-/// included.
+/// The top-level windows, hidden ones included, of process `owner`, or of every process for `None`.
 fn top_level_windows(owner: Option<u32>) -> Vec<HWND> {
     let mut search = WindowSearch { owner, windows: Vec::new() };
     let search_address = LPARAM((&raw mut search).expose_provenance().cast_signed());
@@ -385,6 +384,7 @@ pub(crate) mod desktop;
 pub(crate) mod mouse;
 pub(crate) mod recycle;
 pub(crate) mod reload;
+pub(crate) mod turn;
 pub(crate) mod window_copy;
 
 #[cfg(test)]

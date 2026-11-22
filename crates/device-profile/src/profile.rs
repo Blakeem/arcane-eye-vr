@@ -63,19 +63,17 @@ pub enum ActionName {
     Menu,
     Select,
     Secondary,
-    Middle,
     Scroll,
     Haptic,
 }
 
 impl ActionName {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 7] = [
         Self::Aim,
         Self::Grip,
         Self::Menu,
         Self::Select,
         Self::Secondary,
-        Self::Middle,
         Self::Scroll,
         Self::Haptic,
     ];
@@ -88,7 +86,6 @@ impl ActionName {
             Self::Menu => "menu",
             Self::Select => "select",
             Self::Secondary => "secondary",
-            Self::Middle => "middle",
             Self::Scroll => "scroll",
             Self::Haptic => "haptic",
         }
@@ -128,7 +125,6 @@ pub struct HandBindings {
     pub menu: Option<String>,
     pub select: Option<String>,
     pub secondary: Option<String>,
-    pub middle: Option<String>,
     pub scroll: Option<String>,
     pub haptic: Option<String>,
 }
@@ -142,7 +138,6 @@ impl HandBindings {
             ActionName::Menu => &self.menu,
             ActionName::Select => &self.select,
             ActionName::Secondary => &self.secondary,
-            ActionName::Middle => &self.middle,
             ActionName::Scroll => &self.scroll,
             ActionName::Haptic => &self.haptic,
         };

@@ -1,5 +1,7 @@
 //! The game's pointer across frames of controller input: the place it points at, the pointing
-//! hand, its moves, presses, releases and wheel turns.
+//! hand, its moves, presses, releases and wheel turns. `turn.rs` holds the tests of its turn keys.
+
+mod turn;
 
 use std::time::Duration;
 
@@ -41,6 +43,11 @@ fn centered() -> HandInput {
 /// A hand that aims beside the screen.
 fn beside() -> HandInput {
     aiming(2.0, 0.0)
+}
+
+/// `hand` with its `scroll` control pushed to `x` on its left and right axis.
+fn stick(x: f32, hand: HandInput) -> HandInput {
+    HandInput { scroll: Vector2f { x, y: 0.0 }, ..hand }
 }
 
 /// A pointer, the controllers' watch, every action sent and what each send returns.
@@ -98,9 +105,19 @@ impl Run {
     fn notches(&self) -> i32 {
         let turns = self.sent.iter().filter_map(|sent| match sent {
             Action::Wheel(notches) => Some(i32::from(*notches)),
-            Action::Move(_) | Action::Press(_) | Action::Release(_) => None,
+            Action::Move(_)
+            | Action::Press(_)
+            | Action::Release(_)
+            | Action::PressTurn(_)
+            | Action::ReleaseTurn(_) => None,
         });
         turns.sum()
+    }
+
+    /// The turn key presses and releases sent, in order.
+    fn turns(&self) -> Vec<Action> {
+        let turn = |sent: &&Action| matches!(sent, Action::PressTurn(_) | Action::ReleaseTurn(_));
+        self.sent.iter().filter(turn).copied().collect()
     }
 
     /// Presses the right hand's `select` over the screen's center, so the pointer holds the left
@@ -136,7 +153,7 @@ fn a_ray_that_meets_the_menu_s_panel_or_misses_the_screen_acts_on_nothing() {
 }
 
 #[test]
-fn with_a_projection_layer_shown_no_mouse_input_is_sent_and_no_laser_shows() {
+fn with_a_projection_layer_shown_no_mouse_or_turn_key_input_is_sent_and_no_laser_shows() {
     // A frame that shows the projection layer closes the menu and gives the pointer no screen.
     let projection = Sight { menu: None, panel: PanelAim::Missed, screen: None };
     let mut run = Run::new();
@@ -145,7 +162,7 @@ fn with_a_projection_layer_shown_no_mouse_input_is_sent_and_no_laser_shows() {
         centered(),
         HandInput { select: 1.0, scroll: up, ..centered() },
         HandInput { secondary: ButtonState::Pressed, ..centered() },
-        HandInput { middle: ButtonState::Pressed, ..centered() },
+        stick(0.8, centered()),
         centered(),
     ] {
         assert_eq!(run.frame(HandInput::default(), right, projection).aimed, None, "no laser");
@@ -216,14 +233,12 @@ fn a_failed_move_is_sent_again_in_the_next_frame() {
 }
 
 #[test]
-fn select_secondary_and_middle_press_and_release_the_left_right_and_middle_button() {
+fn select_and_secondary_press_and_release_the_left_and_right_button() {
     let mut run = Run::new();
     run.right(centered());
     run.right(HandInput { select: 1.0, ..centered() });
     run.right(HandInput { select: 0.4, ..centered() });
     run.right(HandInput { secondary: ButtonState::Pressed, ..centered() });
-    run.right(centered());
-    run.right(HandInput { middle: ButtonState::Pressed, ..centered() });
     run.right(centered());
     let buttons: Vec<Action> =
         run.sent.iter().copied().filter(|sent| !matches!(sent, Action::Move(_))).collect();
@@ -234,8 +249,6 @@ fn select_secondary_and_middle_press_and_release_the_left_right_and_middle_butto
             Action::Release(Button::Left),
             Action::Press(Button::Right),
             Action::Release(Button::Right),
-            Action::Press(Button::Middle),
-            Action::Release(Button::Middle),
         ]
     );
 }
@@ -310,7 +323,7 @@ fn a_failed_release_is_sent_again_in_the_next_frame() {
 }
 
 #[test]
-fn the_wheel_turns_12_notches_up_in_a_second_and_never_while_middle_is_pressed() {
+fn the_wheel_turns_12_notches_up_in_a_second_and_never_with_a_ray_beside_the_screen() {
     let up = Vector2f { x: 0.0, y: 1.0 };
     let turned = |hand: HandInput| {
         let mut run = Run::new();
@@ -321,7 +334,5 @@ fn the_wheel_turns_12_notches_up_in_a_second_and_never_while_middle_is_pressed()
     };
     let notches = turned(HandInput { scroll: up, ..centered() });
     assert!((notches - 12).abs() <= 1, "{notches}");
-    let middle = HandInput { scroll: up, middle: ButtonState::Pressed, ..centered() };
-    assert_eq!(turned(middle), 0, "middle pressed");
     assert_eq!(turned(HandInput { scroll: up, ..beside() }), 0, "a ray beside the screen");
 }
