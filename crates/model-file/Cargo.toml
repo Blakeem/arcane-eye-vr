@@ -1,0 +1,16 @@
+[package]
+name = "model-file"
+description = "The glTF 2.0 binary file reader: the default scene's nodes, the triangle meshes, the materials and the decoded textures."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+png.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
