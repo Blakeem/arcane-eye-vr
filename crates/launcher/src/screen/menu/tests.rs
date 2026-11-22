@@ -4,6 +4,7 @@
 mod pixels;
 
 use std::cell::Cell;
+use std::f32::consts::FRAC_1_SQRT_2;
 use std::fs;
 use std::time::{Duration, Instant};
 
@@ -20,7 +21,8 @@ use super::place::PANEL_SIZE;
 use super::save::{PlayerFile, Saver, Saving};
 use super::{MenuError, ScreenMenu, rows};
 use crate::screen::controls::{ControllerWatch, Frame};
-use crate::screen::geometry::test_support::vector;
+use crate::screen::geometry::rotate;
+use crate::screen::geometry::test_support::{assert_near, vector};
 
 const fn pose(position: Vector3f) -> Posef {
     Posef { orientation: Quaternionf::IDENTITY, position }
@@ -34,8 +36,11 @@ pub(super) fn screen(distance_m: f32, width_m: f32) -> ScreenSettings {
     }
 }
 
-/// The left grip that puts the panel's center at (0, 0, -0.5), facing the head at the origin.
-const GRIP: Vector3f = Vector3f { x: 0.0, y: -0.15, z: -0.5 };
+/// The left grip of a thumb-up hand, which puts the panel upright at (0, 0, -0.5) facing +Z.
+const GRIP: Posef = Posef {
+    orientation: Quaternionf { x: FRAC_1_SQRT_2, y: 0.0, z: 0.0, w: FRAC_1_SQRT_2 },
+    position: vector(0.0, -0.15, -0.5),
+};
 
 /// A menu, the controllers' watch and the time of the next frame, with the menu on the left hand
 /// and the right hand pointing.
@@ -51,7 +56,7 @@ struct Run {
 #[derive(Clone, Copy, Default)]
 struct Hands {
     menu: ButtonState,
-    grip: Option<Vector3f>,
+    grip: Option<Posef>,
     right_menu: ButtonState,
     aim: Option<Vector3f>,
     select: f32,
@@ -95,7 +100,7 @@ impl Run {
 /// The controllers' frame of `hands`, read through `watch`.
 fn controls(watch: &mut ControllerWatch, hands: Hands) -> Frame {
     let input = Input {
-        left: HandInput { menu: hands.menu, grip: hands.grip.map(pose), ..HandInput::default() },
+        left: HandInput { menu: hands.menu, grip: hands.grip, ..HandInput::default() },
         right: HandInput {
             menu: hands.right_menu,
             aim: hands.aim.map(pose),
@@ -215,10 +220,22 @@ fn the_panel_shows_from_the_first_grip_and_keeps_its_pose_without_one() {
     assert_eq!(laser.size.height, 1.0, "a laser that meets no panel");
     let gripped = run.frame(Hands { grip: Some(GRIP), ..Hands::default() }, Duration::ZERO);
     let placed = gripped.panel.expect("the panel").pose;
-    assert_eq!(placed.position, vector(0.0, 0.0, -0.5));
+    assert_near(placed.position, vector(0.0, 0.0, -0.5));
     let kept = run.frame(Hands::default(), Duration::ZERO);
     assert_eq!(kept.panel.map(|panel| panel.pose), Some(placed));
     assert_eq!(kept.laser, None, "no aim pose");
+}
+
+#[test]
+fn the_open_panel_turns_when_only_the_grip_s_orientation_changes() {
+    let mut run = Run::new(screen(2.5, 3.0));
+    run.press_menu();
+    let before = run.frame(Hands { grip: Some(GRIP), ..Hands::default() }, Duration::ZERO).panel;
+    let level = Posef { orientation: Quaternionf::IDENTITY, ..GRIP };
+    let after = run.frame(Hands { grip: Some(level), ..Hands::default() }, Duration::ZERO).panel;
+    let [before, after] = [before, after].map(|panel| panel.expect("the panel").pose);
+    assert_near(rotate(before.orientation, vector(0.0, 0.0, 1.0)), vector(0.0, 0.0, 1.0));
+    assert_near(rotate(after.orientation, vector(0.0, 0.0, 1.0)), vector(0.0, 1.0, 0.0));
 }
 
 #[test]

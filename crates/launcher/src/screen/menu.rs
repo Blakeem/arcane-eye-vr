@@ -1,4 +1,4 @@
-//! The screen menu: a panel above one controller whose buttons set the screen's distance and
+//! The screen menu: a panel fixed to one controller whose buttons set the screen's distance and
 //! width, and the laser of the other controller that points at them. The caller replaces the laser
 //! of [`Shown`] with the laser of the game's pointer while that pointer's ray hits the screen.
 //!

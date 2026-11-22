@@ -1,16 +1,26 @@
-//! Where the menu's two quads sit in the LOCAL space: the panel above the menu hand, turned to the
-//! head, and the laser along the pointing hand's ray, turned about the ray to the head.
+//! Where the menu's two quads sit in the LOCAL space: the panel fixed to the menu hand's `grip`
+//! pose, and the laser along the pointing hand's ray, turned about the ray to the head.
 
 use openxr::{Extent2Df, Posef, Vector3f};
 use overlay::layout::{PANEL_HEIGHT, PANEL_WIDTH, PanelPoint};
 
-use crate::screen::geometry::{Shares, UP, across, add, facing, length, normalized, scale, sub};
+use crate::screen::geometry::{
+    Shares, UP, across, add, facing, length, normalized, rotate, scale, sub,
+};
 
 /// The panel's size in meters, which keeps the aspect ratio of its pixels.
 pub(crate) const PANEL_SIZE: Extent2Df = Extent2Df { width: 0.30, height: 0.16875 };
 
-/// How far the panel's center sits above the menu hand's grip, in meters.
-const PANEL_LIFT_M: f32 = 0.15;
+/// The panel's center from the menu hand's grip in the grip's own axes, in meters, which lies past
+/// the thumb end of the hand.
+const PANEL_OFFSET: Vector3f = Vector3f { x: 0.0, y: 0.0, z: -0.15 };
+
+/// The grip's axis that the panel's height runs along, from the little finger to the thumb.
+const GRIP_UP: Vector3f = Vector3f { x: 0.0, y: 0.0, z: -1.0 };
+
+/// The grip's axis that the panel's front faces along: toward the player for a hand held with the
+/// thumb up.
+const GRIP_FRONT: Vector3f = Vector3f { x: 0.0, y: 1.0, z: 0.0 };
 
 /// The laser's width in meters.
 const LASER_WIDTH_M: f32 = 0.004;
@@ -18,14 +28,15 @@ const LASER_WIDTH_M: f32 = 0.004;
 /// The laser's length when its ray meets no panel, in meters.
 pub(crate) const LASER_REACH_M: f32 = 1.0;
 
-/// The pose of the panel for a menu hand whose grip is at `grip` and a head at `head`: its center
-/// [`PANEL_LIFT_M`] above the grip, upright and turned about the Y axis so that its front faces
-/// the head. A head straight above or below the center leaves the front facing +Z.
-pub(crate) fn panel_pose(grip: Vector3f, head: Vector3f) -> Posef {
-    let center = add(grip, Vector3f { x: 0.0, y: PANEL_LIFT_M, z: 0.0 });
-    let level = Vector3f { x: head.x - center.x, y: 0.0, z: head.z - center.z };
-    let front = normalized(level).unwrap_or(Vector3f { x: 0.0, y: 0.0, z: 1.0 });
-    Posef { orientation: facing(UP, front), position: center }
+/// The pose of the panel on a menu hand whose `grip` pose is `grip`: its center at
+/// [`PANEL_OFFSET`] in the grip's axes, its height along [`GRIP_UP`], its front along
+/// [`GRIP_FRONT`] and its width along the grip's +X axis, the palm's normal, which points to the
+/// right for a hand held with the thumb up. The panel moves and turns with the hand.
+pub(crate) fn panel_pose(grip: Posef) -> Posef {
+    let center = add(grip.position, rotate(grip.orientation, PANEL_OFFSET));
+    let up = rotate(grip.orientation, GRIP_UP);
+    let front = rotate(grip.orientation, GRIP_FRONT);
+    Posef { orientation: facing(up, front), position: center }
 }
 
 /// The panel pixel at `shares` of the panel's width and height.
@@ -60,27 +71,71 @@ fn any_across(axis: Vector3f) -> Vector3f {
 
 #[cfg(test)]
 mod tests {
-    use openxr::{Posef, Quaternionf};
+    use std::f32::consts::FRAC_1_SQRT_2;
+
+    use openxr::{Posef, Quaternionf, Vector3f};
     use overlay::layout::PanelPoint;
 
     use super::{PANEL_SIZE, laser, panel_point, panel_pose};
     use crate::screen::geometry::test_support::{assert_near, ray_to, vector};
     use crate::screen::geometry::{Ray, Shares, hit, rotate};
 
-    #[test]
-    fn the_panel_sits_above_the_grip_and_its_front_faces_the_head() {
-        let pose = panel_pose(vector(0.2, -0.3, -0.4), vector(0.0, 0.0, 0.0));
-        assert_near(pose.position, vector(0.2, -0.15, -0.4));
-        // From the center (0.2, -0.4) in X and Z to the head's Y axis at (0, 0).
-        let toward_head = vector(-0.2 / 0.2_f32.sqrt(), 0.0, 0.4 / 0.2_f32.sqrt());
-        assert_near(rotate(pose.orientation, vector(0.0, 0.0, 1.0)), toward_head);
-        assert_near(rotate(pose.orientation, vector(0.0, 1.0, 0.0)), vector(0.0, 1.0, 0.0));
+    /// A grip at (0, 1, 0) with the orientation `orientation`.
+    const fn grip(orientation: Quaternionf) -> Posef {
+        Posef { orientation, position: vector(0.0, 1.0, 0.0) }
+    }
+
+    /// Fails the test unless the panel at `pose` has its center at `center` and its front, up and
+    /// right axes along `front`, `up` and `right`.
+    fn assert_panel(pose: Posef, center: Vector3f, [front, up, right]: [Vector3f; 3]) {
+        assert_near(pose.position, center);
+        assert_near(rotate(pose.orientation, vector(0.0, 0.0, 1.0)), front);
+        assert_near(rotate(pose.orientation, vector(0.0, 1.0, 0.0)), up);
+        assert_near(rotate(pose.orientation, vector(1.0, 0.0, 0.0)), right);
     }
 
     #[test]
-    fn a_head_straight_above_the_panel_leaves_its_front_facing_plus_z() {
-        let pose = panel_pose(vector(0.0, -0.5, -0.4), vector(0.0, 0.0, -0.4));
-        assert_near(rotate(pose.orientation, vector(0.0, 0.0, 1.0)), vector(0.0, 0.0, 1.0));
+    fn the_panel_sits_past_the_grip_s_minus_z_and_faces_along_its_plus_y() {
+        let pose = panel_pose(grip(Quaternionf::IDENTITY));
+        let axes = [vector(0.0, 1.0, 0.0), vector(0.0, 0.0, -1.0), vector(1.0, 0.0, 0.0)];
+        assert_panel(pose, vector(0.0, 1.0, -0.15), axes);
+    }
+
+    #[test]
+    fn a_thumb_up_grip_holds_the_panel_upright_above_the_hand_facing_plus_z() {
+        // A quarter turn about +X.
+        let thumb_up = Quaternionf { x: FRAC_1_SQRT_2, y: 0.0, z: 0.0, w: FRAC_1_SQRT_2 };
+        let axes = [vector(0.0, 0.0, 1.0), vector(0.0, 1.0, 0.0), vector(1.0, 0.0, 0.0)];
+        assert_panel(panel_pose(grip(thumb_up)), vector(0.0, 1.15, 0.0), axes);
+    }
+
+    #[test]
+    fn a_grip_turned_about_plus_y_turns_the_panel_with_it() {
+        // A quarter turn about +Y.
+        let turned = Quaternionf { x: 0.0, y: FRAC_1_SQRT_2, z: 0.0, w: FRAC_1_SQRT_2 };
+        let axes = [vector(0.0, 1.0, 0.0), vector(-1.0, 0.0, 0.0), vector(0.0, 0.0, -1.0)];
+        assert_panel(panel_pose(grip(turned)), vector(-0.15, 1.0, 0.0), axes);
+    }
+
+    #[test]
+    fn a_ray_along_a_rolled_panel_s_front_meets_its_middle_and_one_raised_meets_higher() {
+        // A thumb-up grip rolled by 45 degrees about the LOCAL +Z axis.
+        let rolled = Quaternionf { x: 0.653_281_5, y: 0.270_598_1, z: 0.270_598_1, w: 0.653_281_5 };
+        let pose = panel_pose(grip(rolled));
+        let up = vector(-FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0);
+        assert_near(rotate(pose.orientation, vector(0.0, 1.0, 0.0)), up);
+        let center = pose.position;
+        assert_near(center, vector(-0.15 * FRAC_1_SQRT_2, 1.0 + 0.15 * FRAC_1_SQRT_2, 0.0));
+        let toward = vector(0.0, 0.0, -1.0);
+        let middle = Ray { origin: vector(center.x, center.y, 1.0), direction: toward };
+        let shares = hit(middle, pose, PANEL_SIZE).expect("a hit").shares;
+        assert!((shares.x - 0.5).abs() < 1e-4 && (shares.y - 0.5).abs() < 1e-4, "{shares:?}");
+        // A quarter of the panel's height along its up axis is a quarter of the way from its top.
+        let rise = PANEL_SIZE.height / 4.0;
+        let origin = vector(center.x + up.x * rise, center.y + up.y * rise, 1.0);
+        let higher =
+            hit(Ray { origin, direction: toward }, pose, PANEL_SIZE).expect("a hit").shares;
+        assert!((higher.x - 0.5).abs() < 1e-4 && (higher.y - 0.25).abs() < 1e-4, "{higher:?}");
     }
 
     #[test]

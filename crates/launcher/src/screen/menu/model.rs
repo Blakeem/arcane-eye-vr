@@ -181,7 +181,7 @@ impl Model {
         let input = &frame.input;
         let head = geometry::head_position(input.head);
         if let Some(grip) = input.hand(menu_hand).grip {
-            self.panel = Some(panel_pose(grip.position, head));
+            self.panel = Some(panel_pose(grip));
         }
         let pointer = menu_hand.other();
         let ray = input.hand(pointer).aim.and_then(Ray::of);
