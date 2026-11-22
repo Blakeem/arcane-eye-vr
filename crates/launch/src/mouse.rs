@@ -65,7 +65,7 @@ pub(crate) enum Event {
     },
     Press(Button),
     Release(Button),
-    /// A wheel turn by whole notches, forward (up) for a positive count.
+    /// A wheel turn by a count of notches, forward (up) for a positive count.
     Wheel(i16),
 }
 
