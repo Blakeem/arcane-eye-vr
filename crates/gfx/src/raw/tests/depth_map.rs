@@ -17,7 +17,7 @@ use super::{Gpu, warp};
 use crate::depth_map::{
     DepthMapRead, MapError, MapScene, MapSection, MapStart, MapStep, MapUi, layer_grid,
 };
-use crate::raw::Section;
+use crate::raw::section::Section;
 
 /// The test distance texture's size: two halves 256 texels wide and 2 rows.
 const DISTANCE_SIZE: [u32; 2] = [512, 2];

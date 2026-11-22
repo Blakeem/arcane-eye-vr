@@ -27,7 +27,8 @@ use windows::core::HRESULT;
 
 use crate::raw::depth_map::Pipeline;
 use crate::raw::row::{ReadSteps, Size, Target, Texels, sampled_view};
-use crate::raw::{Section, SectionFault, texture_desc};
+use crate::raw::section::{Section, SectionFault};
+use crate::raw::texture_desc;
 use crate::readback::Readback;
 
 /// The section's size as `CreateFileMappingW` takes it.
