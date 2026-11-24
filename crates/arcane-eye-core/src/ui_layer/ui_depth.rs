@@ -1,10 +1,11 @@
 //! The UI depth: in a side by side frame whose UI the core draws, the UI comes in front of the
 //! scene under it once that scene has stayed nearer than the screen surface for the wait time of
-//! the dev flag `ui.forward_wait_ms`, past a limit the eye distance shrinks instead outside the
-//! launch mode `vr`, and the cursor sits at the depth of what is under the pointer.
+//! the dev flag `ui.forward_wait_ms`, past a limit the eye distance shrinks instead outside a world
+//! frame, and the cursor sits at the depth of what is under the pointer.
 //!
 //! ```text
 //! UI LAYER FRAME whose draw is Ui or MoveThenUi, render thread, before the UI draw
+//!   [kind]      the eye scale in use set to 1 at once in a world frame, in `decide`
 //!   [inputs]    the main view's camera of the frame and the distance texture of TextureKey::DISTANCE
 //!   [result]    the newest nearest read the GPU finished, the nearest distance in meters or a UI
 //!               that hides the scene
@@ -21,8 +22,8 @@
 //!               what is under the pointer, in `cursor_depth`, with the pointer read's ray at the
 //!               eye scale the eye cameras rendered the frame at
 //! PRESENT CALL SITE of the next frame
-//!   [eye scale] the eye cameras' eye distance times the eye scale in use, at which they render
-//!               the frame after it
+//!   [eye scale] the eye cameras' eye distance times the eye scale in use for a screen kind and
+//!               times 1 for a world kind, at which they render the frame after it
 //! ```
 //!
 //! A frame with no camera or with a missing or unusable distance texture starts no read, keeps the
@@ -45,7 +46,6 @@ use game_bindings::camera::Camera;
 use game_bindings::texture_table::TextureKey;
 use game_mem::GameAddr;
 use gfx::nearest::{DistanceFault, Nearest, NearestError, NearestRead, check_distance};
-use ipc_layout::launch_token::Mode;
 use stereo_core::eye::EyeScale;
 use tracing::Level;
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
@@ -53,29 +53,30 @@ use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 pub(crate) use self::cursor_depth::CursorReport;
 use self::cursor_depth::{CursorDepth, Start};
 pub(crate) use self::decide::Over;
-use self::decide::{Following, View, after, probe};
+use self::decide::{Following, View, after, handed, probe};
 use super::LOG_PERIOD;
 pub(crate) use super::decide::Moves;
 use super::decide::ui_columns;
 use super::depth_offset::DepthOffset;
 use crate::game_source::{GameSource, SourceFault};
 use crate::raw::Devices;
+use crate::vr_view::ViewKind;
 
 /// What the UI depth reads at the Present call site besides the frame's textures.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DepthInput {
     /// The depth offset in use, which also moves the right half, and its UI limit. The depth
-    /// offset is 0 in the launch mode `vr`.
+    /// offset is 0 in a world frame.
     pub(crate) offset: DepthOffset,
-    /// The full eye distance in meters: `stereo.ipd_mm` in the launch mode `desktop-stereo`, and the
-    /// eye distance of the head pose in use in the mode `vr`.
+    /// The full eye distance in meters: `stereo.ipd_mm` in a screen frame, and the eye distance of
+    /// the head pose in use in a world frame.
     pub(crate) eye_m: f32,
     /// The main view's camera of the frame, or `None` when the view camera feature read none.
     pub(crate) camera: Option<Camera>,
     /// The time of this Present call.
     pub(crate) now: Instant,
-    /// The launch mode, whose `vr` keeps the full eye distance past the UI disparity's limit.
-    pub(crate) mode: Mode,
+    /// The frame's view kind, whose world keeps the full eye distance past the UI disparity's limit.
+    pub(crate) kind: ViewKind,
 }
 
 /// The `ui depth` line's nearest distance for a UI over no scene or no result.
@@ -214,10 +215,12 @@ impl UiDepth {
         }
     }
 
-    /// Hands the eye scale in use to the eye cameras at a Present call. They render the next frame
-    /// at it, so the pointer read of that frame's Present call probes at it.
-    pub(crate) fn hand_eye_scale(&mut self) -> EyeScale {
-        self.rendered = mem::replace(&mut self.handed, self.following.in_use.eye_scale);
+    /// Hands the eye cameras the eye scale of a Present call that decided the view kind `kind`.
+    /// They render the next frame at it, so the pointer read of that frame's Present call probes at
+    /// it and its depth map takes it.
+    pub(crate) fn hand_eye_scale(&mut self, kind: ViewKind) -> EyeScale {
+        let next = handed(kind, self.following.in_use.eye_scale);
+        self.rendered = mem::replace(&mut self.handed, next);
         self.handed
     }
 
@@ -249,6 +252,7 @@ impl UiDepth {
         input: &DepthInput,
         drawn: &DrawnUi<'_>,
     ) -> Followed {
+        self.following = self.following.in_frame(input.kind);
         let read = self.read_distances(input, drawn);
         let scene = scene_of(input, read.as_ref());
         if let (Run::Running, Some(scene)) = (self.run, &scene) {
@@ -277,7 +281,7 @@ impl UiDepth {
         scene: &'frame Scene,
     ) -> Option<Start<'frame>> {
         let place = drawn.pointer?;
-        let view = View::of(&scene.camera, input.offset, input.eye_m, input.mode);
+        let view = View::of(&scene.camera, input.offset, input.eye_m, input.kind);
         let probe = probe(place, view, self.rendered, scene.camera.far)?;
         Some(Start { ui: drawn.ui, distances: &scene.distances, probe })
     }
@@ -351,7 +355,7 @@ impl UiDepth {
             let elapsed = self
                 .stepped
                 .map_or(Duration::ZERO, |stepped| input.now.saturating_duration_since(stepped));
-            let view = View::of(&scene.camera, input.offset, input.eye_m, input.mode);
+            let view = View::of(&scene.camera, input.offset, input.eye_m, input.kind);
             self.following = after(self.following, found, view, elapsed, self.forward_wait);
             self.stepped = Some(input.now);
             self.newest = Some(found);

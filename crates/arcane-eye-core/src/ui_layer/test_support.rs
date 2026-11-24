@@ -4,7 +4,6 @@
 use std::time::Instant;
 
 use game_mem::GameAddr;
-use ipc_layout::launch_token::Mode;
 use settings::dev::ForwardWaitMs;
 use settings::player::StereoSettings;
 
@@ -17,6 +16,7 @@ use super::{DrawFault, Target, UiLayer};
 use crate::raw::cursor::Window;
 use crate::raw::test_support::TestSwapchain;
 use crate::raw::{self, BackBuffer, Devices};
+use crate::vr_view::ViewKind;
 
 /// The pipeline global and the composite stage vtable of a layer that draws only the cursor. No
 /// read goes to either address.
@@ -38,7 +38,7 @@ pub(crate) fn no_camera() -> DepthInput {
         eye_m: stereo.ipd_mm.meters(),
         camera: None,
         now: Instant::now(),
-        mode: Mode::DesktopStereo,
+        kind: ViewKind::Screen,
     }
 }
 

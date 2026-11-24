@@ -219,12 +219,18 @@ impl RenderView {
                 VIEW_LIGHTING_TARGET,
                 VIEW_LIGHTING_REQUEST,
             )?,
-            fog_variant: try_read::<u8>(self.0.checked_add(VIEW_FOG_VARIANT)?)?,
+            fog_variant: self.fog_variant()?,
             player_room: PlayerRoom(try_read_array(self.0.checked_add(VIEW_PLAYER_ROOM)?)?),
             split_index: try_read::<u8>(self.0.checked_add(VIEW_SPLIT_INDEX)?)?,
             atmosphere_lock: try_read::<u8>(self.0.checked_add(VIEW_ATMOSPHERE_LOCK)?)?,
             lighting_lock: try_read::<u8>(self.0.checked_add(VIEW_LIGHTING_LOCK)?)?,
         })
+    }
+
+    /// The view's fog variant byte, which the engine sets to 1 for a cinematic and 0 for gameplay,
+    /// or `None` when it cannot be read.
+    pub fn fog_variant(self) -> Option<u8> {
+        try_read::<u8>(self.0.checked_add(VIEW_FOG_VARIANT)?)
     }
 
     /// The view's occlusion object, address 0 included, or `None` when the pointer cannot be read.

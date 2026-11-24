@@ -1,22 +1,28 @@
-//! The launch mode `vr` at the Present call site: the head pose that places the eyes of the next
-//! proxies, the depth offset that counts as 0, the published frame's tag and the `vr view` line.
-//! In the mode `desktop-stereo` the placement, the depth offset and the tag are as without the mode,
-//! and the line is not logged.
+//! The launch mode `vr` at the Present call site: the view kind and the head pose that place the
+//! eyes of the next proxies, and of each presented frame by its own view kind the depth offset, the
+//! eye distance the UI depth computes with and the published frame's tag, and the `vr view` line. In
+//! the mode `desktop-stereo` every frame is a screen frame, and the line is not logged.
 //!
 //! ```text
 //! PRESENT CALL SITE in the mode vr
+//!   [kind]       world while the view camera rewrites the corner rays, the newest state id read is
+//!                a level's and the newest cinematic byte read is 0, else screen, in `kind`
 //!   [pose]       the test pose of `vr.test_head`, else the viewer link header's head pose while the
 //!                viewing side's heartbeat runs, else no move and no turn with the sequence number 0,
-//!                in `head`
+//!                in `head`, or no pose while the view camera does not rewrite the corner rays
 //!   [eyes]       the header's eye distance from 0.04 to 0.09 m with a header pose, else
-//!                `stereo.ipd_mm`, at the eye scale 1, which the UI depth also computes with
-//!   [placement]  the pose in the anchor of `vr.horizon`, for the next frame's proxies, or the head
-//!                controller's right axis while the view camera does not rewrite the corner rays
-//!   [tag]        the sequence number the presented frame's main view proxy was filled with, and its
-//!                main view camera's field of view and aspect
+//!                `stereo.ipd_mm`, at the eye scale 1, which the UI depth of a world frame also
+//!                computes with
+//!   [placement]  for a world kind the pose in the anchor of `vr.horizon`, and for a screen kind the
+//!                head controller's right axis at the UI layer's eye scale in use, for the next
+//!                frame's proxies
+//!   [frame]      the presented frame follows the view kind its main view proxy was filled with: a
+//!                world frame has no depth offset and a tag with the pose's sequence number and the
+//!                main view camera's lens, and a screen frame the values of the mode desktop-stereo
 //! ```
 
 mod head;
+mod kind;
 
 use std::time::Instant;
 
@@ -36,8 +42,8 @@ pub(crate) use self::head::PoseSource;
 use self::head::{
     HeadInUse, TestPose, choose, next_test_sequence, test_orientation, yaw_pitch_deg,
 };
-use crate::config::Config;
-use crate::eye_camera::Placement;
+pub(crate) use self::kind::{GameRead, ViewKind};
+use crate::eye_camera::{Placement, ProxyFill};
 use crate::ui_layer::depth_offset::DepthOffset;
 
 /// Whether the view camera feature rewrites the corner rays of each proxied view, which an eye
@@ -62,16 +68,20 @@ impl Rays {
 pub(crate) struct PresentCall {
     /// The player's stereo settings in effect.
     pub(crate) stereo: StereoSettings,
-    /// The UI layer's eye scale in use.
+    /// The eye scale the UI layer handed over for `kind`.
     pub(crate) eye_scale: EyeScale,
     pub(crate) rays: Rays,
+    /// The view kind [`VrView::decide`] gave at the call.
+    pub(crate) kind: ViewKind,
     /// The time of the call.
     pub(crate) now: Instant,
 }
 
-/// What the `vr view` line shows of the head pose in use at the newest Present call.
+/// What the `vr view` line shows of the view kind and the head pose in use at the newest Present
+/// call.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct VrReport {
+    pub(crate) view: ViewKind,
     pub(crate) source: PoseSource,
     pub(crate) head_sequence: u32,
     /// The turn to the right in degrees.
@@ -111,6 +121,8 @@ pub(crate) struct VrView {
     mode: Mode,
     flags: VrFlags,
     test: TestClock,
+    /// The view kind decided at the newest Present call, screen before the first one.
+    decided: ViewKind,
     /// The head pose in use at the newest Present call, `None` before the first one in the mode
     /// `vr`.
     newest: Option<HeadInUse>,
@@ -127,27 +139,43 @@ impl Default for VrView {
 impl VrView {
     /// The state of the launch mode `mode` with the dev flags `flags`.
     pub(crate) fn new(mode: Mode, flags: VrFlags) -> Self {
-        Self { mode, flags, test: TestClock::default(), newest: None, unturned: Once::default() }
+        Self {
+            mode,
+            flags,
+            test: TestClock::default(),
+            decided: ViewKind::Screen,
+            newest: None,
+            unturned: Once::default(),
+        }
     }
 
-    pub(crate) const fn mode(&self) -> Mode {
-        self.mode
+    /// The view kind of the next frame's proxies at a Present call where the view camera leaves the
+    /// corner rays as `rays` says and the game's newest reads are `game`. Each change of the
+    /// decided kind logs a line.
+    pub(crate) fn decide(&mut self, rays: Rays, game: GameRead) -> ViewKind {
+        let kind = kind::decide(self.mode, rays, game);
+        if kind != self.decided {
+            kind::log_change(kind, game);
+            self.decided = kind;
+        }
+        kind
     }
 
-    /// The placement of the next frame's proxies at the Present call `call`. In the mode
-    /// `desktop-stereo` each eye sits on the head controller's right axis at the eye distance of the
-    /// call's stereo settings times its eye scale. In the mode `vr` the head pose in use places the
-    /// eyes at the eye scale 1, and `header` reads the viewer link header's pose only while the test
-    /// pose is off. While the call's rays are the game's, the mode `vr` uses no head pose, logs that
-    /// once and places the eyes on the head controller's right axis at the eye scale 1.
+    /// The placement of the next frame's proxies at the Present call `call`, by the call's view
+    /// kind. A screen kind places each eye on the head controller's right axis at the eye distance
+    /// of the call's stereo settings times its eye scale. In the mode `vr` the head pose in use
+    /// places the eyes of a world kind at the eye scale 1, and `header` reads the viewer link
+    /// header's pose only while the test pose is off. While the call's rays are the game's, the
+    /// mode `vr` uses no head pose and logs that once.
     pub(crate) fn placement(
         &mut self,
         header: impl FnOnce() -> Option<HeadSample>,
         call: PresentCall,
     ) -> Placement {
-        let PresentCall { stereo, eye_scale, rays, now } = call;
+        let PresentCall { stereo, eye_scale, rays, kind, now } = call;
+        let screen = Placement::head(stereo, eye_scale);
         if self.mode == Mode::DesktopStereo {
-            return Placement::head(stereo, eye_scale);
+            return screen;
         }
         let ipd_m = stereo.ipd_mm.meters();
         if rays == Rays::GameBuilt {
@@ -158,50 +186,26 @@ impl VrView {
                  eyes stay on the game camera's right axis and the head pose does not turn them"
             );
             self.newest = Some(choose(None, None, ipd_m));
-            return Placement::head(stereo, EyeScale::FULL);
+            return screen;
         }
         let test = self.test.next(self.flags.test_head, self.flags.test_yaw_deg.degrees(), now);
         let header = if test.is_none() { header() } else { None };
         let head = choose(header, test, ipd_m);
         self.newest = Some(head);
-        pose_placement(head, self.flags.horizon)
-    }
-
-    /// The depth offset in use that the UI layer and the UI depth compute with, of the player's
-    /// `stereo` settings and the parallel share `screen` the viewing side reports: in the mode
-    /// `desktop-stereo` the screen's share while it reports one and the setting otherwise, and no
-    /// depth offset in the mode `vr`.
-    pub(crate) fn depth_offset(
-        &self,
-        stereo: StereoSettings,
-        screen: Option<ParallelShare>,
-    ) -> DepthOffset {
-        match self.mode {
-            Mode::DesktopStereo => DepthOffset::in_use(stereo.depth_offset_percent, screen),
-            Mode::Vr => DepthOffset::NONE,
+        match kind {
+            ViewKind::World => pose_placement(head, self.flags.horizon),
+            ViewKind::Screen => screen,
         }
     }
 
-    /// The full eye distance in meters the UI depth computes with: the one of the player's `stereo`
-    /// settings in the mode `desktop-stereo`, and the head pose's in use in the mode `vr`, which may
-    /// be the header's.
-    pub(crate) fn depth_eye_m(&self, stereo: StereoSettings) -> f32 {
-        match (self.mode, self.newest) {
-            (Mode::Vr, Some(head)) => head.eye_m,
-            (Mode::DesktopStereo, _) | (Mode::Vr, None) => stereo.ipd_mm.meters(),
+    /// The full eye distance in meters the UI depth of a frame of the view kind `kind` computes
+    /// with: the head pose's in use for a world frame, which may be the header's, and the one of the
+    /// player's `stereo` settings for a screen frame.
+    pub(crate) fn depth_eye_m(&self, kind: ViewKind, stereo: StereoSettings) -> f32 {
+        match (kind, self.newest) {
+            (ViewKind::World, Some(head)) => head.eye_m,
+            (ViewKind::Screen, _) | (ViewKind::World, None) => stereo.ipd_mm.meters(),
         }
-    }
-
-    /// The tag of a published frame whose main view proxy was filled with the head pose sequence
-    /// number `head_sequence` and whose main view camera is `camera`. It is [`FrameTag::NONE`] in the
-    /// mode `desktop-stereo`, and its field of view and aspect are 0 for a frame with no camera.
-    pub(crate) fn tag(&self, head_sequence: u32, camera: Option<Camera>) -> FrameTag {
-        if self.mode == Mode::DesktopStereo {
-            return FrameTag::NONE;
-        }
-        let (fov_y_rad, aspect) =
-            camera.map_or((0.0, 0.0), |camera| (camera.fov_y_rad, camera.aspect));
-        FrameTag { head_sequence, fov_y_rad, aspect }
     }
 
     /// The `vr view` line's values, or `None` in the mode `desktop-stereo` and before the first
@@ -210,6 +214,7 @@ impl VrView {
         let head = self.newest?;
         let (yaw_deg, pitch_deg) = yaw_pitch_deg(&head.pose);
         Some(VrReport {
+            view: self.decided,
             source: head.source,
             head_sequence: head.sequence,
             yaw_deg,
@@ -220,19 +225,30 @@ impl VrView {
     }
 }
 
-/// The placement of the first frame's proxies, before the first Present call: no head pose in the
-/// mode `vr` while `rays` are rewritten, and the head controller's right axis at the full eye
-/// distance otherwise.
-pub(crate) fn first_placement(config: Config, rays: Rays) -> Placement {
-    let stereo = config.settings.stereo;
-    match (config.mode, rays) {
-        (Mode::Vr, Rays::Rewritten) => {
-            pose_placement(choose(None, None, stereo.ipd_mm.meters()), config.dev.vr.horizon)
-        }
-        (Mode::DesktopStereo, _) | (Mode::Vr, Rays::GameBuilt) => {
-            Placement::head(stereo, EyeScale::FULL)
-        }
+/// The depth offset in use that the UI layer and the UI depth compute with for a frame of the view
+/// kind `kind`, of the player's `stereo` settings and the parallel share `screen` the viewing side
+/// reports: no depth offset for a world frame, and for a screen frame the screen's share while it
+/// reports one and the setting otherwise.
+pub(crate) fn depth_offset(
+    kind: ViewKind,
+    stereo: StereoSettings,
+    screen: Option<ParallelShare>,
+) -> DepthOffset {
+    match kind {
+        ViewKind::World => DepthOffset::NONE,
+        ViewKind::Screen => DepthOffset::in_use(stereo.depth_offset_percent, screen),
     }
+}
+
+/// The tag of a published frame whose main view proxy was filled as `fill` says and whose main view
+/// camera is `camera`. It is [`FrameTag::NONE`] for a screen frame, and the field of view and aspect
+/// of a world frame are 0 for a frame with no camera.
+pub(crate) fn tag(fill: ProxyFill, camera: Option<Camera>) -> FrameTag {
+    if fill.kind == ViewKind::Screen {
+        return FrameTag::NONE;
+    }
+    let (fov_y_rad, aspect) = camera.map_or((0.0, 0.0), |camera| (camera.fov_y_rad, camera.aspect));
+    FrameTag { head_sequence: fill.head_sequence, fov_y_rad, aspect }
 }
 
 /// The placement of `head` in the anchor of `horizon`.

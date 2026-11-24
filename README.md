@@ -49,18 +49,18 @@ A controller that points at the screen moves the mouse pointer to the place it p
 - SteamVR must be the active OpenXR runtime.
 - The headset shows the controllers when the OpenXR runtime gives their models.
 - The screen sits in front of the seated position that SteamVR holds.
-- The game renders at the resolution in its video options, and each eye gets half of that width. A higher resolution gives a sharper picture and a lower frame rate.
+- The game renders at the resolution in its video options, and each eye gets half of that width. A 16:9 resolution of 3840 by 2160 gives the sharpest picture. A lower resolution gives a higher frame rate.
 
 ## Play in the immersive mode
 
-The launch app shows the game around the player. Turn the head to look around from the place of the game's camera.
+During play in a level, the launch app shows the game around the player. Turn the head to look around from the place of the game's camera.
 
 1. Connect the headset.
 2. Add a library entry for `arcane-eye-vr.exe` as for the headset screen, and set its Launch Options to `--mode vr`.
 3. Start the entry. The launch app starts SteamVR when it does not run. The headset shows "Starting Baldur's Gate 3" until the Larian launcher or the game's first picture shows.
 4. When the Larian launcher opens, it shows on the screen in the headset. Point a controller at it, choose DirectX 11 and click Play with the trigger.
 
-The keyboard and the mouse work as in the game. The picture keeps the game's own field of view, so it covers a part of the view. Loading screens and videos show on the flat screen of the headset screen, where the menu and the controller's mouse pointer work. This mode is a first stage.
+The keyboard and the mouse work as in the game. The picture keeps the game's own field of view, so it covers a part of the view. The title screen, loading pictures, videos, cutscenes and dialogue show on the flat screen of the headset screen, where the menu and the controller's mouse pointer work. This mode is a first stage.
 
 ## Play in Bigscreen or another viewer app
 

@@ -1,5 +1,6 @@
 //! The game state feature: the read of the game client's state id at each Present call site, which
-//! logs each change of the id as the game state line that `ipc_layout::game_state_line` describes.
+//! logs each change of the id as the game state line that `ipc_layout::game_state_line` describes
+//! and keeps the newest read for the view kind of the launch mode `vr`.
 //!
 //! The feature has no hook of its own. Its install resolves the game client global, and the Present
 //! call-site hook's handler runs it once per frame on the render thread. The game thread writes the
@@ -42,6 +43,9 @@ pub(crate) struct GameStateWatch {
     global: ClientGlobal,
     /// The state id of the last game state line, or `None` before the first.
     logged: Option<StateId>,
+    /// The state id of the newest read, or `None` before the first read and after a read that
+    /// failed or found no state machine.
+    newest: Option<StateId>,
     read_log: RateLimit,
 }
 
@@ -83,18 +87,41 @@ pub(crate) fn on_present_call(context: &CoreContext, thread: &RenderThread) {
     });
 }
 
+/// The state id of the newest read, or `None` while the feature does not run and after a read that
+/// failed or found no state machine.
+pub(crate) fn newest(context: &CoreContext, thread: &RenderThread) -> Option<StateId> {
+    let newest = context
+        .game_state
+        .with(thread, |watch| watch.as_ref().and_then(|watch| watch.newest(&context.health)));
+    newest.flatten()
+}
+
 impl GameStateWatch {
     pub(crate) fn new(global: ClientGlobal) -> Self {
-        Self { global, logged: None, read_log: RateLimit::default() }
+        Self { global, logged: None, newest: None, read_log: RateLimit::default() }
     }
 
-    /// Reads the state id and logs a game state line when it differs from the last line's id. A null
-    /// client or state machine pointer logs nothing, and a failed read logs a rate-limited warning.
+    /// The state id of the newest read, or `None` while `health` holds the feature off, before the
+    /// first read and after a read that failed or found no state machine.
+    pub(crate) fn newest(&self, health: &Health) -> Option<StateId> {
+        if !health.is_running(Feature::GameState) {
+            return None;
+        }
+        self.newest
+    }
+
+    /// Reads the state id, keeps it as the newest read and logs a game state line when it differs
+    /// from the last line's id. A null client or state machine pointer logs nothing, and a failed
+    /// read logs a rate-limited warning.
     pub(crate) fn on_frame(&mut self) {
         let read = match self.global.state() {
             Some(ClientState::Id(id)) => id,
-            Some(ClientState::NoStateMachine) => return,
+            Some(ClientState::NoStateMachine) => {
+                self.newest = None;
+                return;
+            }
             None => {
+                self.newest = None;
                 warn_every!(
                     self.read_log,
                     LOG_PERIOD,
@@ -104,6 +131,7 @@ impl GameStateWatch {
                 return;
             }
         };
+        self.newest = Some(read);
         let Some(line) = decide::line(self.logged, read) else { return };
         self.logged = Some(read);
         // Only a change of the state id reaches this line, so it needs no rate-limit macro.

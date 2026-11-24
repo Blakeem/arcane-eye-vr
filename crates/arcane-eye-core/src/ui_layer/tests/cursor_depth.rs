@@ -25,6 +25,7 @@ use crate::ui_layer::cursor::counter::WindowsCursor;
 use crate::ui_layer::decide::{Draw, Moves, Step, Write, depth_shift};
 use crate::ui_layer::test_support::target_parts;
 use crate::ui_layer::ui_depth::{CursorReport, DepthInput, Over};
+use crate::vr_view::ViewKind;
 
 const BLUE: Pixel = [0, 0, 255, 255];
 const CLEAR: Pixel = [0, 0, 0, 0];
@@ -263,7 +264,7 @@ fn the_pointer_read_probes_at_the_eye_scale_the_eye_cameras_rendered_the_frame_a
     let mut frame = later(frames, FRESH_FRAMES);
     for _ in 0..MAX_FRAMES {
         frame = later(frame, 1);
-        layer.hand_eye_scale();
+        layer.hand_eye_scale(ViewKind::Screen);
         draw(&mut layer, &test, pointer, &input(start, frame));
         if layer.cursor_report() != at_full {
             break;

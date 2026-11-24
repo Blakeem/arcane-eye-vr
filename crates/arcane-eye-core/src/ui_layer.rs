@@ -77,6 +77,7 @@ use crate::install::{GameCode, LocateError};
 use crate::pair::PairState;
 use crate::present;
 use crate::raw::{self, BackBuffer};
+use crate::vr_view::ViewKind;
 
 /// The shortest time between two warnings of one call site.
 pub(crate) const LOG_PERIOD: Duration = Duration::from_secs(10);
@@ -200,9 +201,10 @@ impl UiLayer {
         self.cursor.show();
     }
 
-    /// Hands the UI depth's eye scale in use to the eye cameras at a Present call.
-    pub(crate) fn hand_eye_scale(&mut self) -> EyeScale {
-        self.depth.hand_eye_scale()
+    /// Hands the UI depth's eye scale of the next frame's proxies to the eye cameras at a Present
+    /// call that decided the view kind `kind`.
+    pub(crate) fn hand_eye_scale(&mut self, kind: ViewKind) -> EyeScale {
+        self.depth.hand_eye_scale(kind)
     }
 
     pub(crate) fn depth_report(&self) -> DepthReport {

@@ -13,8 +13,8 @@
 //! at the proxy. Every draw places its vertices relative to the position slot 9 returns, so geometry,
 //! lighting and decals all use the eye. The engine's frame sync points each `ReadState` back at the
 //! head controller at each frame's end. The frame's [`Placement`] places the eye: on the head
-//! controller's right axis, or in the launch mode `vr` by the head pose on top of the head
-//! controller's camera.
+//! controller's right axis, or in a world frame of the launch mode `vr` by the head pose on top of
+//! the head controller's camera.
 //!
 //! Each of the two views has its own ring of proxies in pages that the core context holds for the
 //! process life, so a proxy that a render worker thread still reads stays mapped. A frame ends at the
@@ -42,7 +42,7 @@ use stereo_core::eye::Eye;
 use tracing::{Level, info, warn};
 
 use self::lane::Lane;
-pub(crate) use self::placement::Placement;
+pub(crate) use self::placement::{Placement, ProxyFill};
 use self::proxy::{PAGES_SIZE, RING_SIZE};
 pub(crate) use self::target::Target;
 use self::target::target;
@@ -210,21 +210,21 @@ fn on_view_begin(context: &CoreContext, thread: &RenderThread, registers: &mut R
 }
 
 /// Ends the frame of the eye camera, so the next frame's views are chosen afresh in `layout` and
-/// place each eye by `placement`. Returns the head pose sequence number that the ended frame's main
-/// view proxy was filled with, 0 when the frame proxied no main view or the feature is off.
+/// place each eye by `placement`. Returns what the ended frame's main view proxy was filled with,
+/// [`ProxyFill::NONE`] when the frame proxied no main view or the feature is off.
 pub(crate) fn end_frame(
     context: &CoreContext,
     thread: &RenderThread,
     layout: Layout,
     placement: Placement,
-) -> u32 {
-    let sequence = context.eye_camera.with(thread, |state| {
-        state.as_mut().map_or(0, |state| {
+) -> ProxyFill {
+    let fill = context.eye_camera.with(thread, |state| {
+        state.as_mut().map_or(ProxyFill::NONE, |state| {
             state.set_placement(placement);
             state.end_frame(layout)
         })
     });
-    sequence.unwrap_or(0)
+    fill.unwrap_or(ProxyFill::NONE)
 }
 
 /// The role of `view` for `target` in a frame of `layout`, or `None` when the eye camera proxies no
@@ -262,9 +262,9 @@ pub(crate) struct EyeState {
     eye_view: Lane,
     /// The layout of the current frame.
     layout: Layout,
-    /// The head pose sequence number the current frame's main view proxy was filled with, 0 while
-    /// no main view was proxied.
-    main_sequence: u32,
+    /// What the current frame's main view proxy was filled with, [`ProxyFill::NONE`] while no main
+    /// view was proxied.
+    main_fill: ProxyFill,
     logs: EyeLogs,
 }
 
@@ -288,7 +288,7 @@ impl EyeState {
             main: Lane::new(main_eye, placement, 0),
             eye_view: Lane::new(Eye::Right, placement, RING_SIZE),
             layout: Layout::MainOnly,
-            main_sequence: 0,
+            main_fill: ProxyFill::NONE,
             logs: EyeLogs::default(),
         }
     }
@@ -299,13 +299,13 @@ impl EyeState {
         self.eye_view.set_placement(placement);
     }
 
-    /// Ends the frame, so each lane proxies its next view, in a next frame of `layout`. Returns the
-    /// head pose sequence number the ended frame's main view proxy was filled with, 0 for none.
-    pub(crate) const fn end_frame(&mut self, layout: Layout) -> u32 {
+    /// Ends the frame, so each lane proxies its next view, in a next frame of `layout`. Returns what
+    /// the ended frame's main view proxy was filled with, [`ProxyFill::NONE`] for no proxy.
+    pub(crate) const fn end_frame(&mut self, layout: Layout) -> ProxyFill {
         self.main.end_frame();
         self.eye_view.end_frame();
         self.layout = layout;
-        mem::replace(&mut self.main_sequence, 0)
+        mem::replace(&mut self.main_fill, ProxyFill::NONE)
     }
 
     /// Renders `view`, whose first bytes are `writes`, from an eye for this frame when it is the
@@ -337,8 +337,8 @@ impl EyeState {
     }
 
     /// Proxies `view` in its lane when the view has a role in this frame, its lane proxied no view
-    /// yet and its `ReadState` holds a head controller. A proxied main view records the sequence
-    /// number of its lane's placement.
+    /// yet and its `ReadState` holds a head controller. A proxied main view records what its lane's
+    /// placement fills it with.
     fn proxy_view(&mut self, view: RenderView, writes: WriteDest<'_>) -> Result<Outcome, EyeFault> {
         let role = role(self.target, self.layout, view);
         let lane = match role {
@@ -354,7 +354,7 @@ impl EyeState {
         };
         let outcome = lane.proxy(&self.pages, view, writes, head)?;
         if role == Some(Role::MainView) {
-            self.main_sequence = self.main.sequence();
+            self.main_fill = self.main.fill();
         }
         Ok(outcome)
     }

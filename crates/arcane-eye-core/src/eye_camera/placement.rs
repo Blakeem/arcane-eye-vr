@@ -1,11 +1,26 @@
 //! Where a frame's proxies place each eye: on the head controller's right axis, or by a head pose on
-//! top of the head controller's camera in the launch mode `vr`.
+//! top of the head controller's camera in a world frame of the launch mode `vr`.
 
 use settings::dev::Horizon;
 use settings::player::StereoSettings;
 use stereo_core::eye::{self, Eye, EyeScale, PerEye};
 use stereo_core::eye_camera::EyeCamera;
 use stereo_core::head::{CameraFrame, HeadPose};
+
+use crate::vr_view::ViewKind;
+
+/// What a frame's main view proxy was filled with: the view kind of its placement and the head
+/// pose's sequence number, 0 for none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ProxyFill {
+    pub(crate) kind: ViewKind,
+    pub(crate) head_sequence: u32,
+}
+
+impl ProxyFill {
+    /// The fill of a head placement, and of a frame whose main view no proxy was filled for.
+    pub(crate) const NONE: Self = Self { kind: ViewKind::Screen, head_sequence: 0 };
+}
 
 /// How the proxies of a frame place each eye.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -35,11 +50,14 @@ impl Placement {
         }
     }
 
-    /// The sequence number of the head pose the proxies are filled with, 0 for none.
-    pub(crate) const fn sequence(&self) -> u32 {
+    /// What the proxies are filled with: a head placement is a screen frame's, and a pose placement
+    /// a world frame's with the pose's sequence number.
+    pub(crate) const fn fill(&self) -> ProxyFill {
         match *self {
-            Self::Head { .. } => 0,
-            Self::Pose { sequence, .. } => sequence,
+            Self::Head { .. } => ProxyFill::NONE,
+            Self::Pose { sequence, .. } => {
+                ProxyFill { kind: ViewKind::World, head_sequence: sequence }
+            }
         }
     }
 }

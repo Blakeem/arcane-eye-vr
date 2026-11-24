@@ -1,6 +1,7 @@
 //! The UI depth in the UI layer's frames: a test game whose texture table names a UI texture and a
 //! distance texture, read back from a WARP back buffer.
 
+mod kind;
 mod wait;
 
 use std::time::{Duration, Instant};
@@ -10,7 +11,6 @@ use game_bindings::camera::Camera;
 use game_bindings::state::arm_alloc_guard;
 use game_bindings::texture_table::TextureKey;
 use gfx::nearest::{Nearest, NearestError, NearestStep};
-use ipc_layout::launch_token::Mode;
 use settings::player::StereoSettings;
 use stereo_core::eye::EyeScale;
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
@@ -31,6 +31,7 @@ use crate::ui_layer::cursor::counter::WindowsCursor;
 use crate::ui_layer::decide::{Draw, Step, Write, depth_shift};
 use crate::ui_layer::test_support::target_parts;
 use crate::ui_layer::ui_depth::{DepthInput, DepthReport};
+use crate::vr_view::ViewKind;
 
 pub(super) const BLACK: Pixel = [0, 0, 0, 255];
 
@@ -114,7 +115,7 @@ pub(super) fn input(start: Instant, frame: u32) -> DepthInput {
     let since = Duration::from_millis(16).checked_mul(frame).expect("a test duration");
     let now = start.checked_add(since).expect("a test time");
     let eye_m = StereoSettings::default().ipd_mm.meters();
-    DepthInput { offset: depth(5.0), eye_m, camera: Some(CAMERA), now, mode: Mode::DesktopStereo }
+    DepthInput { offset: depth(5.0), eye_m, camera: Some(CAMERA), now, kind: ViewKind::Screen }
 }
 
 /// Runs side by side frames from the frame `first` on until the UI depth's report meets `done`,
@@ -256,7 +257,7 @@ fn a_flat_frame_sets_no_ui_disparity_and_the_full_eye_distance_at_once() {
 
     let report = layer.depth_report();
     assert_eq!((report.columns, report.eye_scale), (0, EyeScale::FULL));
-    assert_eq!(layer.hand_eye_scale(), EyeScale::FULL);
+    assert_eq!(layer.hand_eye_scale(ViewKind::Screen), EyeScale::FULL);
 }
 
 // A WARP device offers no failure of the read's create, draw or map calls that leaves the device

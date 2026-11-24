@@ -34,7 +34,8 @@ pub(crate) enum OffsetFrom {
     Screen,
     /// The player setting `stereo.depth_offset_percent`.
     Setting,
-    /// No depth offset, in the launch mode `vr` or before the UI layer's first frame.
+    /// No depth offset, in a world frame of the launch mode `vr` or before the UI layer's first
+    /// frame.
     NoOffset,
 }
 
@@ -57,7 +58,7 @@ pub(crate) struct DepthOffset {
 }
 
 impl DepthOffset {
-    /// No depth offset, as in the launch mode `vr`, with the UI limit of the player setting.
+    /// No depth offset, as in a world frame, with the UI limit of the player setting.
     pub(crate) const NONE: Self = Self { share: 0.0, origin: OffsetFrom::NoOffset };
 
     /// The depth offset in use: the parallel share `screen` at most [`SCREEN_MAX`] while the

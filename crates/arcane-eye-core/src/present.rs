@@ -5,10 +5,11 @@
 //! eye camera with the placement the frame handler hands over, then of the shadow cache, the object
 //! slot and the view camera, runs the frame work with the UI layer before the engine's `Present`
 //! call, reports the first frame through the launch token, reads the game state and runs the eye
-//! view's create. The placement holds the eye scale the UI layer holds in use, or in the launch mode
-//! `vr` the head pose in use while the view camera runs. It copies the published player settings
-//! once, so a frame uses one set of values. After the hook's feature failed, the handler runs only
-//! [`give_back`].
+//! view's create. The placement holds the eye scale the UI layer holds in use, or in a world frame
+//! of the launch mode `vr` the head pose in use, by the view kind that the newest state id read
+//! and the newest cinematic byte read decide. The frame work follows the view kind the presented
+//! frame's main view proxy was filled with. It copies the published player settings once, so a frame
+//! uses one set of values. After the hook's feature failed, the handler runs only [`give_back`].
 
 use std::mem::ManuallyDrop;
 use std::panic::{self, AssertUnwindSafe};
@@ -33,7 +34,7 @@ use crate::object_slot;
 use crate::raw::{self, StatusView};
 use crate::shadow_cache;
 use crate::view_camera;
-use crate::vr_view::Rays;
+use crate::vr_view::{GameRead, Rays};
 
 /// The hook runs after `present-hook` failed too, so the handler can run [`give_back`].
 const PRESENT_RUNS: Runs = Runs::AfterFailureToo;
@@ -108,16 +109,20 @@ fn on_present_call(context: &CoreContext, thread: &RenderThread, registers: &mut
     let stereo = context.settings.get().stereo;
     let now = Instant::now();
     let rays = Rays::of(&context.health);
+    let game = GameRead {
+        state_id: game_state::newest(context, thread),
+        cinematic: view_camera::cinematic(context, thread),
+    };
     let placement = context
         .frame
-        .with(thread, |state| state.hand_placement(stereo, rays, now))
+        .with(thread, |state| state.hand_placement(stereo, rays, game, now))
         .unwrap_or_else(|| Placement::head(stereo, EyeScale::FULL));
-    let head_sequence = eye_camera::end_frame(context, thread, layout, placement);
+    let fill = eye_camera::end_frame(context, thread, layout, placement);
     shadow_cache::end_frame(context, thread, layout);
     object_slot::end_frame(context, thread, layout);
     let cameras = view_camera::end_frame(context, thread, layout);
     let camera = cameras.main.map(|main| main.camera);
-    let input = FrameInput { health: &context.health, next: layout, stereo, camera, head_sequence };
+    let input = FrameInput { health: &context.health, next: layout, stereo, camera, fill };
     let frame = context
         .frame
         .with(thread, |state| frame::on_present_call(state, registers, cameras, input));

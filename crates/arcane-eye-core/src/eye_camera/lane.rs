@@ -6,7 +6,7 @@ use game_mem::{GameAddr, WriteDest, WriteError};
 use stereo_core::eye::Eye;
 use stereo_core::eye_camera;
 
-use super::placement::Placement;
+use super::placement::{Placement, ProxyFill};
 use super::proxy::{self, ProxyParts, RING_LEN};
 use super::{EyeFault, History, Outcome};
 use crate::raw::SharedPages;
@@ -53,9 +53,9 @@ impl Lane {
         self.placement = placement;
     }
 
-    /// The head pose sequence number the lane's proxies are filled with, 0 for none.
-    pub(super) const fn sequence(&self) -> u32 {
-        self.placement.sequence()
+    /// What the lane's proxies are filled with.
+    pub(super) const fn fill(&self) -> ProxyFill {
+        self.placement.fill()
     }
 
     /// Ends the frame, so the lane proxies its next view.

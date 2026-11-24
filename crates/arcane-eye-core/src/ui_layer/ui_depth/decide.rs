@@ -13,11 +13,11 @@ use std::time::Duration;
 use game_bindings::camera::Camera;
 use gfx::nearest::Nearest;
 use gfx::pointer::{Pointed, Probe};
-use ipc_layout::launch_token::Mode;
 use stereo_core::eye::EyeScale;
 
 use crate::ui_layer::decide::{Moves, signed_columns};
 use crate::ui_layer::depth_offset::DepthOffset;
+use crate::vr_view::ViewKind;
 
 /// The share the UI sits in front of the scene under it.
 const MARGIN: f32 = 0.0025;
@@ -98,25 +98,47 @@ impl Following {
     pub(crate) const fn without_wait(self) -> Self {
         Self { in_use: self.in_use, wait: None }
     }
+
+    /// The values in use of `self`, with its wait, in a frame of the view kind `kind`. A world frame
+    /// sets the eye scale in use to 1, since its eye cameras render at the full eye distance
+    /// whatever eye scale an earlier screen frame left.
+    pub(crate) const fn in_frame(self, kind: ViewKind) -> Self {
+        match EyeDistance::of(kind) {
+            EyeDistance::Shrinks => self,
+            EyeDistance::Fixed => {
+                let in_use = Depth { disparity: self.in_use.disparity, eye_scale: EyeScale::FULL };
+                Self { in_use, wait: self.wait }
+            }
+        }
+    }
 }
 
 /// Whether the eye distance shrinks past the UI disparity's limit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EyeDistance {
-    /// The eye scale shrinks so a nearer scene stays behind the UI, in the launch mode
-    /// `desktop-stereo`.
+    /// The eye scale shrinks so a nearer scene stays behind the UI, in a screen frame.
     Shrinks,
-    /// The eyes stay at the full distance, in the launch mode `vr`, where the headset's eye
-    /// distance keeps the world at its true scale.
+    /// The eyes stay at the full distance, in a world frame, where the headset's eye distance keeps
+    /// the world at its true scale.
     Fixed,
 }
 
 impl EyeDistance {
-    const fn of(mode: Mode) -> Self {
-        match mode {
-            Mode::DesktopStereo => Self::Shrinks,
-            Mode::Vr => Self::Fixed,
+    const fn of(kind: ViewKind) -> Self {
+        match kind {
+            ViewKind::Screen => Self::Shrinks,
+            ViewKind::World => Self::Fixed,
         }
+    }
+}
+
+/// The eye scale handed to the eye cameras for the next frame's proxies of the view kind `kind`,
+/// with the eye scale in use `in_use`: that eye scale for a screen kind, and 1 for a world kind,
+/// whose head pose placement applies no eye scale.
+pub(crate) const fn handed(kind: ViewKind, in_use: EyeScale) -> EyeScale {
+    match EyeDistance::of(kind) {
+        EyeDistance::Shrinks => in_use,
+        EyeDistance::Fixed => EyeScale::FULL,
     }
 }
 
@@ -137,14 +159,14 @@ pub(crate) struct View {
 
 impl View {
     /// The view of the main view's `camera`, the depth offset in use `offset` with its UI limit and
-    /// the full eye distance `eye_m` in the launch mode `mode`.
-    pub(crate) fn of(camera: &Camera, offset: DepthOffset, eye_m: f32, mode: Mode) -> Self {
+    /// the full eye distance `eye_m` in a frame of the view kind `kind`.
+    pub(crate) fn of(camera: &Camera, offset: DepthOffset, eye_m: f32, kind: ViewKind) -> Self {
         Self {
             lens: lens(camera),
             eye_m,
             offset: offset.share(),
             limit: offset.ui_limit(),
-            eye_distance: EyeDistance::of(mode),
+            eye_distance: EyeDistance::of(kind),
         }
     }
 }

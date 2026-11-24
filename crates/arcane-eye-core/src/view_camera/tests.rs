@@ -5,6 +5,7 @@ mod rays;
 
 use diag::health::{Feature, FeatureState, Health};
 use game_bindings::camera::PerCamera;
+use game_bindings::offsets::VIEW_FOG_VARIANT;
 use game_mem::{GameAddr, try_read, try_write};
 use ipc_layout::launch_token::Mode;
 use stereo_core::eye::Eye;
@@ -119,6 +120,29 @@ fn side_by_side_the_eye_view_has_its_own_camera_whatever_its_order() {
     assert_eq!((x_of(no_eye.main), no_eye.eye_view), (Some(1.0), None), "no eye view passed");
     let main_only = frame_cameras(&mut camera, &[&main, &eye], Layout::MainOnly);
     assert_eq!((x_of(main_only.main), main_only.eye_view), (Some(1.0), None), "not side by side");
+}
+
+#[test]
+fn the_newest_main_view_gives_the_cinematic_byte_and_an_eye_view_does_not() {
+    let controller = TestController::new(WORLD_TRANSLATE);
+    let main = TestView::new(controller.address(), &block_at(1.0));
+    let eye = TestView::new(controller.address(), &block_at(2.0));
+    let side_by_side = Layout::SideBySide { main: main.view(), eye: eye.view() };
+    let mut camera = ViewCamera::new(Some(WORLD_TRANSLATE), Mode::Vr);
+    let health = running();
+    assert_eq!(camera.cinematic(&health), None, "before the first main view");
+    main.put_byte(VIEW_FOG_VARIANT, 1);
+    frame_cameras(&mut camera, &[&main], side_by_side);
+    assert_eq!(camera.cinematic(&health), Some(1), "a dialogue");
+    main.put_byte(VIEW_FOG_VARIANT, 0);
+    eye.put_byte(VIEW_FOG_VARIANT, 1);
+    frame_cameras(&mut camera, &[&eye, &main], side_by_side);
+    assert_eq!(camera.cinematic(&health), Some(0), "the main view's byte, not the eye view's");
+    frame_cameras(&mut camera, &[], Layout::MainOnly);
+    let kept = camera.cinematic(&health);
+    assert_eq!(kept, Some(0), "a frame with no main view keeps the newest read");
+    health.panic_caught(Feature::ViewCamera);
+    assert_eq!(camera.cinematic(&health), None, "a feature latched off");
 }
 
 #[test]

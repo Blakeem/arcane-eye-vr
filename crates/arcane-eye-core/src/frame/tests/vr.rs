@@ -1,28 +1,33 @@
-//! The frame handler in the launch mode `vr`: the head pose it hands the eye cameras, the tag of
-//! each published frame, the `vr view` line and the frame path's allocations.
+//! The frame handler in the launch mode `vr`: the view kind and the head pose it hands the eye
+//! cameras, the tag and the depth offset of each published frame by its view kind, the `vr view`
+//! line and the frame path's allocations.
 
 use std::time::{Duration, Instant};
 
 use diag::health::Health;
 use game_bindings::camera::Camera;
+use game_bindings::game_client::StateId;
 use game_bindings::state::arm_alloc_guard;
 use ipc_layout::launch_token::Mode;
 use ipc_layout::viewer_header::STALE_AFTER;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose as XrPose};
+use ipc_layout::viewer_header::screen::ParallelShare;
 use settings::dev::{Horizon, VrFlags};
 use settings::player::StereoSettings;
 use stereo_core::eye::PerEye;
 use stereo_core::head::HeadPose;
-use viewer_client::header::{read_header, write_head_pose};
+use viewer_client::header::{read_header, write_head_pose, write_screen};
 
 use super::{call_times, log_lines, summaries, timed_frame};
-use crate::eye_camera::Placement;
+use crate::eye_camera::{Placement, ProxyFill};
 use crate::eye_view::Layout;
-use crate::frame::{FrameInput, FrameReport, FrameState, log_vr, on_frame};
+use crate::frame::{FrameInput, FrameReport, FrameState, log_vr, on_frame, record_interval};
 use crate::raw::test_support::{TestSwapchain, TestViewer, test_view_names};
+use crate::ui_layer::depth_offset::{DepthOffset, OffsetFrom};
+use crate::ui_layer::test_support::idle_layer;
 use crate::view_camera::FrameCameras;
 use crate::viewer::ViewerLink;
-use crate::vr_view::{PoseSource, Rays, VrReport, VrView};
+use crate::vr_view::{GameRead, PoseSource, Rays, ViewKind, VrReport, VrView};
 
 /// The main view camera of the tagged frames.
 const CAMERA: Camera = Camera {
@@ -38,6 +43,12 @@ const CAMERA: Camera = Camera {
 const HEADSET: XrPose =
     XrPose { position: [0.0, 1.6, 0.0], orientation: [0.0, -0.173_648_18, 0.0, 0.984_807_7] };
 
+/// The reads of play in a level: the state id 18 and the cinematic byte 0.
+const PLAY: GameRead = GameRead { state_id: Some(StateId::new(18)), cinematic: Some(0) };
+
+/// The reads of the title screen: the state id 7.
+const TITLE: GameRead = GameRead { state_id: Some(StateId::new(7)), cinematic: Some(0) };
+
 /// A frame state in the launch mode `mode` whose viewer link uses names of the test `test`.
 fn state_in(mode: Mode, test: &str) -> FrameState {
     let names = test_view_names(test);
@@ -45,50 +56,130 @@ fn state_in(mode: Mode, test: &str) -> FrameState {
     FrameState { viewer: ViewerLink::new(names), vr, ..FrameState::default() }
 }
 
-/// One frame of `test` whose main view proxy was filled with `head_sequence` and whose main view
-/// camera is `camera`.
+/// The fill of a world frame whose main view proxy took the head pose of `head_sequence`.
+const fn world(head_sequence: u32) -> ProxyFill {
+    ProxyFill { kind: ViewKind::World, head_sequence }
+}
+
+/// One frame of `test` whose main view proxy was filled as `fill` says and whose main view camera
+/// is `camera`.
 fn frame_of(
     state: &mut FrameState,
     test: &TestSwapchain,
-    head_sequence: u32,
+    fill: ProxyFill,
     camera: Option<Camera>,
 ) -> FrameReport {
     let health = Health::new();
     let stereo = StereoSettings::default();
-    let input =
-        FrameInput { health: &health, next: Layout::MainOnly, stereo, camera, head_sequence };
+    let input = FrameInput { health: &health, next: Layout::MainOnly, stereo, camera, fill };
     test.with(|address, swapchain| on_frame(state, address, swapchain, input, Instant::now()))
         .expect("a swapchain")
 }
 
+/// The parallel share of a 10 m screen at an eye distance of 65 mm.
+fn ten_meter_screen() -> ParallelShare {
+    ParallelShare::new(0.0065).expect("a share above 0")
+}
+
+/// A frame state of the test `test` in the mode `vr` with a UI layer, after its first frame, and
+/// the viewing side that beats and wrote the head pose of sequence 2 and the 10 m screen's share.
+fn viewed_vr_state(test: &str, swapchain: &TestSwapchain) -> (FrameState, TestViewer) {
+    let mut state = state_in(Mode::Vr, test);
+    state.ui_layer = Some(idle_layer());
+    frame_of(&mut state, swapchain, ProxyFill::NONE, None);
+    let names = test_view_names(test);
+    let mut viewer = TestViewer::open(&names);
+    let mut slot = None;
+    let (view, _header) = read_header(&mut slot, &names.mapping).expect("the header");
+    assert_eq!(write_head_pose(view, HEADSET, 0.064), Ok(2));
+    write_screen(view, ten_meter_screen()).expect("write the share");
+    viewer.beat();
+    (state, viewer)
+}
+
+/// The depth offset in use of the last frame the UI layer of `state` ran.
+fn offset_in_use(state: &FrameState) -> DepthOffset {
+    state.ui_layer.as_ref().expect("a UI layer").depth_report().offset
+}
+
 #[test]
-fn a_frame_is_published_with_its_main_view_proxys_head_sequence_and_camera_lens() {
+fn a_world_frame_is_published_with_its_main_view_proxys_head_sequence_and_camera_lens() {
     let test = TestSwapchain::new(16, 8);
     let mut state = state_in(Mode::Vr, "vr-tag");
-    frame_of(&mut state, &test, 0, None);
+    frame_of(&mut state, &test, ProxyFill::NONE, None);
     let mut viewer = TestViewer::open(&test_view_names("vr-tag"));
     viewer.beat();
-    frame_of(&mut state, &test, 8, Some(CAMERA));
+    frame_of(&mut state, &test, world(8), Some(CAMERA));
     let tagged = FrameTag { head_sequence: 8, fov_y_rad: 0.96, aspect: 0.889 };
     assert_eq!(viewer.header().frame_tag(), tagged);
     viewer.beat();
-    frame_of(&mut state, &test, 0, Some(CAMERA));
-    let untagged = viewer.header().frame_tag();
-    assert_eq!(untagged.head_sequence, 0, "a frame with no proxied main view");
+    frame_of(&mut state, &test, ProxyFill::NONE, Some(CAMERA));
+    assert_eq!(viewer.header().frame_tag(), FrameTag::NONE, "a frame with no proxied main view");
     viewer.beat();
-    frame_of(&mut state, &test, 0, None);
-    assert_eq!(viewer.header().frame_tag(), FrameTag::NONE, "a frame with no camera");
+    frame_of(&mut state, &test, world(8), None);
+    let no_lens = FrameTag { head_sequence: 8, fov_y_rad: 0.0, aspect: 0.0 };
+    assert_eq!(viewer.header().frame_tag(), no_lens, "a frame with no camera");
 }
 
 #[test]
 fn in_the_mode_desktop_stereo_every_published_frame_has_the_tag_none() {
     let test = TestSwapchain::new(16, 8);
     let mut state = state_in(Mode::DesktopStereo, "desktop-tag");
-    frame_of(&mut state, &test, 0, None);
+    frame_of(&mut state, &test, ProxyFill::NONE, None);
     let mut viewer = TestViewer::open(&test_view_names("desktop-tag"));
     viewer.beat();
-    frame_of(&mut state, &test, 8, Some(CAMERA));
+    let placement =
+        state.hand_placement(StereoSettings::default(), Rays::Rewritten, PLAY, Instant::now());
+    frame_of(&mut state, &test, placement.fill(), Some(CAMERA));
     assert_eq!(viewer.header().frame_tag(), FrameTag::NONE);
+}
+
+#[test]
+fn a_level_frame_has_the_head_pose_and_no_offset_and_a_title_frame_the_screens_offset() {
+    let test = TestSwapchain::new(320, 200);
+    let (mut state, mut viewer) = viewed_vr_state("vr-kind-frames", &test);
+    let stereo = StereoSettings::default();
+    let play = state.hand_placement(stereo, Rays::Rewritten, PLAY, Instant::now());
+    frame_of(&mut state, &test, play.fill(), Some(CAMERA));
+    let tagged = FrameTag { head_sequence: 2, fov_y_rad: 0.96, aspect: 0.889 };
+    assert_eq!(viewer.header().frame_tag(), tagged, "the state id 18 and the byte 0");
+    assert_eq!(offset_in_use(&state), DepthOffset::NONE);
+    let lines = log_lines("vr-kind-frames", || {
+        for now in call_times() {
+            viewer.beat();
+            let title = state.hand_placement(stereo, Rays::Rewritten, TITLE, now);
+            frame_of(&mut state, &test, title.fill(), Some(CAMERA));
+            record_interval(&mut state, now);
+        }
+    });
+    assert_eq!(viewer.header().frame_tag(), FrameTag::NONE, "the state id 7");
+    let depth: Vec<&String> = lines.iter().filter(|line| line.contains("\"ui depth\"")).collect();
+    let [line] = depth.as_slice() else { panic!("one ui depth line: {lines:#?}") };
+    assert!(line.ends_with(" offset=0.0065 offset_from=screen"), "{line}");
+}
+
+#[test]
+fn a_frame_presented_after_the_kind_changed_follows_the_kind_its_proxy_was_filled_with() {
+    let test = TestSwapchain::new(320, 200);
+    let (mut state, mut viewer) = viewed_vr_state("vr-kind-change", &test);
+    let stereo = StereoSettings::default();
+    let place = |frames: &mut FrameState, game| {
+        frames.hand_placement(stereo, Rays::Rewritten, game, Instant::now()).fill()
+    };
+    let world_fill = place(&mut state, PLAY);
+    let screen_fill = place(&mut state, TITLE);
+    frame_of(&mut state, &test, world_fill, Some(CAMERA));
+    assert_eq!(viewer.header().frame_tag().head_sequence, 2, "the world frame after the change");
+    assert_eq!(offset_in_use(&state), DepthOffset::NONE, "the world frame after the change");
+    viewer.beat();
+    let world_again = place(&mut state, PLAY);
+    frame_of(&mut state, &test, screen_fill, Some(CAMERA));
+    assert_eq!(viewer.header().frame_tag(), FrameTag::NONE, "the screen frame after the change");
+    assert_eq!(offset_in_use(&state).origin(), OffsetFrom::Screen, "the screen frame");
+    viewer.beat();
+    frame_of(&mut state, &test, world_again, Some(CAMERA));
+    assert_eq!(viewer.header().frame_tag().head_sequence, 2, "the next world frame");
+    assert_eq!(offset_in_use(&state), DepthOffset::NONE, "the next world frame");
 }
 
 #[test]
@@ -96,15 +187,15 @@ fn the_head_pose_the_viewer_wrote_places_the_next_frames_eyes() {
     let test = TestSwapchain::new(16, 8);
     let mut state = state_in(Mode::Vr, "vr-header-pose");
     let stereo = StereoSettings::default();
-    let before = state.hand_placement(stereo, Rays::Rewritten, Instant::now());
-    assert_eq!(before.sequence(), 0, "no header exists before the first frame");
-    frame_of(&mut state, &test, 0, None);
+    let before = state.hand_placement(stereo, Rays::Rewritten, PLAY, Instant::now());
+    assert_eq!(before.fill(), world(0), "no header exists before the first frame");
+    frame_of(&mut state, &test, ProxyFill::NONE, None);
     let mut slot = None;
     let names = test_view_names("vr-header-pose");
     TestViewer::open(&names).beat();
     let (view, _header) = read_header(&mut slot, &names.mapping).expect("the header");
     assert_eq!(write_head_pose(view, HEADSET, 0.064), Ok(2));
-    let placement = state.hand_placement(stereo, Rays::Rewritten, Instant::now());
+    let placement = state.hand_placement(stereo, Rays::Rewritten, PLAY, Instant::now());
     let expected = Placement::Pose {
         pose: HeadPose::from_openxr(HEADSET.position, HEADSET.orientation),
         sequence: 2,
@@ -119,28 +210,29 @@ fn a_header_pose_no_longer_places_the_eyes_once_the_viewer_stops_beating() {
     let test = TestSwapchain::new(16, 8);
     let mut state = state_in(Mode::Vr, "vr-header-pose-stale");
     let stereo = StereoSettings::default();
-    frame_of(&mut state, &test, 0, None);
+    frame_of(&mut state, &test, ProxyFill::NONE, None);
     let names = test_view_names("vr-header-pose-stale");
     TestViewer::open(&names).beat();
     let mut slot = None;
     let (view, _header) = read_header(&mut slot, &names.mapping).expect("the header");
     assert_eq!(write_head_pose(view, HEADSET, 0.064), Ok(2));
     let beat_at = Instant::now();
-    let beating = state.hand_placement(stereo, Rays::Rewritten, beat_at);
-    assert_eq!(beating.sequence(), 2, "the pose of a viewer that beats");
+    let beating = state.hand_placement(stereo, Rays::Rewritten, PLAY, beat_at);
+    assert_eq!(beating.fill(), world(2), "the pose of a viewer that beats");
     let stalled_at = beat_at
         .checked_add(STALE_AFTER)
         .and_then(|limit| limit.checked_add(Duration::from_millis(100)))
         .expect("a test time past the heartbeat's limit");
-    let stalled = state.hand_placement(stereo, Rays::Rewritten, stalled_at);
-    assert_eq!(stalled.sequence(), 0, "the pose a viewer that stopped beating left");
+    let stalled = state.hand_placement(stereo, Rays::Rewritten, PLAY, stalled_at);
+    assert_eq!(stalled.fill(), world(0), "the pose a viewer that stopped beating left");
     let report = state.vr.report().expect("a vr view report");
     assert_eq!(report.source, PoseSource::None);
 }
 
 #[test]
-fn the_vr_view_line_holds_the_pose_source_sequence_turn_eye_distance_and_horizon() {
+fn the_vr_view_line_holds_the_view_kind_pose_source_sequence_turn_eye_distance_and_horizon() {
     let report = VrReport {
+        view: ViewKind::World,
         source: PoseSource::Header,
         head_sequence: 8,
         yaw_deg: 20.0,
@@ -150,8 +242,8 @@ fn the_vr_view_line_holds_the_pose_source_sequence_turn_eye_distance_and_horizon
     };
     let lines = log_lines("vr-view-line", || log_vr(report));
     let [line] = lines.as_slice() else { panic!("one vr view line: {lines:#?}") };
-    let fields = " arcane_eye_core::frame msg=\"vr view\" pose=header head_sequence=8 yaw_deg=20.0 \
-                  pitch_deg=-5.5 eye_m=0.064 horizon=camera";
+    let fields = " arcane_eye_core::frame msg=\"vr view\" view=world pose=header head_sequence=8 \
+                  yaw_deg=20.0 pitch_deg=-5.5 eye_m=0.064 horizon=camera";
     assert!(line.ends_with(fields), "{line}");
 }
 
@@ -162,7 +254,7 @@ fn a_perf_window_logs_one_vr_view_line_before_the_summary_only_in_the_mode_vr() 
         let mut state = state_in(mode, &format!("vr-view-window-{}", mode.as_str()));
         let lines = log_lines(&format!("vr-view-window-{}", mode.as_str()), || {
             for now in call_times() {
-                state.hand_placement(StereoSettings::default(), Rays::Rewritten, now);
+                state.hand_placement(StereoSettings::default(), Rays::Rewritten, PLAY, now);
                 timed_frame(&mut state, &test, now, FrameCameras::default());
             }
         });
@@ -170,8 +262,8 @@ fn a_perf_window_logs_one_vr_view_line_before_the_summary_only_in_the_mode_vr() 
         assert_eq!(vr.len(), expected, "{mode:?}: {lines:#?}");
         assert_eq!(summaries(&lines).len(), 1, "{mode:?}");
         if let [line] = vr.as_slice() {
-            let fields = " msg=\"vr view\" pose=none head_sequence=0 yaw_deg=0.0 pitch_deg=0.0 \
-                          eye_m=0.065 horizon=level";
+            let fields = " msg=\"vr view\" view=world pose=none head_sequence=0 yaw_deg=0.0 \
+                          pitch_deg=0.0 eye_m=0.065 horizon=level";
             assert!(line.ends_with(fields), "{line}");
             let position = |text: &str| lines.iter().position(|entry| entry.contains(text));
             assert!(position("\"vr view\"") < position("\"perf summary\""), "{lines:#?}");
@@ -184,22 +276,23 @@ fn a_perf_window_logs_one_vr_view_line_before_the_summary_only_in_the_mode_vr() 
 fn the_present_path_of_a_header_pose_makes_no_heap_allocation() {
     let test = TestSwapchain::new(64, 64);
     let mut state = state_in(Mode::Vr, "vr-allocation");
-    frame_of(&mut state, &test, 0, None);
+    frame_of(&mut state, &test, ProxyFill::NONE, None);
     let names = test_view_names("vr-allocation");
     let mut viewer = TestViewer::open(&names);
     let mut slot = None;
     let (view, _header) = read_header(&mut slot, &names.mapping).expect("the header");
     write_head_pose(view, HEADSET, 0.064).expect("a written pose");
     viewer.beat();
-    frame_of(&mut state, &test, 2, Some(CAMERA));
+    let stereo = StereoSettings::default();
+    state.hand_placement(stereo, Rays::Rewritten, PLAY, Instant::now());
+    frame_of(&mut state, &test, world(2), Some(CAMERA));
     viewer.beat();
     let guard = arm_alloc_guard().expect("arm the allocation guard");
-    let placement =
-        state.hand_placement(StereoSettings::default(), Rays::Rewritten, Instant::now());
-    let report = frame_of(&mut state, &test, 2, Some(CAMERA));
+    let placement = state.hand_placement(stereo, Rays::Rewritten, PLAY, Instant::now());
+    let report = frame_of(&mut state, &test, world(2), Some(CAMERA));
     let allocations = guard.count();
     drop(guard);
     assert_eq!((allocations, report), (0, FrameReport::Later), "the vr present path allocated");
-    assert_eq!(placement.sequence(), 2, "the guarded call read the header pose");
+    assert_eq!(placement.fill(), world(2), "the guarded call read the header pose");
     assert_eq!(viewer.header().frame_tag().head_sequence, 2, "the guarded frame was published");
 }

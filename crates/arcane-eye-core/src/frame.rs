@@ -31,7 +31,7 @@ use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 use windows::core::HRESULT;
 
 use self::lines::{log_camera, log_depth, log_vr};
-use crate::eye_camera::Placement;
+use crate::eye_camera::{Placement, ProxyFill};
 use crate::eye_view::Layout;
 use crate::game_source::GameSource;
 use crate::pair::PairState;
@@ -40,7 +40,7 @@ use crate::ui_layer::ui_depth::DepthInput;
 use crate::ui_layer::{Target, UiLayer};
 use crate::view_camera::FrameCameras;
 use crate::viewer::ViewerLink;
-use crate::vr_view::{PresentCall, Rays, VrView};
+use crate::vr_view::{self, GameRead, PresentCall, Rays, VrView};
 
 /// The log target of the frame handler's lines, those that `lines` logs included.
 const TARGET: &str = module_path!();
@@ -77,7 +77,7 @@ pub(crate) struct FrameState {
     /// lines.
     cameras: FrameCameras,
     give_back: GiveBack,
-    /// The launch mode's head pose, depth offset and frame tag.
+    /// The launch mode's view kind and head pose.
     vr: VrView,
 }
 
@@ -103,17 +103,21 @@ impl FrameState {
 
     /// Hands the eye cameras the placement of the next frame's proxies at the Present call of `now`,
     /// for the player's `stereo` settings in effect, while the view camera leaves the corner rays as
-    /// `rays` says. The UI layer hands over its eye scale in use at each call, the full eye distance
-    /// with no layer, which the mode `vr` does not apply.
+    /// `rays` says and the game's newest reads are `game`. The view kind is decided first, so the UI
+    /// layer hands over the eye scale that kind's placement applies, the full eye distance with no
+    /// layer.
     pub(crate) fn hand_placement(
         &mut self,
         stereo: StereoSettings,
         rays: Rays,
+        game: GameRead,
         now: Instant,
     ) -> Placement {
-        let eye_scale = self.ui_layer.as_mut().map_or(EyeScale::FULL, UiLayer::hand_eye_scale);
+        let kind = self.vr.decide(rays, game);
+        let eye_scale =
+            self.ui_layer.as_mut().map_or(EyeScale::FULL, |layer| layer.hand_eye_scale(kind));
         let viewer = &mut self.viewer;
-        let call = PresentCall { stereo, eye_scale, rays, now };
+        let call = PresentCall { stereo, eye_scale, rays, kind, now };
         self.vr.placement(|| viewer.head_pose(now), call)
     }
 }
@@ -121,14 +125,14 @@ impl FrameState {
 /// What the frame work takes from the Present call-site handler besides the swapchain: the health
 /// registry, which also tells the frame handler whether the pair is flat, the layout of the next
 /// frame, the frame's copy of the player's stereo settings, the main view's camera of the frame and
-/// the head pose sequence number the frame's main view proxy was filled with, 0 for none.
+/// what the frame's main view proxy was filled with, whose view kind the frame follows.
 #[derive(Clone, Copy)]
 pub(crate) struct FrameInput<'frame> {
     pub(crate) health: &'frame Health,
     pub(crate) next: Layout,
     pub(crate) stereo: StereoSettings,
     pub(crate) camera: Option<Camera>,
-    pub(crate) head_sequence: u32,
+    pub(crate) fill: ProxyFill,
 }
 
 /// The rate-limit state of each log call site of the frame handler.
@@ -311,16 +315,16 @@ fn on_frame(
         let target = Target { swapchain, devices, size: back_buffer, window };
         let layer = state.ui_layer.as_mut();
         draw_and_map(layer, &mut state.viewer, &state.vr, &target, (input, now));
-        let tag = state.vr.tag(input.head_sequence, input.camera);
+        let tag = vr_view::tag(input.fill, input.camera);
         state.viewer.on_frame(swapchain, devices, state.game_source.as_mut(), tag);
     }
     if first { FrameReport::FirstPresent } else { FrameReport::Later }
 }
 
-/// Runs the UI layer's frame on `target` with the depth input of `vr` and publishes the frame's
-/// depth map into the section of `viewer` while a viewing program's heartbeat runs. A core with no
-/// UI layer writes a map of no cell, so a viewing program that kept the section open from an
-/// earlier core never reads that core's last map as this frame's.
+/// Runs the UI layer's frame on `target` with the depth input of `vr` for the frame's view kind and
+/// publishes the frame's depth map into the section of `viewer` while a viewing program's heartbeat
+/// runs. A core with no UI layer writes a map of no cell, so a viewing program that kept the section
+/// open from an earlier core never reads that core's last map as this frame's.
 fn draw_and_map(
     ui_layer: Option<&mut UiLayer>,
     viewer: &mut ViewerLink,
@@ -335,10 +339,10 @@ fn draw_and_map(
         return;
     };
     let screen = viewer.parallel_share(now);
-    let offset = vr.depth_offset(input.stereo, screen);
-    let eye_m = vr.depth_eye_m(input.stereo);
-    let (camera, mode) = (input.camera, vr.mode());
-    let depth = DepthInput { offset, eye_m, camera, now, mode };
+    let kind = input.fill.kind;
+    let offset = vr_view::depth_offset(kind, input.stereo, screen);
+    let eye_m = vr.depth_eye_m(kind, input.stereo);
+    let depth = DepthInput { offset, eye_m, camera: input.camera, now, kind };
     layer.on_frame(input.health, input.next, &depth, target);
     layer.publish_map(input.health, target, &depth, viewer.map_sink(now));
 }

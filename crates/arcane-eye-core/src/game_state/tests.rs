@@ -1,5 +1,5 @@
-//! The game state feature's decision, its log lines against a game client in test memory, and its
-//! install.
+//! The game state feature's decision, its log lines and its newest read against a game client in
+//! test memory, and its install.
 
 use std::hint::black_box;
 
@@ -68,6 +68,13 @@ impl TestClient {
         self.client[GAME_CLIENT_STATE_MACHINE..][..8].copy_from_slice(&machine.to_ne_bytes());
         black_box(&self.client);
     }
+}
+
+/// A registry with the game state read running.
+fn running() -> Health {
+    let health = Health::new();
+    health.install_ok(Feature::GameState);
+    health
 }
 
 /// The game state lines of `text`, each with its place and state id.
@@ -163,6 +170,50 @@ fn a_failed_read_logs_one_rate_limited_warning_and_keeps_the_last_id() {
     let [warning] = warnings.as_slice() else { panic!("one warning: {text}") };
     let global = format!(" global={:#x}", address_of(&memory.global));
     assert!(warning.contains(" WARN  ") && warning.ends_with(&global), "{warning}");
+}
+
+#[test]
+fn the_newest_read_is_the_read_id_and_none_after_a_null_pointer_or_a_failed_read() {
+    let mut memory = TestClient::new();
+    let mut watch = memory.watch();
+    let client = memory.client_address();
+    let health = running();
+    assert_eq!(watch.newest(&health), None, "before the first read");
+    let mut newest = Vec::new();
+    let ((), _text) = logged("game-state-newest", || {
+        memory.set_id(0x12);
+        watch.on_frame();
+        newest.push(watch.newest(&health));
+        memory.set_machine(0);
+        watch.on_frame();
+        newest.push(watch.newest(&health));
+        memory.set_client(UNMAPPED);
+        watch.on_frame();
+        newest.push(watch.newest(&health));
+        memory.set_client(client);
+        memory.set_id(7);
+        let machine = address_of(&memory.machine);
+        memory.set_machine(machine);
+        watch.on_frame();
+        newest.push(watch.newest(&health));
+    });
+    let expected = [Some(StateId::new(0x12)), None, None, Some(StateId::new(7))];
+    assert_eq!(newest, expected, "a level, no state machine, a failed read, the title screen");
+}
+
+#[test]
+fn a_feature_latched_off_gives_no_newest_read_after_a_level_read() {
+    let mut memory = TestClient::new();
+    let mut watch = memory.watch();
+    let health = running();
+    memory.set_id(18);
+    let ((), _text) = logged("game-state-latched", || watch.on_frame());
+    let level = watch.newest(&health);
+
+    health.panic_caught(Feature::GameState);
+
+    assert_eq!(level, Some(StateId::LEVEL), "a level while the feature runs");
+    assert_eq!(watch.newest(&health), None, "the feature latched off keeps no level read");
 }
 
 #[test]

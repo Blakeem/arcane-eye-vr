@@ -212,6 +212,15 @@ fn a_view_yields_its_content_with_the_scene_byte_and_the_environment_and_request
 }
 
 #[test]
+fn a_view_yields_its_fog_variant_byte_and_an_unmapped_view_none() {
+    let mut view = vec![0_u8; VIEW_LEN];
+    view[VIEW_FOG_VARIANT] = 1;
+    let view = black_box(view);
+    assert_eq!(RenderView::new(address_of(&view)).fog_variant(), Some(1));
+    assert_eq!(RenderView::new(UNMAPPED).fog_variant(), None);
+}
+
+#[test]
 fn a_null_scene_reads_as_an_inactive_scene() {
     let view = black_box(vec![0_u8; VIEW_LEN]);
     let content = RenderView::new(address_of(&view)).content().expect("a readable view");

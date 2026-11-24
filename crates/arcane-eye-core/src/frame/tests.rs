@@ -19,6 +19,7 @@ use super::{
     FrameInput, FrameLogs, FrameReport, FrameState, keep_cameras, log_flat, on_frame,
     record_interval, skipped,
 };
+use crate::eye_camera::ProxyFill;
 use crate::eye_view::Layout;
 use crate::logged;
 use crate::raw::{
@@ -45,10 +46,10 @@ fn log_lines(name: &str, frames: impl FnOnce()) -> Vec<String> {
     text.lines().map(str::to_owned).collect()
 }
 
-/// The frame work's input of a flat frame, with the default settings, no camera and no head pose.
+/// The frame work's input of a flat frame, with the default settings, no camera and no proxy.
 fn flat_input(health: &Health) -> FrameInput<'_> {
     let stereo = StereoSettings::default();
-    FrameInput { health, next: Layout::MainOnly, stereo, camera: None, head_sequence: 0 }
+    FrameInput { health, next: Layout::MainOnly, stereo, camera: None, fill: ProxyFill::NONE }
 }
 
 fn frame(state: &mut FrameState, test: &TestSwapchain) -> FrameReport {

@@ -1,6 +1,7 @@
 //! The targets of measured and constructed scenes, the values in use that follow them, and the
 //! pointer read's probe and the cursor's moves.
 
+mod kind;
 mod wait;
 
 use std::time::Duration;
@@ -8,7 +9,6 @@ use std::time::Duration;
 use game_bindings::camera::Camera;
 use gfx::nearest::Nearest;
 use gfx::pointer::Pointed;
-use ipc_layout::launch_token::Mode;
 use ipc_layout::viewer_header::screen::ParallelShare;
 use settings::player::{DepthOffsetPercent, IpdMm, StereoSettings};
 use stereo_core::eye::EyeScale;
@@ -18,6 +18,7 @@ use super::{
 };
 use crate::ui_layer::decide::{Moves, ui_columns};
 use crate::ui_layer::depth_offset::DepthOffset;
+use crate::vr_view::ViewKind;
 
 /// The main view's camera in the measured dialogue close-up.
 const DIALOGUE: Camera = Camera {
@@ -29,27 +30,27 @@ const DIALOGUE: Camera = Camera {
     far: 10_000.0,
 };
 
-/// The measured dialogue's eye distance of 65 mm and depth offset of 1.5 percent, in the launch mode
-/// `desktop-stereo`.
+/// The measured dialogue's eye distance of 65 mm and depth offset of 1.5 percent, in a screen frame
+/// as the launch mode `desktop-stereo` renders every frame.
 fn dialogue() -> View {
     let stereo = dialogue_stereo();
     let offset = DepthOffset::in_use(stereo.depth_offset_percent, None);
-    View::of(&DIALOGUE, offset, stereo.ipd_mm.meters(), Mode::DesktopStereo)
+    View::of(&DIALOGUE, offset, stereo.ipd_mm.meters(), ViewKind::Screen)
 }
 
-/// The measured dialogue's view in the launch mode `vr` at the eye distance `eye_m`, with no depth
-/// offset, as `VrView::depth_offset` gives the UI depth in that mode.
+/// The measured dialogue's view in a world frame at the eye distance `eye_m`, with no depth
+/// offset, as `vr_view::depth_offset` gives the UI depth of such a frame.
 fn dialogue_vr(eye_m: f32) -> View {
-    View::of(&DIALOGUE, DepthOffset::NONE, eye_m, Mode::Vr)
+    View::of(&DIALOGUE, DepthOffset::NONE, eye_m, ViewKind::World)
 }
 
-/// The measured dialogue's view at 65 mm in the launch mode `desktop-stereo` while the viewing
-/// side reports the parallel share of a screen `width_m` wide, 0.065 / `width_m`.
+/// The measured dialogue's view at 65 mm in a screen frame while the viewing side reports the
+/// parallel share of a screen `width_m` wide, 0.065 / `width_m`.
 fn dialogue_on_screen(width_m: f32) -> View {
     let screen = ParallelShare::of_screen(0.065, width_m);
     let stereo = dialogue_stereo();
     let offset = DepthOffset::in_use(stereo.depth_offset_percent, screen);
-    View::of(&DIALOGUE, offset, stereo.ipd_mm.meters(), Mode::DesktopStereo)
+    View::of(&DIALOGUE, offset, stereo.ipd_mm.meters(), ViewKind::Screen)
 }
 
 /// The measured dialogue's eye distance of 65 mm and depth offset of 1.5 percent.

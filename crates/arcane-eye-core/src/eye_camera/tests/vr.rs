@@ -1,5 +1,5 @@
-//! The eye camera's proxies placed by a head pose in the launch mode `vr`, and the sequence number
-//! that each frame end reports.
+//! The eye camera's proxies placed by a head pose in the launch mode `vr`, and the view kind and
+//! sequence number that each frame end reports.
 
 use std::f32::consts::FRAC_1_SQRT_2;
 
@@ -7,16 +7,18 @@ use game_bindings::offsets::CONTROLLER_VIEW;
 use game_bindings::state::arm_alloc_guard;
 use game_mem::{GameAddr, try_read_array};
 use settings::dev::Horizon;
-use stereo_core::eye::{Eye, PerEye};
+use settings::player::StereoSettings;
+use stereo_core::eye::{Eye, EyeScale, PerEye};
 use stereo_core::head::HeadPose;
 
 use super::super::proxy;
 use super::super::test_support::{HEAD_POSITION, HEAD_VIEW, HeadController, eye_state};
-use super::super::{History, Outcome, Placement};
+use super::super::{History, Outcome, Placement, ProxyFill};
 use super::{OTHER_FUNCTION, assert_near, begin, proxied};
 use crate::eye_view::Layout;
 use crate::raw::test_support::call_world_translate;
 use crate::view_camera::test_support::{TestView, WORLD_TRANSLATE, block_at};
+use crate::vr_view::ViewKind;
 
 /// The OpenXR orientation of a turn of 90 degrees to the right about +Y.
 const RIGHT_90: [f32; 4] = [0.0, -FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2];
@@ -61,19 +63,35 @@ fn a_head_turned_right_moves_the_right_eye_back_along_the_head_cameras_forward_a
 }
 
 #[test]
-fn each_frame_end_reports_the_sequence_its_main_view_proxy_was_filled_with() {
+fn each_frame_end_reports_the_kind_and_sequence_its_main_view_proxy_was_filled_with() {
     let head = HeadController::new(WORLD_TRANSLATE);
     let view = TestView::new(head.address().get(), &block_at(0.0));
     let mut camera = eye_state(Eye::Left);
     camera.set_placement(turned_right());
     assert!(matches!(begin(&mut camera, view.view()), Ok(Outcome::Proxied { .. })));
-    assert_eq!(camera.end_frame(Layout::MainOnly), 8, "the proxied frame");
+    let world = ProxyFill { kind: ViewKind::World, head_sequence: 8 };
+    assert_eq!(camera.end_frame(Layout::MainOnly), world, "the proxied frame");
     view.finish_frame(head.address().get());
-    assert_eq!(camera.end_frame(Layout::MainOnly), 0, "a frame that proxied no main view");
+    assert_eq!(camera.end_frame(Layout::MainOnly), ProxyFill::NONE, "a frame of no main view");
     let other = HeadController::new(OTHER_FUNCTION);
     let unproxied = TestView::new(other.address().get(), &block_at(0.0));
     assert_eq!(begin(&mut camera, unproxied.view()), Ok(Outcome::Unchanged));
-    assert_eq!(camera.end_frame(Layout::MainOnly), 0, "a view of another controller");
+    assert_eq!(camera.end_frame(Layout::MainOnly), ProxyFill::NONE, "another controller");
+}
+
+#[test]
+fn a_frame_end_after_a_change_of_placement_reports_the_placement_its_proxy_was_filled_with() {
+    let head = HeadController::new(WORLD_TRANSLATE);
+    let view = TestView::new(head.address().get(), &block_at(0.0));
+    let mut camera = eye_state(Eye::Left);
+    camera.set_placement(turned_right());
+    assert!(matches!(begin(&mut camera, view.view()), Ok(Outcome::Proxied { .. })));
+    camera.set_placement(Placement::head(StereoSettings::default(), EyeScale::FULL));
+    let world = ProxyFill { kind: ViewKind::World, head_sequence: 8 };
+    assert_eq!(camera.end_frame(Layout::MainOnly), world, "the frame filled by the pose");
+    view.finish_frame(head.address().get());
+    assert!(matches!(begin(&mut camera, view.view()), Ok(Outcome::Proxied { .. })));
+    assert_eq!(camera.end_frame(Layout::MainOnly), ProxyFill::NONE, "the frame filled by the head");
 }
 
 #[test]
@@ -85,8 +103,8 @@ fn the_proxy_fill_of_a_head_pose_makes_no_heap_allocation() {
     camera.set_placement(turned_right());
     let guard = arm_alloc_guard().expect("arm the allocation guard");
     camera.on_view_begin(view.view(), view.writes());
-    let sequence = camera.end_frame(Layout::MainOnly);
+    let fill = camera.end_frame(Layout::MainOnly);
     camera.set_placement(turned_right());
     assert_eq!(guard.count(), 0, "the head pose's proxy fill allocated");
-    assert_eq!(sequence, 8, "the guarded frame proxied the view");
+    assert_eq!(fill.head_sequence, 8, "the guarded frame proxied the view");
 }

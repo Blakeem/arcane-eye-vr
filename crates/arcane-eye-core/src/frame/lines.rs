@@ -65,12 +65,13 @@ pub(super) fn log_depth(depth: DepthReport, cursor: CursorReport) {
     );
 }
 
-/// Logs the `vr view` line: where the head pose in use at the newest Present call came from, its
-/// sequence number, its turn to the right and upward in degrees, the eye distance in meters and the
-/// dev flag `vr.horizon`.
+/// Logs the `vr view` line: the view kind decided at the newest Present call, `world` or `screen`,
+/// where the head pose in use at that call came from, its sequence number, its turn to the right
+/// and upward in degrees, the eye distance in meters and the dev flag `vr.horizon`.
 pub(super) fn log_vr(report: VrReport) {
     tracing::info!(
         target: TARGET,
+        view = report.view.as_str(),
         pose = report.source.as_str(),
         head_sequence = report.head_sequence,
         yaw_deg = ?report.yaw_deg,

@@ -1,22 +1,25 @@
-//! The head pose in use, the test pose, the depth offset and the frame tag in each launch mode.
+//! The view kind, the head pose in use, the test pose, the depth offset and the frame tag in each
+//! launch mode.
 
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use diag::health::{Feature, Health};
 use game_bindings::camera::Camera;
+use game_bindings::game_client::StateId;
 use ipc_layout::launch_token::Mode;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose as XrPose, HeadSample};
 use ipc_layout::viewer_header::screen::ParallelShare;
-use settings::dev::{DevFlags, Horizon, TestHead, VrFlags};
+use settings::dev::{Horizon, TestHead, VrFlags};
 use settings::player::{DepthOffsetPercent, IpdMm, StereoSettings};
 use stereo_core::eye::{EyeScale, PerEye};
 use stereo_core::head::HeadPose;
 
 use super::head::{PoseSource, choose, next_test_sequence};
-use super::{PresentCall, Rays, TestClock, VrReport, VrView, first_placement};
-use crate::config::Config;
-use crate::eye_camera::Placement;
+use super::{
+    GameRead, PresentCall, Rays, TestClock, ViewKind, VrReport, VrView, depth_offset, tag,
+};
+use crate::eye_camera::{Placement, ProxyFill};
 use crate::logged;
 use crate::ui_layer::depth_offset::{DepthOffset, OffsetFrom};
 
@@ -28,6 +31,12 @@ const LEFT_20: [f32; 4] = [0.0, 0.173_648_18, 0.0, 0.984_807_7];
 
 /// No turn.
 const NO_TURN: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
+/// The reads of play in a level: the state id 18 and no cinematic.
+const PLAY: GameRead = GameRead { state_id: Some(StateId::new(18)), cinematic: Some(0) };
+
+/// The reads of the title screen: the state id 7.
+const TITLE: GameRead = GameRead { state_id: Some(StateId::new(7)), cinematic: Some(0) };
 
 /// A main view camera with a field of view and an aspect that differ.
 const CAMERA: Camera = Camera {
@@ -62,9 +71,34 @@ fn flags(test_head: TestHead) -> VrFlags {
     VrFlags { test_head, ..VrFlags::default() }
 }
 
-/// A Present call now with the eye distance `ipd_mm`, the eye scale `eye_scale` and `rays`.
-fn call(ipd_mm: f32, eye_scale: EyeScale, rays: Rays) -> PresentCall {
-    PresentCall { stereo: stereo(ipd_mm), eye_scale, rays, now: Instant::now() }
+/// What a test's Present call reads: the game's reads, the eye distance in millimeters, the eye
+/// scale the UI layer hands over and the rays.
+#[derive(Clone, Copy)]
+struct Call {
+    game: GameRead,
+    ipd_mm: f32,
+    eye_scale: EyeScale,
+    rays: Rays,
+}
+
+/// A Present call now during play in a level with the eye distance `ipd_mm`, the eye scale
+/// `eye_scale` and `rays`.
+const fn call(ipd_mm: f32, eye_scale: EyeScale, rays: Rays) -> Call {
+    read_call(PLAY, ipd_mm, eye_scale, rays)
+}
+
+/// A Present call now with the game's reads `game`.
+const fn read_call(game: GameRead, ipd_mm: f32, eye_scale: EyeScale, rays: Rays) -> Call {
+    Call { game, ipd_mm, eye_scale, rays }
+}
+
+/// The placement of `view` at the Present call `call`, after the view kind it decides, as the frame
+/// handler places the next frame's proxies.
+fn place(view: &mut VrView, header: impl FnOnce() -> Option<HeadSample>, call: Call) -> Placement {
+    let Call { game, ipd_mm, eye_scale, rays } = call;
+    let kind = view.decide(rays, game);
+    let now = Instant::now();
+    view.placement(header, PresentCall { stereo: stereo(ipd_mm), eye_scale, rays, kind, now })
 }
 
 /// A header pose of the sequence number `sequence`, turned 20 degrees right, with the eye
@@ -148,7 +182,7 @@ fn in_the_mode_desktop_stereo_the_eyes_sit_on_the_head_axis_and_the_header_is_no
         Some(header(8, 0.064))
     };
     let scale = EyeScale::clamped(0.5);
-    let placement = view.placement(header, call(64.0, scale, Rays::Rewritten));
+    let placement = place(&mut view, header, call(64.0, scale, Rays::Rewritten));
     assert_eq!(placement, Placement::head(stereo(64.0), scale));
     assert!(!read.get(), "the header was read");
     assert_eq!(view.report(), None, "no vr view line");
@@ -158,12 +192,29 @@ fn in_the_mode_desktop_stereo_the_eyes_sit_on_the_head_axis_and_the_header_is_no
 fn in_the_mode_vr_a_header_pose_places_the_eyes_at_the_full_eye_distance() {
     let mut view = VrView::new(Mode::Vr, VrFlags::default());
     let scale = EyeScale::clamped(0.5);
-    let placement = view.placement(|| Some(header(8, 0.064)), call(65.0, scale, Rays::Rewritten));
+    let placement = place(&mut view, || Some(header(8, 0.064)), call(65.0, scale, Rays::Rewritten));
     let pose = HeadPose::from_openxr([0.1, 0.2, -0.3], RIGHT_20);
     assert_eq!(placement, pose_at(pose, 8, 0.032));
     let report = view.report().expect("a vr view report");
-    assert_eq!((report.source, report.head_sequence), (PoseSource::Header, 8));
+    assert_eq!(
+        (report.view, report.source, report.head_sequence),
+        (ViewKind::World, PoseSource::Header, 8)
+    );
     assert_near(&[report.yaw_deg, report.pitch_deg, report.eye_m], &[20.0, 0.0, 0.064], "report");
+}
+
+#[test]
+fn in_the_mode_vr_a_screen_kind_places_the_eyes_on_the_head_axis_at_the_ui_eye_scale() {
+    let mut view = VrView::new(Mode::Vr, VrFlags::default());
+    let scale = EyeScale::clamped(0.5);
+    let title = read_call(TITLE, 65.0, scale, Rays::Rewritten);
+    let placement = place(&mut view, || Some(header(8, 0.064)), title);
+    assert_eq!(placement, Placement::head(stereo(65.0), scale));
+    let report = view.report().expect("a vr view report");
+    assert_eq!(
+        (report.view, report.source, report.head_sequence),
+        (ViewKind::Screen, PoseSource::Header, 8)
+    );
 }
 
 #[test]
@@ -174,7 +225,7 @@ fn in_the_mode_vr_the_test_pose_wins_over_the_header_which_is_not_read() {
         read.set(true);
         Some(header(8, 0.064))
     };
-    let placement = view.placement(header, call(65.0, EyeScale::FULL, Rays::Rewritten));
+    let placement = place(&mut view, header, call(65.0, EyeScale::FULL, Rays::Rewritten));
     let pose = HeadPose::from_openxr([0.0; 3], RIGHT_20);
     assert_eq!(placement, pose_at(pose, 1, 0.0325));
     assert!(!read.get(), "the header was read");
@@ -182,24 +233,26 @@ fn in_the_mode_vr_the_test_pose_wins_over_the_header_which_is_not_read() {
 }
 
 #[test]
-fn in_the_mode_vr_no_pose_places_the_eyes_by_no_move_and_no_turn_before_and_after_a_present() {
+fn in_the_mode_vr_no_pose_places_the_eyes_of_a_world_kind_by_no_move_and_no_turn() {
     let mut view = VrView::new(Mode::Vr, VrFlags::default());
-    let placement = view.placement(|| None, call(65.0, EyeScale::FULL, Rays::Rewritten));
+    let placement = place(&mut view, || None, call(65.0, EyeScale::FULL, Rays::Rewritten));
     assert_eq!(placement, pose_at(HeadPose::IDENTITY, 0, 0.0325));
-    let config = Config { mode: Mode::Vr, ..Config::of_dev(DevFlags::default()) };
-    assert_eq!(first_placement(config, Rays::Rewritten), pose_at(HeadPose::IDENTITY, 0, 0.0325));
-    assert_eq!(view.report(), Some(NO_POSE_REPORT));
+    assert_eq!(view.report(), Some(no_pose_report(ViewKind::World)));
 }
 
-/// The `vr view` line's values while no head pose is in use, with a 65 mm eye distance.
-const NO_POSE_REPORT: VrReport = VrReport {
-    source: PoseSource::None,
-    head_sequence: 0,
-    yaw_deg: 0.0,
-    pitch_deg: 0.0,
-    eye_m: 0.065,
-    horizon: Horizon::Level,
-};
+/// The `vr view` line's values of the view kind `view` while no head pose is in use, with a 65 mm
+/// eye distance.
+const fn no_pose_report(view: ViewKind) -> VrReport {
+    VrReport {
+        view,
+        source: PoseSource::None,
+        head_sequence: 0,
+        yaw_deg: 0.0,
+        pitch_deg: 0.0,
+        eye_m: 0.065,
+        horizon: Horizon::Level,
+    }
+}
 
 #[test]
 fn in_the_mode_vr_the_games_rays_keep_the_eyes_on_the_head_axis_and_read_no_pose() {
@@ -211,26 +264,36 @@ fn in_the_mode_vr_the_games_rays_keep_the_eyes_on_the_head_axis_and_read_no_pose
     };
     let scale = EyeScale::clamped(0.5);
     let (placement, text) = logged("vr-view-game-rays", || {
-        let first = view.placement(header, call(65.0, scale, Rays::GameBuilt));
-        view.placement(|| None, call(65.0, scale, Rays::GameBuilt));
+        let first = place(&mut view, header, call(65.0, scale, Rays::GameBuilt));
+        place(&mut view, || None, call(65.0, scale, Rays::GameBuilt));
         first
     });
-    assert_eq!(placement, Placement::head(stereo(65.0), EyeScale::FULL));
+    assert_eq!(placement, Placement::head(stereo(65.0), scale), "a screen kind");
     assert!(!read.get(), "the header was read");
-    assert_eq!(view.report(), Some(NO_POSE_REPORT));
+    assert_eq!(view.report(), Some(no_pose_report(ViewKind::Screen)));
     assert_eq!(text.matches("the head pose does not turn them").count(), 1, "{text}");
-    let config = Config { mode: Mode::Vr, ..Config::of_dev(DevFlags::default()) };
-    let head = Placement::head(config.settings.stereo, EyeScale::FULL);
-    assert_eq!(first_placement(config, Rays::GameBuilt), head);
 }
 
 #[test]
-fn in_the_mode_desktop_stereo_the_first_placement_is_the_head_axis_at_the_full_distance() {
-    let config = Config::of_dev(DevFlags::default());
-    let head = Placement::head(config.settings.stereo, EyeScale::FULL);
-    for rays in [Rays::Rewritten, Rays::GameBuilt] {
-        assert_eq!(first_placement(config, rays), head, "{rays:?}");
-    }
+fn each_change_of_the_decided_kind_logs_one_line_and_the_mode_desktop_stereo_none() {
+    let mut vr = VrView::new(Mode::Vr, VrFlags::default());
+    let mut desktop = VrView::new(Mode::DesktopStereo, VrFlags::default());
+    let ((), text) = logged("vr-view-kind-changes", || {
+        for game in [TITLE, PLAY, PLAY, PLAY, TITLE, TITLE, PLAY] {
+            let present = read_call(game, 65.0, EyeScale::FULL, Rays::Rewritten);
+            place(&mut vr, || None, present);
+            place(&mut desktop, || None, present);
+        }
+    });
+    let changes: Vec<&str> =
+        text.lines().filter(|line| line.contains("view kind changed")).collect();
+    let views: Vec<&str> = changes.iter().filter_map(|line| line.split(" view=").nth(1)).collect();
+    let expected = [
+        "world state_id=18 cinematic=0",
+        "screen state_id=7 cinematic=0",
+        "world state_id=18 cinematic=0",
+    ];
+    assert_eq!(views, expected, "{text}");
 }
 
 #[test]
@@ -244,42 +307,43 @@ fn the_rays_are_rewritten_only_while_the_view_camera_runs() {
 }
 
 #[test]
-fn the_depth_offset_counts_as_0_in_the_mode_vr_and_follows_a_screen_only_in_desktop_stereo() {
+fn the_depth_offset_counts_as_0_in_a_world_frame_and_follows_a_screen_in_a_screen_frame() {
     let screen = ParallelShare::new(0.0065);
-    let desktop = VrView::new(Mode::DesktopStereo, VrFlags::default());
-    let setting = desktop.depth_offset(stereo(64.0), None);
+    let setting = depth_offset(ViewKind::Screen, stereo(64.0), None);
     assert_near(&[setting.share()], &[0.025], "the setting's 2.5 percent");
     assert_eq!(setting.origin(), OffsetFrom::Setting);
-    let from_screen = desktop.depth_offset(stereo(64.0), screen);
+    let from_screen = depth_offset(ViewKind::Screen, stereo(64.0), screen);
     assert_near(&[from_screen.share()], &[0.0065], "the 10 m screen's share");
     assert_eq!(from_screen.origin(), OffsetFrom::Screen);
-    let vr = VrView::new(Mode::Vr, VrFlags::default());
-    assert_eq!(vr.depth_offset(stereo(64.0), None), DepthOffset::NONE);
-    assert_eq!(vr.depth_offset(stereo(64.0), screen), DepthOffset::NONE, "a screen in the mode vr");
+    assert_eq!(depth_offset(ViewKind::World, stereo(64.0), None), DepthOffset::NONE);
+    let world = depth_offset(ViewKind::World, stereo(64.0), screen);
+    assert_eq!(world, DepthOffset::NONE, "a screen in a world frame");
 }
 
 #[test]
-fn the_ui_depth_takes_the_header_eye_distance_in_the_mode_vr_and_the_settings_one_otherwise() {
+fn the_ui_depth_takes_the_header_eye_distance_in_a_world_frame_and_the_settings_one_otherwise() {
     let present = || call(58.5, EyeScale::FULL, Rays::Rewritten);
     let mut vr = VrView::new(Mode::Vr, VrFlags::default());
-    let before = vr.depth_eye_m(stereo(58.5));
-    vr.placement(|| Some(header(8, 0.070)), present());
-    let with_header = vr.depth_eye_m(stereo(58.5));
-    vr.placement(|| None, present());
-    let without_header = vr.depth_eye_m(stereo(58.5));
+    let before = vr.depth_eye_m(ViewKind::World, stereo(58.5));
+    place(&mut vr, || Some(header(8, 0.070)), present());
+    let with_header = vr.depth_eye_m(ViewKind::World, stereo(58.5));
+    let screen_frame = vr.depth_eye_m(ViewKind::Screen, stereo(58.5));
+    place(&mut vr, || None, present());
+    let without_header = vr.depth_eye_m(ViewKind::World, stereo(58.5));
     let mut desktop = VrView::new(Mode::DesktopStereo, VrFlags::default());
-    desktop.placement(|| Some(header(8, 0.070)), present());
-    let in_desktop = desktop.depth_eye_m(stereo(58.5));
-    let found = [before, with_header, without_header, in_desktop];
-    assert_near(&found, &[0.0585, 0.070, 0.0585, 0.0585], "before, with, without, desktop");
+    place(&mut desktop, || Some(header(8, 0.070)), present());
+    let in_desktop = desktop.depth_eye_m(ViewKind::Screen, stereo(58.5));
+    let found = [before, with_header, screen_frame, without_header, in_desktop];
+    let expected = [0.0585, 0.070, 0.0585, 0.0585, 0.0585];
+    assert_near(&found, &expected, "before, with, a screen frame, without, desktop");
 }
 
 #[test]
-fn the_tag_holds_the_head_sequence_and_the_main_view_lens_only_in_the_mode_vr() {
-    let vr = VrView::new(Mode::Vr, VrFlags::default());
+fn the_tag_holds_the_head_sequence_and_the_main_view_lens_only_for_a_world_frame() {
+    let world = ProxyFill { kind: ViewKind::World, head_sequence: 8 };
     let tagged = FrameTag { head_sequence: 8, fov_y_rad: 0.96, aspect: 0.889 };
-    assert_eq!(vr.tag(8, Some(CAMERA)), tagged);
-    assert_eq!(vr.tag(0, None), FrameTag::NONE, "no proxied main view and no camera");
-    let desktop = VrView::new(Mode::DesktopStereo, VrFlags::default());
-    assert_eq!(desktop.tag(8, Some(CAMERA)), FrameTag::NONE);
+    assert_eq!(tag(world, Some(CAMERA)), tagged);
+    let no_camera = FrameTag { head_sequence: 8, fov_y_rad: 0.0, aspect: 0.0 };
+    assert_eq!(tag(world, None), no_camera, "a world frame with no camera");
+    assert_eq!(tag(ProxyFill::NONE, Some(CAMERA)), FrameTag::NONE, "a screen frame");
 }

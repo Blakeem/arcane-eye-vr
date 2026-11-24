@@ -20,12 +20,13 @@ use hooks::{MidHook, RenderCell};
 use ipc_layout::core_init::INIT_STARTED;
 use ipc_layout::launch_token::{self, Mode, UnknownMode};
 use ipc_layout::settings_reload;
+use stereo_core::eye::EyeScale;
 use tracing::dispatcher::{self, SetGlobalDefaultError};
 use tracing::{Dispatch, info, warn};
 
 use crate::config::{self, Config};
 use crate::context::CoreContext;
-use crate::eye_camera;
+use crate::eye_camera::{self, Placement};
 use crate::eye_view;
 use crate::frame::FrameState;
 use crate::game_source::GameSource;
@@ -39,7 +40,7 @@ use crate::shadow_cache;
 use crate::ui_layer::{self, UiLayer};
 use crate::view_camera::{self, ViewCamera};
 use crate::viewer_source;
-use crate::vr_view::{self, Rays, VrView};
+use crate::vr_view::VrView;
 
 /// The code `arcane_eye_init` returns. 0 is success, every other value names the failure.
 #[repr(u32)]
@@ -231,23 +232,19 @@ struct Installs {
 
 /// Runs every install against one copy of the game exe's code, which drops on return. The installs
 /// run in field order. The UI layer, game state, view camera, eye camera and eye view installs follow
-/// the Present call-site install, which all five need. The eye camera install follows the view camera
-/// install, whose outcome picks the first frame's placement in the launch mode `vr`, and the shadow
-/// cache and object slot installs follow the eye view install, which they need.
+/// the Present call-site install, which all five need, and the shadow cache and object slot installs
+/// follow the eye view install, which they need.
 fn install_all(health: &Health, status: Option<&StatusView>, config: Config) -> Installs {
     let code = GameCode::copy();
+    // No view kind is decided before the first Present call, so the first frame is a screen frame.
+    let first = Placement::head(config.settings.stereo, EyeScale::FULL);
     Installs {
         present_hook: present::install(health, status, &code),
         game_source: viewer_source::install(&code, config),
         ui_layer: ui_layer::install(health, &code, config),
         game_state: game_state::install(health, &code),
         view_camera: view_camera::install(health, &code),
-        eye_camera: eye_camera::install(
-            health,
-            &code,
-            config,
-            vr_view::first_placement(config, Rays::of(health)),
-        ),
+        eye_camera: eye_camera::install(health, &code, config, first),
         eye_view: eye_view::install(health, &code, config),
         shadow_cache: shadow_cache::install(health, &code, config),
         object_slot: object_slot::install(health, &code, config),

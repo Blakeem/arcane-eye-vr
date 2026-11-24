@@ -94,6 +94,12 @@ impl TestView {
         self.write_pointer(VIEW_READ_STATE_CONTROLLER, controller);
     }
 
+    /// Writes `value` into the byte `offset` bytes into the view, as the game thread sets a flag.
+    pub(crate) fn put_byte(&self, offset: usize, value: u8) {
+        let field = self.writes().offset(offset).expect("a view field");
+        game_mem::try_write(field, value).expect("a writable view byte");
+    }
+
     fn write_pointer(&self, offset: usize, value: usize) {
         let field = self.writes().offset(offset).expect("a view field");
         game_mem::try_write(field, value).expect("a writable view field");

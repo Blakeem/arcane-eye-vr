@@ -5,9 +5,10 @@
 //! either `GetWorldTranslate`, for the head, or the eye camera's proxy function, for an eye. The eye
 //! view is the candidate the frame's layout names while the views sit side by side. The main view is
 //! the first other candidate of a frame at the site. A frame ends at the Present call-site hook, which
-//! takes the frame's cameras, so the feature installs only when that hook runs. The feature writes
-//! game memory only in the launch mode `vr`, where it rewrites the corner rays of each view whose
-//! controller is an eye camera's proxy, in `rays`.
+//! takes the frame's cameras, so the feature installs only when that hook runs. The choice of a main
+//! view also reads its cinematic byte, the fog variant, for the view kind of the launch mode `vr`.
+//! The feature writes game memory only in the launch mode `vr`, where it rewrites the corner rays of
+//! each view whose controller is an eye camera's proxy, in `rays`.
 
 mod rays;
 
@@ -116,6 +117,12 @@ pub(crate) fn end_frame(
     cameras.unwrap_or_default()
 }
 
+/// The cinematic byte of the newest main view, or `None` while the feature does not run, before
+/// the first main view and after a failed read.
+pub(crate) fn cinematic(context: &CoreContext, thread: &RenderThread) -> Option<u8> {
+    context.view_camera.with(thread, |camera| camera.cinematic(&context.health)).flatten()
+}
+
 /// The camera a frame's view rendered with and the position it rendered from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct FrameCamera {
@@ -188,6 +195,9 @@ pub(crate) struct ViewCamera {
     layout: Layout,
     main: Choice,
     eye_view: Choice,
+    /// The fog variant byte of the newest main view, which is 0 in gameplay and 1 in a cinematic,
+    /// or `None` before the first main view and after a failed read.
+    cinematic: Option<u8>,
     ray_log: RateLimit,
 }
 
@@ -199,8 +209,18 @@ impl ViewCamera {
             layout: Layout::MainOnly,
             main: Choice::Open,
             eye_view: Choice::Open,
+            cinematic: None,
             ray_log: RateLimit::default(),
         }
+    }
+
+    /// The cinematic byte of the newest main view, or `None` while `health` holds the feature off,
+    /// before the first main view and after a failed read.
+    pub(crate) fn cinematic(&self, health: &Health) -> Option<u8> {
+        if !health.is_running(Feature::ViewCamera) {
+            return None;
+        }
+        self.cinematic
     }
 
     /// Rewrites the corner rays of `view`, whose first bytes are `writes`, in the mode `vr` when its
@@ -232,16 +252,20 @@ impl ViewCamera {
 
     /// Takes `view` as the frame's eye view when the layout names it, or else as the frame's main
     /// view when no view of the frame was, and its controller marks it as a candidate. A proxied view
-    /// whose eye or head position cannot be read has no camera.
+    /// whose eye or head position cannot be read has no camera. A main view also gives its cinematic
+    /// byte.
     fn choose(&mut self, view: RenderView) {
-        let choice =
-            if self.layout.is_eye_view(view) { &mut self.eye_view } else { &mut self.main };
+        let is_eye_view = self.layout.is_eye_view(view);
+        let choice = if is_eye_view { &mut self.eye_view } else { &mut self.main };
         if *choice != Choice::Open {
             return;
         }
         let Some(origin) = origin(self.world_translate, view) else { return };
         let camera = view.per_camera().and_then(|block| block.camera());
         *choice = Choice::Made(camera.and_then(|camera| frame_camera(camera, origin)));
+        if !is_eye_view {
+            self.cinematic = view.fog_variant();
+        }
     }
 
     /// The cameras of the frame's views, both `None` when `health` holds the feature off, and a fresh
