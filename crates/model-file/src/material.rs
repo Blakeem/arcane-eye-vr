@@ -80,7 +80,7 @@ fn base_color(
     }
 }
 
-/// The texture of a PNG image in a buffer view, or why the image gives none.
+/// The texture of a PNG or JPEG image in a buffer view, or why the image gives none.
 fn decode(
     source: &Source<'_>,
     image: &document::Image,
@@ -88,8 +88,9 @@ fn decode(
 ) -> Result<Decoded, ReadError> {
     let Some(view) = image.buffer_view else { return Ok(Decoded::Fault(ImageFault::NoBufferView)) };
     let bytes = source.view(view)?.bytes;
-    if image.mime_type.as_deref() != Some(texture::PNG_MIME_TYPE) {
-        return Ok(Decoded::Fault(ImageFault::MimeType));
+    match image.mime_type.as_deref() {
+        Some(texture::PNG_MIME_TYPE) => texture::decode_png(bytes, budget),
+        Some(texture::JPEG_MIME_TYPE) => texture::decode_jpeg(bytes, budget),
+        _ => Ok(Decoded::Fault(ImageFault::MimeType)),
     }
-    texture::decode_png(bytes, budget)
 }

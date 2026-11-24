@@ -17,8 +17,8 @@ pub const MAX_JSON_BYTES: usize = 1024 * 1024;
 pub const MAX_NODES: usize = 4096;
 /// The longest side of a texture, in pixels.
 pub const MAX_TEXTURE_SIDE: u32 = 8192;
-/// The most pixels of every PNG the read decodes or tries to decode together, by the size each PNG
-/// declares, one texture of the longest sides.
+/// The most pixels of every image the read decodes or tries to decode together, by the size each
+/// image's header declares, one texture of the longest sides.
 pub const MAX_TEXTURE_PIXELS: usize = 8192 * 8192;
 /// The most vertices together of every position the read takes from the file and every corner it
 /// makes for a primitive without normals.

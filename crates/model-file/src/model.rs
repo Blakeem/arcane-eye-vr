@@ -95,10 +95,14 @@ pub struct UndecodedImage {
 pub enum ImageFault {
     #[error("the image is not in a buffer view")]
     NoBufferView,
-    #[error("the reader decodes only image/png")]
+    #[error("the reader decodes only image/png and image/jpeg")]
     MimeType,
     #[error("the PNG does not decode: {0}")]
     Png(String),
     #[error("the PNG decodes to a sample format the reader does not convert")]
-    Format,
+    PngFormat,
+    #[error("the JPEG does not decode: {0}")]
+    Jpeg(String),
+    #[error("the JPEG's {components} color components do not decode to red, green and blue")]
+    JpegFormat { components: u8 },
 }

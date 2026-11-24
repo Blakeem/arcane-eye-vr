@@ -18,6 +18,8 @@ toml_edit = "0.25.19"
 tracing = { version = "0.1.44", default-features = false, features = ["std", "release_max_level_debug"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std"] }
 windows = "0.62.2"
+# The texture decode needs no SIMD and no std feature, and without them the decoder holds no unsafe code.
+zune-jpeg = { version = "0.5.15", default-features = false }
 
 [workspace.package]
 edition = "2024"

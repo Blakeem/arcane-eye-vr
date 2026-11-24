@@ -163,6 +163,48 @@ pub(crate) fn palette_png(palette: &[u8], alphas: &[u8], indices: &[u8]) -> Vec<
     file
 }
 
+/// A baseline JPEG of 8 by 8 pixels of the color [`JPEG_COLOR`], three components without subsampling.
+pub(crate) const COLOR_JPEG: &[u8] = include_bytes!("jpeg/color-8x8.jpg");
+pub(crate) const JPEG_COLOR: [u8; 3] = [200, 60, 30];
+/// A baseline JPEG of 8 by 8 pixels with an Adobe marker of four CMYK components without subsampling,
+/// cyan 0, magenta 179, yellow 217 and black 55, which by the naive product of the inverted inks is
+/// [`JPEG_COLOR`].
+pub(crate) const CMYK_JPEG: &[u8] = include_bytes!("jpeg/cmyk-8x8.jpg");
+/// A baseline JPEG of 8 by 8 pixels of the gray [`JPEG_GRAY`], one component.
+pub(crate) const GRAY_JPEG: &[u8] = include_bytes!("jpeg/gray-8x8.jpg");
+pub(crate) const JPEG_GRAY: u8 = 90;
+
+/// The bytes of `jpeg` before its baseline start of frame marker, and the bytes from the marker on.
+fn split_at_frame(jpeg: &[u8]) -> (&[u8], &[u8]) {
+    let marker = jpeg.windows(2).position(|pair| pair == [0xFF, 0xC0]).expect("a baseline JPEG");
+    jpeg.split_at(marker)
+}
+
+/// `jpeg` with the start of frame naming `width` by `height` pixels.
+pub(crate) fn jpeg_of_size(jpeg: &[u8], width: u16, height: u16) -> Vec<u8> {
+    let (before, frame) = split_at_frame(jpeg);
+    let [0xFF, 0xC0, length_high, length_low, precision, _, _, _, _, after_size @ ..] = frame
+    else {
+        panic!("a start of frame of a height and a width")
+    };
+    let head = [0xFF, 0xC0, *length_high, *length_low, *precision];
+    [before, &head, &height.to_be_bytes(), &width.to_be_bytes(), after_size].concat()
+}
+
+/// The one-component `jpeg` with a second component of the first's sampling and table in its start of
+/// frame.
+pub(crate) fn two_component_jpeg(jpeg: &[u8]) -> Vec<u8> {
+    let (before, frame) = split_at_frame(jpeg);
+    let (start_of_frame, after) = frame.split_at(13);
+    let [0xFF, 0xC0, 0, 11, precision, size @ .., 1, id, sampling, table] = start_of_frame else {
+        panic!("a start of frame of one component")
+    };
+    // The segment length grows from 11 to 14 bytes, and the component count from 1 to 2.
+    let head = [0xFF, 0xC0, 0, 14, *precision];
+    let components = [2, *id, *sampling, *table, id.wrapping_add(1), *sampling, *table];
+    [before, &head, size, &components, after].concat()
+}
+
 /// The fixture of one node with a textured triangle whose material names the image `image`.
 pub(crate) fn textured(image: impl FnOnce(&mut Glb) -> usize) -> Glb {
     let mut glb = Glb::with_primitive(|glb| {

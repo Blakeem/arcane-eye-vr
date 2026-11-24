@@ -6,7 +6,9 @@ use model_file::read;
 use png::{BitDepth, ColorType};
 use serde_json::json;
 
-use crate::fixture::{FLOAT, Glb, TRIANGLE, UNSIGNED_BYTE, png, png_of_depth, textured};
+use crate::fixture::{
+    COLOR_JPEG, FLOAT, Glb, TRIANGLE, UNSIGNED_BYTE, jpeg_of_size, png, png_of_depth, textured,
+};
 
 fn limit_of(glb: &Glb) -> Option<Limit> {
     match read(&glb.bytes()) {
@@ -57,6 +59,27 @@ fn a_texture_side_of_8193_pixels_is_rejected() {
         let glb = textured(|glb| glb.image(&file, "image/png"));
         assert_eq!(limit_of(&glb), Some(Limit::TextureSide), "{width} by {height}");
     }
+}
+
+#[test]
+fn a_jpeg_side_of_8193_pixels_is_rejected_from_its_header() {
+    // A side of 65535 pixels lies past the decoder's own default limit of 16384.
+    for (width, height) in [(8193, 8), (8, 8193), (65535, 8), (8, 65535)] {
+        let file = jpeg_of_size(COLOR_JPEG, width, height);
+        let glb = textured(|glb| glb.image(&file, "image/jpeg"));
+        assert_eq!(limit_of(&glb), Some(Limit::TextureSide), "{width} by {height}");
+    }
+}
+
+#[test]
+fn a_jpeg_side_of_8192_pixels_decodes() {
+    // The scan holds 8 by 8 pixels, and the decoder gives a texture of the size the header names.
+    let file = jpeg_of_size(COLOR_JPEG, 8192, 8);
+    let glb = textured(|glb| glb.image(&file, "image/jpeg"));
+    let model = read(&glb.bytes()).expect("a side at the limit");
+    assert_eq!(model.undecoded, Vec::new());
+    let texture = &model.textures[0];
+    assert_eq!((texture.width, texture.height, texture.pixels.len()), (8192, 8, 8192 * 8 * 4));
 }
 
 #[test]

@@ -4,3 +4,4 @@ crates/shim/vendor/** -text
 *.zip binary
 *.dll binary
 *.exe binary
+*.jpg binary
