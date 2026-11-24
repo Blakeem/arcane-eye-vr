@@ -18,6 +18,7 @@ These changes are on the main branch. No headset has tested them yet.
 - In `--mode screen` and `--mode vr`, the headset shows the controllers when the OpenXR runtime gives their models.
 - Controllers are described by files in `profiles`, for the Steam Frame, the HTC Vive and the Khronos simple controller.
 - `arcane-eye-vr.exe --mode vr` starts a first stage of the immersive mode, where the head looks around from the place of the game's camera.
+- In `--mode vr`, a click lands on what the mouse cursor covers while the head is turned.
 - In `--mode vr`, the headset shows the game around the player only during play in a level. The title screen, loading pictures, cutscenes and dialogue show on the screen.
 
 ## 0.0.1 Beta (2026-11-18)

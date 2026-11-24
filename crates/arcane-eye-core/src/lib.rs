@@ -11,6 +11,7 @@ mod init;
 mod install;
 mod object_slot;
 mod pair;
+mod pick_ray;
 mod present;
 mod raw;
 mod reload;

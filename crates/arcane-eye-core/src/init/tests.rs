@@ -86,6 +86,8 @@ fn second_run_returns_already_running_and_a_taken_subscriber_maps_to_code_3() {
             "{feature:?} was not asked to install, or installed with no Present call-site hook"
         );
     }
+    let pick_ray = context.health.state(Feature::PickRay);
+    assert_eq!(pick_ray, FeatureState::Pending, "the mode desktop-stereo asked for the pick ray");
     reload_event::signal(&reload_event).expect("the settings thread holds the reload event");
     assert!(dir.join(r"logs\arcane-eye-vr.log").is_file(), "the session log is in root\\logs");
     let second = run(1, || Ok(Root::new(dir.clone())), names);

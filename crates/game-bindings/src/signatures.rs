@@ -77,6 +77,22 @@ pub const GET_WORLD_TRANSLATE: Signature = Signature {
     rip: None,
 };
 
+/// The camera controller's `ScreenToWorldRay`. It takes the controller in `rcx`, u in `xmm1` and v
+/// in `xmm2` as `f32` shares from 0 to 1 with the origin at the top left, a pointer to three `f32`
+/// for a point on the near plane in `r9`, one for a point on the far plane as the fifth argument and
+/// the cached byte as the sixth, at `rsp+30h` at the entry. With the cached byte 0 it builds the ray
+/// from the look direction at controller + 58h and the position vtable slot 9 returns, and with any
+/// other value from the inverse view at controller +
+/// [`CONTROLLER_INVERSE_VIEW`](crate::offsets::CONTROLLER_INVERSE_VIEW). The bytes are
+/// `mov rax,rsp`, `mov [rax+10h],rbx`, `mov [rax+18h],rsi`, `push rdi` and `sub rsp,160h`, 19 bytes
+/// with no RIP-relative operand and no jump. Derived from a disassembly.
+pub const CAMERA_SCREEN_TO_WORLD_RAY: Signature = Signature {
+    name: "camera_screen_to_world_ray",
+    pattern: "48 8B C4 48 89 58 10 48 89 70 18 57 48 81 EC 60 01 00 00",
+    offset: 0,
+    rip: None,
+};
+
 /// The render pipeline's main frame getter. It takes the pipeline in `rcx` and returns its main
 /// `RenderFrame`, or 0 when the pipeline's main frame index is -1. It only reads. From bg3-vr.
 pub const PIPELINE_MAIN_FRAME: Signature = Signature {
@@ -318,6 +334,7 @@ pub const SIGNATURES: &[Signature] = &[
     RENDER_VIEW_BEGIN,
     RENDER_VIEW_CAMERA_BUILT,
     GET_WORLD_TRANSLATE,
+    CAMERA_SCREEN_TO_WORLD_RAY,
     PIPELINE_MAIN_FRAME,
     VIEW_CREATE_PLAYER,
     GAME_PIPELINE_SETUP,

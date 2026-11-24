@@ -38,6 +38,9 @@ pub enum Feature {
     /// The draws into each half of the back buffer at each Present call site: a flat frame's entire
     /// picture, then the game's UI texture, with the composite stage's UI enable byte held at 0.
     UiLayer,
+    /// The mid hook at the entry of the game's picking ray function, which in the launch mode `vr`
+    /// gives the ray of an eye camera's proxy from the eye camera that drew the picture.
+    PickRay,
 }
 
 impl Feature {
@@ -52,6 +55,7 @@ impl Feature {
             Self::ObjectSlot => "object-slot",
             Self::GameState => "game-state",
             Self::UiLayer => "ui-layer",
+            Self::PickRay => "pick-ray",
         }
     }
 }
@@ -135,6 +139,7 @@ pub struct Health {
     object_slot: AtomicU8,
     game_state: AtomicU8,
     ui_layer: AtomicU8,
+    pick_ray: AtomicU8,
 }
 
 impl Health {
@@ -149,6 +154,7 @@ impl Health {
             object_slot: AtomicU8::new(FeatureState::Pending as u8),
             game_state: AtomicU8::new(FeatureState::Pending as u8),
             ui_layer: AtomicU8::new(FeatureState::Pending as u8),
+            pick_ray: AtomicU8::new(FeatureState::Pending as u8),
         }
     }
 
@@ -195,6 +201,7 @@ impl Health {
             Feature::ObjectSlot => &self.object_slot,
             Feature::GameState => &self.game_state,
             Feature::UiLayer => &self.ui_layer,
+            Feature::PickRay => &self.pick_ray,
         }
     }
 
@@ -277,16 +284,41 @@ mod tests {
             "a panic in view-camera latched present-hook"
         );
         assert_eq!(Feature::ViewCamera.as_str(), "view-camera");
-        assert_eq!(health.state(Feature::EyeCamera), FeatureState::Pending);
-        assert_eq!(Feature::EyeCamera.as_str(), "eye-camera");
-        assert_eq!(health.state(Feature::EyeView), FeatureState::Pending);
-        assert_eq!(Feature::EyeView.as_str(), "eye-view");
-        assert_eq!(health.state(Feature::ShadowCache), FeatureState::Pending);
-        assert_eq!(Feature::ShadowCache.as_str(), "shadow-cache");
-        assert_eq!(health.state(Feature::ObjectSlot), FeatureState::Pending);
-        assert_eq!(Feature::ObjectSlot.as_str(), "object-slot");
-        assert_eq!(health.state(Feature::GameState), FeatureState::Pending);
-        assert_eq!(Feature::GameState.as_str(), "game-state");
+        let pending = [
+            (Feature::EyeCamera, "eye-camera"),
+            (Feature::EyeView, "eye-view"),
+            (Feature::ShadowCache, "shadow-cache"),
+            (Feature::ObjectSlot, "object-slot"),
+            (Feature::GameState, "game-state"),
+            (Feature::UiLayer, "ui-layer"),
+            (Feature::PickRay, "pick-ray"),
+        ];
+        for (feature, name) in pending {
+            assert_eq!(health.state(feature), FeatureState::Pending, "{name}");
+            assert_eq!(feature.as_str(), name);
+        }
+    }
+
+    #[test]
+    fn the_pick_ray_keeps_its_own_state_under_its_own_name() {
+        let health = Health::new();
+        health.install_ok(Feature::PickRay);
+        health.panic_caught(Feature::PickRay);
+        assert_eq!(health.state(Feature::PickRay), FeatureState::Failed);
+        let others = [
+            Feature::PresentHook,
+            Feature::ViewCamera,
+            Feature::EyeCamera,
+            Feature::EyeView,
+            Feature::ShadowCache,
+            Feature::ObjectSlot,
+            Feature::GameState,
+            Feature::UiLayer,
+        ];
+        for other in others {
+            assert_eq!(health.state(other), FeatureState::Pending, "{other:?} moved with pick-ray");
+        }
+        assert_eq!(Feature::PickRay.as_str(), "pick-ray");
     }
 
     #[test]

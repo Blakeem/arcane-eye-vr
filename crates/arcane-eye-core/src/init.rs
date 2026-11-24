@@ -3,8 +3,9 @@
 //! [`start`] takes its inputs as parameters and returns the log handle and the subscriber without
 //! installing either, so tests run it in isolation. Only [`init_process`] finds the root folder, sets
 //! the process-wide subscriber, reads the settings files, opens the launch token, installs the Present
-//! call-site, view camera, eye camera, eye view and shadow cache hooks and the game state read, starts
-//! the settings thread that reloads the settings on request and fills the core context slot.
+//! call-site, view camera, eye camera, eye view, shadow cache, object slot and pick ray hooks, the UI
+//! layer and the game state read, starts the settings thread that reloads the settings on request
+//! and fills the core context slot.
 
 use std::mem::ManuallyDrop;
 use std::panic::{self, UnwindSafe};
@@ -33,6 +34,7 @@ use crate::game_source::GameSource;
 use crate::game_state::{self, GameStateWatch};
 use crate::install::GameCode;
 use crate::object_slot;
+use crate::pick_ray::{self, PickRay};
 use crate::present;
 use crate::raw::StatusView;
 use crate::reload::{self, Published, Reload};
@@ -185,12 +187,14 @@ fn run(
         shadow_cache: RenderCell::new(shadow_state),
         object_slot: RenderCell::new(slot_state),
         game_state: RenderCell::new(installs.game_state),
+        pick_ray: PickRay::default(),
         _present_hook: installs.present_hook,
         _view_camera_hook: view_installed.map(|installed| installed.hook),
         _eye_camera_hook: eye_camera_hook,
         _eye_view_hooks: eye_view_hooks,
         _shadow_cache_hook: shadow_cache_hook,
         _object_slot_hook: object_slot_hook,
+        _pick_ray_hook: installs.pick_ray,
     };
     state::store_core_context(context)?;
     Ok(())
@@ -228,12 +232,13 @@ struct Installs {
     eye_view: Option<eye_view::Installed>,
     shadow_cache: Option<shadow_cache::Installed>,
     object_slot: Option<object_slot::Installed>,
+    pick_ray: Option<ManuallyDrop<MidHook>>,
 }
 
 /// Runs every install against one copy of the game exe's code, which drops on return. The installs
 /// run in field order. The UI layer, game state, view camera, eye camera and eye view installs follow
 /// the Present call-site install, which all five need, and the shadow cache and object slot installs
-/// follow the eye view install, which they need.
+/// follow the eye view install, which they need. The pick ray install needs no other feature.
 fn install_all(health: &Health, status: Option<&StatusView>, config: Config) -> Installs {
     let code = GameCode::copy();
     // No view kind is decided before the first Present call, so the first frame is a screen frame.
@@ -248,6 +253,7 @@ fn install_all(health: &Health, status: Option<&StatusView>, config: Config) -> 
         eye_view: eye_view::install(health, &code, config),
         shadow_cache: shadow_cache::install(health, &code, config),
         object_slot: object_slot::install(health, &code, config),
+        pick_ray: pick_ray::install(health, &code, config),
     }
 }
 

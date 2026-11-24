@@ -42,6 +42,11 @@ impl Registers {
     pub const fn rsi(&self) -> usize {
         self.0.rsi
     }
+
+    /// The stack pointer at the target, as SafetyHook's stub corrects it for its own pushes.
+    pub const fn rsp(&self) -> usize {
+        self.0.rsp
+    }
 }
 
 /// A mid hook callback, as [`render_mid_hook!`](crate::render_mid_hook) and

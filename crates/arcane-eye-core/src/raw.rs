@@ -7,7 +7,8 @@
 //! and game calls, its `game_texture` module the borrow of a texture that game memory names, its
 //! `cursor` module the Win32 calls of the drawn cursor, its `reload_event` module the settings
 //! thread's event calls, its `composite_stage` module the write destination of the UI enable byte,
-//! and its `render_view` module the write destinations of a render view.
+//! its `render_view` module the write destinations of a render view, and its `pick_ray` module the
+//! pick ray hook's install and the write destination of the ray function's cached argument.
 
 #![expect(
     unsafe_code,
@@ -41,9 +42,8 @@ use self::cursor::Window;
 /// frame handler calls: `IUnknown` 0 to 2, `IDXGIObject` 3 to 6, `GetDevice` 7, `GetDesc` 12.
 const GET_DESC_SLOT_OFFSET: usize = 12 * size_of::<usize>();
 
-/// Starts the core: the root folder, the session log, the settings files, the Present call-site, view
-/// camera, eye camera, eye view and shadow cache hooks, then the core context. `mode` is the launch
-/// token's mode value.
+/// Starts the core through [`init_process`](crate::init::init_process), whose module doc lists each
+/// step. `mode` is the launch token's mode value.
 ///
 /// Returns 0 on success and an [`InitStatus`](crate::init::InitStatus) failure code otherwise. A mode
 /// value that names no mode returns the unknown-mode code, and a second call in one process returns
@@ -375,6 +375,7 @@ pub(crate) mod composite_stage;
 pub(crate) mod cursor;
 pub(crate) mod eye_view;
 pub(crate) mod game_texture;
+pub(crate) mod pick_ray;
 pub(crate) mod reload_event;
 pub(crate) mod render_view;
 

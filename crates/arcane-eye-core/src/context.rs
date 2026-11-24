@@ -15,6 +15,7 @@ use crate::eye_view::EyeViewState;
 use crate::frame::FrameState;
 use crate::game_state::GameStateWatch;
 use crate::object_slot::SlotState;
+use crate::pick_ray::PickRay;
 use crate::raw::StatusView;
 use crate::reload::{Published, Reload};
 use crate::shadow_cache::ShadowState;
@@ -44,6 +45,7 @@ pub(crate) struct CoreContext {
     pub(crate) object_slot: RenderCell<Option<SlotState>>,
     /// `None` when the game state read is not installed.
     pub(crate) game_state: RenderCell<Option<GameStateWatch>>,
+    pub(crate) pick_ray: PickRay,
     /// Never dropped, so the hook stays installed for the process life (see
     /// [`install_present_hook`](crate::raw::install_present_hook)).
     pub(crate) _present_hook: Option<ManuallyDrop<MidHook>>,
@@ -63,6 +65,9 @@ pub(crate) struct CoreContext {
     /// Never dropped, like the Present call-site hook (see
     /// [`install_object_slot_hook`](crate::raw::install_object_slot_hook)).
     pub(crate) _object_slot_hook: Option<ManuallyDrop<MidHook>>,
+    /// Never dropped, like the Present call-site hook (see
+    /// [`install_pick_ray_hook`](crate::raw::pick_ray::install_pick_ray_hook)).
+    pub(crate) _pick_ray_hook: Option<ManuallyDrop<MidHook>>,
 }
 
 impl HookContext for CoreContext {

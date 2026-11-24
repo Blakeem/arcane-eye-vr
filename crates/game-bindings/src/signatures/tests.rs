@@ -1,6 +1,9 @@
 //! The signature resolve against hand-built sections, and the table's own checks.
 
-use super::{G_GAME_CLIENT, Rip, SHADOW_STAGE_EXIT, SIGNATURES, Signature, SignatureError};
+use super::{
+    CAMERA_SCREEN_TO_WORLD_RAY, G_GAME_CLIENT, Rip, SHADOW_STAGE_EXIT, SIGNATURES, Signature,
+    SignatureError,
+};
 use crate::pattern::Pattern;
 use crate::pe::{CodeSection, Rva};
 
@@ -20,6 +23,13 @@ const ADD_RSP_260H: [u8; 7] = [0x48, 0x81, 0xC4, 0x60, 0x02, 0x00, 0x00];
 const GAME_CLIENT_BYTES: [u8; 24] = [
     0x48, 0x8B, 0x05, 0x00, 0x20, 0x00, 0x00, 0x48, 0x8B, 0x90, 0x90, 0x00, 0x00, 0x00, 0x83, 0x7A,
     0x08, 0x12, 0x75, 0x16, 0x48, 0x8B, 0x01, 0x41,
+];
+
+/// The first bytes of the ray function, the instructions the doc of `CAMERA_SCREEN_TO_WORLD_RAY`
+/// lists.
+const RAY_FUNCTION_ENTRY: [u8; 19] = [
+    0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x10, 0x48, 0x89, 0x70, 0x18, 0x57, 0x48, 0x81, 0xEC, 0x60,
+    0x01, 0x00, 0x00,
 ];
 
 /// Int3 padding with the shadow stage's exit match at each of `starts`.
@@ -167,6 +177,23 @@ fn a_game_client_load_that_compares_another_state_id_has_no_match() {
     // The compare's immediate, 12h, sits 17 bytes past the match.
     bytes[0x40 + 17] = 0x07;
     assert_eq!(resolve_in(&G_GAME_CLIENT, &bytes), Err(SignatureError::NoMatch));
+}
+
+#[test]
+fn the_ray_function_is_the_entry_of_its_one_match() {
+    let bytes = code_with(&RAY_FUNCTION_ENTRY, &[0x40]);
+    assert_eq!(resolve_in(&CAMERA_SCREEN_TO_WORLD_RAY, &bytes), Ok(Rva(0x1040)));
+    let twice = code_with(&RAY_FUNCTION_ENTRY, &[0x10, 0x80]);
+    let result = resolve_in(&CAMERA_SCREEN_TO_WORLD_RAY, &twice);
+    assert_eq!(result, Err(SignatureError::Ambiguous { matches: 2 }));
+}
+
+#[test]
+fn a_function_entry_with_another_frame_size_is_no_ray_function() {
+    let mut bytes = code_with(&RAY_FUNCTION_ENTRY, &[0x40]);
+    // The low byte of the frame size, 160h, sits 15 bytes past the match.
+    bytes[0x40 + 15] = 0x70;
+    assert_eq!(resolve_in(&CAMERA_SCREEN_TO_WORLD_RAY, &bytes), Err(SignatureError::NoMatch));
 }
 
 #[test]
