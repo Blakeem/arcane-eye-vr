@@ -1,13 +1,15 @@
 //! The menu's state across frames: the hand it is on, its panel's pose, the press of the pointing
-//! hand's `select` with its repeat, and the screen's values that the steps change.
+//! hand's `select` with its repeat, and the values that the steps change: the screen's values and
+//! the view wish of the row View.
 //!
 //! The pointing hand is the hand the menu is not on. A press of `select` over an enabled button
-//! gives one step, and while the press holds over that button the step repeats after
-//! [`REPEAT_DELAY`] and then every [`REPEAT_PERIOD`].
+//! gives one step. While the press holds over a button of a screen setting, the step repeats after
+//! [`REPEAT_DELAY`] and then every [`REPEAT_PERIOD`]. A button of the row View does not repeat.
 
 use std::time::{Duration, Instant};
 
 use device_profile::profile::Hand;
+use ipc_layout::viewer_header::view_wish::ViewWish;
 use openxr::Posef;
 use overlay::layout::{self, Hit, PanelPoint};
 use overlay::menu::TooManyRows;
@@ -16,7 +18,7 @@ use settings::player::ScreenSettings;
 use xr::input::ButtonState;
 
 use super::place::{LASER_REACH_M, Laser, PANEL_SIZE, laser, panel_point, panel_pose};
-use super::rows::{self, Setting, stepped};
+use super::rows::{self, Line, Values, stepped, switched};
 use crate::screen::controls::{Buttons, Frame};
 use crate::screen::geometry::{self, Ray};
 
@@ -52,6 +54,8 @@ pub(crate) enum Event {
     Closed(Hand),
     /// A step gave the screen these values.
     Stepped(ScreenSettings),
+    /// A press of the row View gave this view wish.
+    Viewed(ViewWish),
 }
 
 impl Event {
@@ -65,10 +69,11 @@ impl Event {
     }
 }
 
-/// Whether a step changed the screen's values.
+/// Whether a step changed a value, and whether its held button repeats it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
-    Taken,
+    Repeats,
+    Once,
     Refused,
 }
 
@@ -109,17 +114,21 @@ pub(crate) struct Model {
     /// moved.
     panel: Option<Posef>,
     hold: Option<Hold>,
-    screen: ScreenSettings,
+    values: Values,
 }
 
 impl Model {
-    /// A closed menu over the screen values `screen`.
-    pub(crate) const fn new(screen: ScreenSettings) -> Self {
-        Self { place: Place::Closed, panel: None, hold: None, screen }
+    /// A closed menu over `values`.
+    pub(crate) const fn new(values: Values) -> Self {
+        Self { place: Place::Closed, panel: None, hold: None, values }
+    }
+
+    pub(crate) const fn values(&self) -> Values {
+        self.values
     }
 
     pub(crate) const fn screen(&self) -> ScreenSettings {
-        self.screen
+        self.values.screen
     }
 
     /// The hand the open menu is on, or `None` while the menu is closed.
@@ -143,7 +152,7 @@ impl Model {
 
     /// Takes the controllers' `frame` at `now`, calls `on_event` with each thing the menu did, and
     /// returns what it shows. The pointing hand's point is matched against the layout of the menu
-    /// that shows the screen values before the frame, built only while the menu is open.
+    /// that shows the values before the frame, built only while the menu is open.
     ///
     /// # Errors
     ///
@@ -160,7 +169,7 @@ impl Model {
         let Place::On(menu_hand) = self.place else {
             return Ok(Shown::default());
         };
-        let layout = layout::layout(&rows::menu(self.screen)?);
+        let layout = layout::layout(&rows::menu(self.values)?);
         let input = &frame.input;
         let head = geometry::head_position(input.head);
         if let Some(grip) = input.hand(menu_hand).grip {
@@ -208,7 +217,7 @@ impl Model {
             let Some(hit) = over else {
                 return;
             };
-            if self.step(hit, on_event) == Step::Taken {
+            if self.step(hit, on_event) == Step::Repeats {
                 self.hold = now.checked_add(REPEAT_DELAY).map(|next| Hold { hit, next });
             }
             return;
@@ -228,7 +237,7 @@ impl Model {
             let Some(next) = hold.next.checked_add(REPEAT_PERIOD) else {
                 return;
             };
-            if self.step(hold.hit, on_event) == Step::Refused {
+            if self.step(hold.hit, on_event) != Step::Repeats {
                 return;
             }
             hold.next = next;
@@ -236,15 +245,25 @@ impl Model {
         self.hold = Some(hold);
     }
 
+    /// Takes one press of the button `hit`: a step of a screen setting within its range, or a
+    /// switch of the view wish.
     fn step(&mut self, hit: Hit, on_event: &mut impl FnMut(Event)) -> Step {
-        let Some(setting) = Setting::of_row(hit.row) else {
-            return Step::Refused;
-        };
-        let Some(screen) = stepped(self.screen, setting, hit.button) else {
-            return Step::Refused;
-        };
-        self.screen = screen;
-        on_event(Event::Stepped(screen));
-        Step::Taken
+        match Line::of_row(hit.row, self.values) {
+            Some(Line::Setting(setting)) => {
+                let Some(screen) = stepped(self.values.screen, setting, hit.button) else {
+                    return Step::Refused;
+                };
+                self.values.screen = screen;
+                on_event(Event::Stepped(screen));
+                Step::Repeats
+            }
+            Some(Line::View(wish)) => {
+                let wish = switched(wish);
+                self.values.wish = Some(wish);
+                on_event(Event::Viewed(wish));
+                Step::Once
+            }
+            None => Step::Refused,
+        }
     }
 }

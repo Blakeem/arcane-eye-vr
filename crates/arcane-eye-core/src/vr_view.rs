@@ -5,8 +5,9 @@
 //!
 //! ```text
 //! PRESENT CALL SITE in the mode vr
-//!   [kind]       world while the view camera rewrites the corner rays, the newest state id read is
-//!                a level's and the newest cinematic byte read is 0, else screen, in `kind`
+//!   [kind]       world while the view camera rewrites the corner rays, the viewing side's view wish
+//!                is world, the newest state id read is a level's and the newest cinematic byte
+//!                read is 0, else screen, in `kind`
 //!   [pose]       the test pose of `vr.test_head`, else the viewer link header's head pose while the
 //!                viewing side's heartbeat runs, else no move and no turn with the sequence number 0,
 //!                in `head`, or no pose while the view camera does not rewrite the corner rays
@@ -33,6 +34,7 @@ use game_bindings::camera::Camera;
 use ipc_layout::launch_token::Mode;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadSample};
 use ipc_layout::viewer_header::screen::ParallelShare;
+use ipc_layout::viewer_header::view_wish::ViewWish;
 use settings::dev::{Horizon, TestHead, VrFlags};
 use settings::player::StereoSettings;
 use stereo_core::eye::{self, EyeScale};
@@ -150,12 +152,12 @@ impl VrView {
     }
 
     /// The view kind of the next frame's proxies at a Present call where the view camera leaves the
-    /// corner rays as `rays` says and the game's newest reads are `game`. Each change of the
-    /// decided kind logs a line.
-    pub(crate) fn decide(&mut self, rays: Rays, game: GameRead) -> ViewKind {
-        let kind = kind::decide(self.mode, rays, game);
+    /// corner rays as `rays` says, the game's newest reads are `game` and the viewing side's view
+    /// wish is `wish`. Each change of the decided kind logs a line.
+    pub(crate) fn decide(&mut self, rays: Rays, game: GameRead, wish: ViewWish) -> ViewKind {
+        let kind = kind::decide(self.mode, rays, game, wish);
         if kind != self.decided {
-            kind::log_change(kind, game);
+            kind::log_change(kind, game, wish);
             self.decided = kind;
         }
         kind

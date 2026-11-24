@@ -1,7 +1,8 @@
 //! The screen menu across frames of controller input and its writes of the player file. `pixels.rs`
-//! holds the draw of its pixels into a panel image.
+//! holds the draw of its pixels into a panel image and `view.rs` the row View.
 
 mod pixels;
+mod view;
 
 use std::cell::Cell;
 use std::f32::consts::FRAC_1_SQRT_2;
@@ -18,8 +19,10 @@ use xr::input::{ButtonState, HandInput, Input};
 
 use super::model::{Event, Model, Place, Shown, toggled};
 use super::place::PANEL_SIZE;
+use super::rows::Values;
 use super::save::{PlayerFile, Saver, Saving};
 use super::{MenuError, PanelImageError, ScreenMenu, rows};
+use crate::screen::View;
 use crate::screen::controls::{ControllerWatch, Frame};
 use crate::screen::geometry::rotate;
 use crate::screen::geometry::test_support::{assert_near, vector};
@@ -34,6 +37,11 @@ pub(super) fn screen(distance_m: f32, width_m: f32) -> ScreenSettings {
         distance_m: ScreenDistanceM::try_from(distance_m).expect("a distance in range"),
         width_m: ScreenWidthM::try_from(width_m).expect("a width in range"),
     }
+}
+
+/// The values of a menu with no row View over the screen values `distance_m` and `width_m`.
+pub(super) fn values(distance_m: f32, width_m: f32) -> Values {
+    Values { screen: screen(distance_m, width_m), wish: None }
 }
 
 /// The left grip of a thumb-up hand, which puts the panel upright at (0, 0, -0.5) facing +Z.
@@ -62,7 +70,12 @@ struct Hands {
 }
 
 impl Run {
-    fn new(values: ScreenSettings) -> Self {
+    /// A run of a menu with no row View over the screen values `screen`.
+    fn new(screen: ScreenSettings) -> Self {
+        Self::of(Values { screen, wish: None })
+    }
+
+    fn of(values: Values) -> Self {
         let now = Instant::now();
         Self {
             model: Model::new(values),
@@ -77,7 +90,7 @@ impl Run {
         let frame = controls(&mut self.watch, hands);
         let events = &mut self.events;
         let shown = self.model.update(&frame, self.now, &mut |event| events.push(event));
-        let shown = shown.expect("two rows");
+        let shown = shown.expect("the menu's rows fit the panel");
         self.now = self.now.checked_add(step).expect("a later time");
         shown
     }
@@ -110,11 +123,17 @@ fn controls(watch: &mut ControllerWatch, hands: Hands) -> Frame {
     Frame { input, left, right }
 }
 
-/// The right aim position in front of the center of the `button` of the distance row, so that its
-/// ray along -Z meets the panel there.
-fn aim_at(values: ScreenSettings, button: Button) -> Vector3f {
-    let laid = layout::layout(&rows::menu(values).expect("two rows"));
-    let rect = laid.rows.first().expect("the distance row").button(button).rect;
+/// The right aim position in front of the center of the `button` of the distance row of a menu with
+/// no row View over the screen values `screen`, so that its ray along -Z meets the panel there.
+fn aim_at(screen: ScreenSettings, button: Button) -> Vector3f {
+    aim_at_row(Values { screen, wish: None }, 0, button)
+}
+
+/// The right aim position in front of the center of the `button` of the row `row` from the top of
+/// the menu over `values`, so that its ray along -Z meets the panel there.
+fn aim_at_row(values: Values, row: usize, button: Button) -> Vector3f {
+    let laid = layout::layout(&rows::menu(values).expect("the menu's rows fit the panel"));
+    let rect = laid.rows.get(row).expect("the aimed row").button(button).rect;
     let center_x = f32::from(rect.x) + f32::from(rect.width) / 2.0;
     let center_y = f32::from(rect.y) + f32::from(rect.height) / 2.0;
     let x = (center_x / f32::from(PANEL_WIDTH) - 0.5) * PANEL_SIZE.width;
@@ -236,7 +255,8 @@ fn the_laser_ends_on_the_panel_and_the_point_lies_over_the_button() {
     let laser = shown.laser.expect("the laser");
     assert!((laser.size.height - 0.5).abs() < 1e-5, "from z 0 to the panel at z -0.5");
     let point = shown.panel.and_then(|panel| panel.point).expect("a point on the panel");
-    let laid = layout::layout(&rows::menu(values).expect("two rows"));
+    let laid =
+        layout::layout(&rows::menu(Values { screen: values, wish: None }).expect("two rows"));
     let hit = layout::hit(&laid, point).expect("a button");
     assert_eq!((hit.row, hit.button), (0, Button::Plus));
 }
@@ -289,7 +309,7 @@ fn step_and_close(menu: &mut ScreenMenu, values: ScreenSettings) {
 #[test]
 fn a_close_after_a_step_writes_the_player_file() {
     let dir = test_dir("menu-close");
-    let mut menu = ScreenMenu::new(screen(2.5, 3.0), PlayerFile::Read, dir.path());
+    let mut menu = ScreenMenu::new(screen(2.5, 3.0), View::Screen, PlayerFile::Read, dir.path());
     step_and_close(&mut menu, screen(2.5, 3.0));
     let read = file::read_settings(dir.path()).expect("read the player file");
     assert_eq!(read.settings.screen, screen(2.6, 3.0));
@@ -300,7 +320,7 @@ fn a_write_that_failed_at_the_close_runs_again_at_the_session_end() {
     let dir = test_dir("menu-finish-retry");
     let blocker = dir.path().join("settings.toml.new");
     fs::create_dir(&blocker).expect("a folder in the new file's place");
-    let mut menu = ScreenMenu::new(screen(2.5, 3.0), PlayerFile::Read, dir.path());
+    let mut menu = ScreenMenu::new(screen(2.5, 3.0), View::Screen, PlayerFile::Read, dir.path());
     step_and_close(&mut menu, screen(2.5, 3.0));
     assert!(!dir.path().join(file::SETTINGS_FILE).exists(), "the write at the close failed");
     fs::remove_dir(&blocker).expect("remove the folder");
@@ -315,7 +335,7 @@ fn a_change_never_reaches_a_player_file_that_gave_no_values() {
     let path = dir.path().join(file::SETTINGS_FILE);
     let text = "[stereo]\nipd_mm = 90.0\n\n[screen]\ndistance_m = 5.0\nwidth_m = 6.0\n";
     fs::write(&path, text).expect("write a file with an IPD out of range");
-    let mut menu = ScreenMenu::new(screen(2.5, 3.0), PlayerFile::Unread, dir.path());
+    let mut menu = ScreenMenu::new(screen(2.5, 3.0), View::Screen, PlayerFile::Unread, dir.path());
     step_and_close(&mut menu, screen(2.5, 3.0));
     menu.finish();
     assert_eq!(menu.screen(), screen(2.6, 3.0), "the step changed the screen");
@@ -331,7 +351,7 @@ fn stepped_menu(dir: &test_support::TestDir) -> ScreenMenu {
     let aim = Some(aim_at(values, Button::Plus));
     run.frame(Hands { grip: Some(GRIP), aim, select: 1.0, ..Hands::default() }, Duration::ZERO);
     assert_eq!(run.model.screen(), screen(2.6, 3.0));
-    let mut menu = ScreenMenu::new(values, PlayerFile::Read, dir.path());
+    let mut menu = ScreenMenu::new(values, View::Screen, PlayerFile::Read, dir.path());
     menu.model = run.model;
     menu
 }
@@ -353,7 +373,7 @@ fn a_session_that_ends_with_the_menu_open_writes_its_change_once() {
 #[test]
 fn a_session_that_ends_with_the_menu_closed_writes_nothing() {
     let dir = test_dir("menu-finish-closed");
-    let mut menu = ScreenMenu::new(screen(2.5, 3.0), PlayerFile::Read, dir.path());
+    let mut menu = ScreenMenu::new(screen(2.5, 3.0), View::Screen, PlayerFile::Read, dir.path());
     menu.finish();
     assert!(!dir.path().join(file::SETTINGS_FILE).exists(), "no player file was written");
 }

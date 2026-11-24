@@ -1,5 +1,6 @@
-//! The immersive mode of the headset session: the head pose written into the viewer link in each
-//! frame, and each published frame shown around the player at the head pose it was rendered with.
+//! The immersive mode of the headset session: the head pose and the menu's view wish written into
+//! the viewer link in each frame, and each published frame shown around the player at the head
+//! pose it was rendered with.
 //!
 //! The core renders each frame's eyes from the newest head pose this module wrote and tags the
 //! frame with that pose's sequence number and its lens. `decide.rs` finds the tagged pose among the
@@ -16,6 +17,7 @@ use diag::once;
 use diag::rate::{Once, RateLimit};
 use diag::warn_every;
 use ipc_layout::viewer_header::pose::FrameTag;
+use ipc_layout::viewer_header::view_wish::ViewWish;
 use tracing::{Level, info};
 use xr::error::XrError;
 use xr::head::Head;
@@ -24,7 +26,8 @@ pub(crate) use self::decide::Choice;
 use self::decide::{KeptPoses, Tallies, Written};
 use super::picture::Link;
 
-/// The shortest time between two warnings of a failed head read or head pose write.
+/// The shortest time between two warnings of a failed head read, head pose write or view wish
+/// write.
 const FAILURE_PERIOD: Duration = Duration::from_secs(10);
 
 /// How a session frame showed the game's frame.
@@ -59,6 +62,7 @@ pub(crate) struct Immersive {
     first_projection: Once,
     read_failure: RateLimit,
     write_failure: RateLimit,
+    wish_failure: RateLimit,
 }
 
 impl Immersive {
@@ -70,6 +74,7 @@ impl Immersive {
             first_projection: Once::new(),
             read_failure: RateLimit::new(),
             write_failure: RateLimit::new(),
+            wish_failure: RateLimit::new(),
         }
     }
 
@@ -117,6 +122,20 @@ impl Immersive {
             ),
         }
         Ok(())
+    }
+
+    /// Writes `wish`, the view wish of the menu, into the viewer header of `link`. The write runs in
+    /// each frame, so a header that an earlier session left holds this session's wish. A failed
+    /// write warns at most once per [`FAILURE_PERIOD`], and the next frame writes again.
+    pub(crate) fn write_wish(&mut self, wish: ViewWish, link: &mut Link) {
+        if let Err(error) = link.write_view_wish(wish) {
+            warn_every!(
+                self.wish_failure,
+                FAILURE_PERIOD,
+                error = %error_chain::chain(&error),
+                "the view wish could not be written into the viewer link"
+            );
+        }
     }
 
     /// How the frame of `tag` shows. Logs the first projection layer and each change between the

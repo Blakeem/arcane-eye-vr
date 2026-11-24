@@ -1,6 +1,6 @@
-//! The game's side of the headset session: the viewer link's header with the head pose write and
-//! the screen write, the shared texture opened at its generation, and the private copy of the
-//! newest published frame that the eye draws read, with the frame's tag.
+//! The game's side of the headset session: the viewer link's header with the head pose write, the
+//! screen write and the view wish write, the shared texture opened at its generation, and the
+//! private copy of the newest published frame that the eye draws read, with the frame's tag.
 //!
 //! The copy holds the keyed mutex for one copy of the entire frame and the read of the frame's tag,
 //! and waits on it at most as long as [`Device::copy_region`] does. A session frame with no new
@@ -13,10 +13,13 @@ use diag::warn_every;
 use gfx::region::{RegionDraw, RegionError};
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose};
 use ipc_layout::viewer_header::screen::ParallelShare;
+use ipc_layout::viewer_header::view_wish::ViewWish;
 use ipc_layout::viewer_header::{AdapterLuid, TextureInfo};
 use tracing::info;
 use viewer_client::frame::PixelFormat;
-use viewer_client::header::{HeaderReadError, Names, read_header, write_head_pose, write_screen};
+use viewer_client::header::{
+    HeaderReadError, Names, read_header, write_head_pose, write_screen, write_view_wish,
+};
 use viewer_client::region::Region;
 use viewer_client::{Device, GpuError, HeaderView, SharedTexture};
 use windows::Win32::Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11Texture2D};
@@ -119,8 +122,8 @@ impl Picture {
     }
 }
 
-/// The session's view of the viewer link, which reads the frames and writes the head pose and the
-/// screen. The heartbeat thread holds its own view of the header.
+/// The session's view of the viewer link, which reads the frames and writes the head pose, the
+/// screen and the view wish. The heartbeat thread holds its own view of the header.
 pub(crate) struct Link {
     picture: Option<Picture>,
     header: Option<HeaderView>,
@@ -184,6 +187,18 @@ impl Link {
     pub(crate) fn write_screen(&mut self, share: ParallelShare) -> Result<(), HeaderReadError> {
         let Some(view) = self.header_view()? else { return Ok(()) };
         write_screen(view, share)?;
+        Ok(())
+    }
+
+    /// Writes `wish` as the view wish into the viewer header, and writes nothing while no core
+    /// created the header.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`HeaderReadError`] of a header that cannot be opened or holds another layout.
+    pub(crate) fn write_view_wish(&mut self, wish: ViewWish) -> Result<(), HeaderReadError> {
+        let Some(view) = self.header_view()? else { return Ok(()) };
+        write_view_wish(view, wish)?;
         Ok(())
     }
 

@@ -10,6 +10,7 @@ use game_bindings::game_client::StateId;
 use ipc_layout::launch_token::Mode;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose as XrPose, HeadSample};
 use ipc_layout::viewer_header::screen::ParallelShare;
+use ipc_layout::viewer_header::view_wish::ViewWish;
 use settings::dev::{Horizon, TestHead, VrFlags};
 use settings::player::{DepthOffsetPercent, IpdMm, StereoSettings};
 use stereo_core::eye::{EyeScale, PerEye};
@@ -96,7 +97,7 @@ const fn read_call(game: GameRead, ipd_mm: f32, eye_scale: EyeScale, rays: Rays)
 /// handler places the next frame's proxies.
 fn place(view: &mut VrView, header: impl FnOnce() -> Option<HeadSample>, call: Call) -> Placement {
     let Call { game, ipd_mm, eye_scale, rays } = call;
-    let kind = view.decide(rays, game);
+    let kind = view.decide(rays, game, ViewWish::World);
     let now = Instant::now();
     view.placement(header, PresentCall { stereo: stereo(ipd_mm), eye_scale, rays, kind, now })
 }
@@ -289,9 +290,9 @@ fn each_change_of_the_decided_kind_logs_one_line_and_the_mode_desktop_stereo_non
         text.lines().filter(|line| line.contains("view kind changed")).collect();
     let views: Vec<&str> = changes.iter().filter_map(|line| line.split(" view=").nth(1)).collect();
     let expected = [
-        "world state_id=18 cinematic=0",
-        "screen state_id=7 cinematic=0",
-        "world state_id=18 cinematic=0",
+        "world wish=world state_id=18 cinematic=0",
+        "screen wish=world state_id=7 cinematic=0",
+        "world wish=world state_id=18 cinematic=0",
     ];
     assert_eq!(views, expected, "{text}");
 }

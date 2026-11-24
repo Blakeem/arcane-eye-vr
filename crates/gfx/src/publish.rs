@@ -4,32 +4,39 @@
 //! texture and copies into it only while the heartbeat advanced within [`STALE_AFTER`]. It counts
 //! every frame it handles, so the present number of each published frame shows the frames it did
 //! not publish. It writes each published frame's tag beside the present number.
-//! [`Publisher::head_pose`] reads the head pose and [`Publisher::parallel_share`] the screen's
-//! parallel share that the viewer writes, and [`Publisher::next_present`] gives the next frame's
-//! present number, while the same heartbeat rule finds the viewer running. With no viewer, each of
-//! these three calls and [`Publisher::on_frame`] costs one read of the header. The heartbeat's
-//! decision is in `publish/heartbeat.rs`, the head pose's in `publish/head.rs` and the share's in
-//! `publish/screen.rs`.
+//! [`Publisher::head_pose`] reads the head pose, [`Publisher::parallel_share`] the screen's
+//! parallel share and [`Publisher::view_wish`] the view wish that the viewer writes, and
+//! [`Publisher::next_present`] gives the next frame's present number, while the same heartbeat rule
+//! finds the viewer running. With no viewer, each of these four calls and [`Publisher::on_frame`]
+//! costs one read of the header. The acquire step's decision is in `publish/acquire.rs`, the
+//! heartbeat's in `publish/heartbeat.rs`, the head pose's in `publish/head.rs`, the share's in
+//! `publish/screen.rs` and the view wish's in `publish/wish.rs`.
 
+mod acquire;
 mod head;
 mod heartbeat;
 mod screen;
+mod wish;
 
 use std::iter;
 use std::time::Instant;
 
 use ipc_layout::viewer_header::pose::{FrameTag, HeadSample};
 use ipc_layout::viewer_header::screen::ParallelShare;
+use ipc_layout::viewer_header::view_wish::ViewWish;
 use ipc_layout::viewer_header::{
     self, Acquire, EyeRect, FRAME_OFFSET, FRAME_TAG_OFFSETS, PRESENT_OFFSET,
-    SCREEN_SEQUENCE_OFFSET, STALE_AFTER, TextureInfo, ViewerHeader, WIDTH_OFFSET, depth_map,
+    SCREEN_SEQUENCE_OFFSET, STALE_AFTER, TextureInfo, VIEW_WISH_OFFSET, ViewerHeader, WIDTH_OFFSET,
+    depth_map,
 };
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D};
 use windows::core::{HRESULT, HSTRING};
 
+use self::acquire::{AfterAcquire, after_acquire};
 use self::head::KeptHead;
 use self::heartbeat::Heartbeat;
 use self::screen::KeptShare;
+use self::wish::{AfterRead, after_read};
 use crate::raw::{self, HeaderView, SharedTexture, SourceKey};
 
 /// The names of the viewer header mapping, the shared texture and the depth map's mapping.
@@ -113,25 +120,6 @@ pub enum SetupError {
 pub struct Present {
     pub now: Instant,
     pub tag: FrameTag,
-}
-
-/// What a frame does once the keyed mutex acquire returned.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AfterAcquire {
-    Copy,
-    Skip,
-    Recreate,
-}
-
-/// What a frame does after the keyed mutex acquire returned `acquired`. A failed acquire changes
-/// neither the texture nor the header.
-fn after_acquire(acquired: Acquire) -> Result<AfterAcquire, PublishError> {
-    match acquired {
-        Acquire::Held => Ok(AfterAcquire::Copy),
-        Acquire::Busy => Ok(AfterAcquire::Skip),
-        Acquire::Abandoned => Ok(AfterAcquire::Recreate),
-        Acquire::Failed(code) => Err(PublishError { step: Step::Acquire, code: HRESULT(code) }),
-    }
 }
 
 /// The viewer header as [`Publisher::read_twice`] found it.
@@ -300,6 +288,18 @@ impl Publisher {
     pub fn parallel_share(&mut self, now: Instant) -> Option<ParallelShare> {
         let reads = self.read_twice(now);
         self.screen.after(&reads)
+    }
+
+    /// The view wish the viewer wrote last, read at `now`, or `World` while no viewer runs or the
+    /// header holds another layout. A read with no viewer running sets a wish `Screen` to `World`.
+    pub fn view_wish(&mut self, now: Instant) -> ViewWish {
+        match after_read(self.read_once(now)) {
+            AfterRead::Use(wish) => wish,
+            AfterRead::Reset => {
+                self.header.write_words([(VIEW_WISH_OFFSET, ViewWish::World.to_word())]);
+                ViewWish::World
+            }
+        }
     }
 
     /// The header read at `now`, and read again right after while the viewer runs. A slot's

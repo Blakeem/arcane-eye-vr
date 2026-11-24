@@ -4,10 +4,10 @@
 //! copies the back buffer into the shared texture while a viewer runs, or the game source's texture
 //! when the frame handler holds one and it yields a texture, with the frame's tag. The texture
 //! reference it takes drops before the frame handler returns. Once the header exists, the link reads
-//! the head pose and the screen's parallel share the viewing side wrote into it while the viewing
-//! side's heartbeat runs. While it runs, the link also gives the frame handler the depth map's
-//! section, which it makes at the first such frame, for each frame's depth map. The UI layer writes
-//! that map, or the frame handler writes a map of no cell in a core with no UI layer.
+//! the head pose, the screen's parallel share and the view wish the viewing side wrote into it while
+//! the viewing side's heartbeat runs. While it runs, the link also gives the frame handler the depth
+//! map's section, which it makes at the first such frame, for each frame's depth map. The UI layer
+//! writes that map, or the frame handler writes a map of no cell in a core with no UI layer.
 
 use std::time::{Duration, Instant};
 
@@ -17,6 +17,7 @@ use gfx::depth_map::MapSection;
 use gfx::publish::{Outcome, Present, Publisher, ViewNames};
 use ipc_layout::viewer_header::pose::{FrameTag, HeadSample};
 use ipc_layout::viewer_header::screen::ParallelShare;
+use ipc_layout::viewer_header::view_wish::ViewWish;
 use tracing::Level;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 
@@ -119,6 +120,16 @@ impl ViewerLink {
         match &mut self.link {
             Link::Ready(publisher) => publisher.parallel_share(now),
             Link::Pending(_) | Link::Failed => None,
+        }
+    }
+
+    /// The view wish the viewing side wrote last into the header, read at `now` by
+    /// [`Publisher::view_wish`], which gives [`ViewWish::World`] after the viewing side stopped
+    /// beating. It is also `World` before the header exists and after its creation failed.
+    pub(crate) fn view_wish(&mut self, now: Instant) -> ViewWish {
+        match &mut self.link {
+            Link::Ready(publisher) => publisher.view_wish(now),
+            Link::Pending(_) | Link::Failed => ViewWish::World,
         }
     }
 

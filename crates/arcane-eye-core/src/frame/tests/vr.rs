@@ -12,11 +12,12 @@ use ipc_layout::launch_token::Mode;
 use ipc_layout::viewer_header::STALE_AFTER;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose as XrPose};
 use ipc_layout::viewer_header::screen::ParallelShare;
+use ipc_layout::viewer_header::view_wish::ViewWish;
 use settings::dev::{Horizon, VrFlags};
 use settings::player::StereoSettings;
 use stereo_core::eye::PerEye;
 use stereo_core::head::HeadPose;
-use viewer_client::header::{read_header, write_head_pose, write_screen};
+use viewer_client::header::{read_header, write_head_pose, write_screen, write_view_wish};
 
 use super::{call_times, log_lines, summaries, timed_frame};
 use crate::eye_camera::{Placement, ProxyFill};
@@ -180,6 +181,31 @@ fn a_frame_presented_after_the_kind_changed_follows_the_kind_its_proxy_was_fille
     frame_of(&mut state, &test, world_again, Some(CAMERA));
     assert_eq!(viewer.header().frame_tag().head_sequence, 2, "the next world frame");
     assert_eq!(offset_in_use(&state), DepthOffset::NONE, "the next world frame");
+}
+
+#[test]
+fn the_view_wish_screen_the_viewer_wrote_makes_play_a_screen_frame_while_it_beats() {
+    let test = TestSwapchain::new(320, 200);
+    let (mut state, mut viewer) = viewed_vr_state("vr-view-wish", &test);
+    let stereo = StereoSettings::default();
+    let names = test_view_names("vr-view-wish");
+    let mut slot = None;
+    let (view, _header) = read_header(&mut slot, &names.mapping).expect("the header");
+    write_view_wish(view, ViewWish::Screen).expect("write the wish");
+    let now = Instant::now();
+    let wished = state.hand_placement(stereo, Rays::Rewritten, PLAY, now);
+    assert_eq!(wished.fill(), ProxyFill::NONE, "play with the wish screen");
+    write_view_wish(view, ViewWish::World).expect("write the wish");
+    viewer.beat();
+    let play = state.hand_placement(stereo, Rays::Rewritten, PLAY, now);
+    assert_eq!(play.fill(), world(2), "play with the wish world");
+    write_view_wish(view, ViewWish::Screen).expect("write the wish");
+    let stalled_at = now
+        .checked_add(STALE_AFTER)
+        .and_then(|limit| limit.checked_add(Duration::from_millis(100)))
+        .expect("a test time past the heartbeat's limit");
+    let stalled = state.hand_placement(stereo, Rays::Rewritten, PLAY, stalled_at);
+    assert_eq!(stalled.fill(), world(0), "the wish of a viewer that stopped beating");
 }
 
 #[test]

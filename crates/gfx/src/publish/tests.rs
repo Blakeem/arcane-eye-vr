@@ -1,15 +1,16 @@
 //! The publisher's pure decisions: the step after a keyed mutex acquire, the heartbeat, the head
-//! pose in use and the parallel share in use.
+//! pose in use, the parallel share in use and the view wish in use.
 
 use super::{
-    AfterAcquire, Heartbeat, KeptHead, KeptShare, PublishError, Reads, STALE_AFTER, Step,
-    after_acquire,
+    AfterAcquire, AfterRead, Heartbeat, KeptHead, KeptShare, PublishError, Reads, STALE_AFTER,
+    Step, after_acquire, after_read,
 };
 use ipc_layout::viewer_header::pose::{HeadPose, HeadSample, HeadSlot};
 use ipc_layout::viewer_header::screen::{ParallelShare, ScreenSlot};
+use ipc_layout::viewer_header::view_wish::ViewWish;
 use ipc_layout::viewer_header::{
     Acquire, HEAD_SEQUENCE_OFFSET, PARALLEL_SHARE_OFFSET, SCREEN_SEQUENCE_OFFSET, TextureInfo,
-    ViewerHeader, WORD_SIZE,
+    VIEW_WISH_OFFSET, ViewerHeader, WORD_SIZE,
 };
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::E_FAIL;
@@ -137,4 +138,17 @@ fn a_write_counts_unless_the_slot_held_its_number_while_no_viewer_ran() {
     assert_eq!(screen.next(slot(2, 0.0217), 2), None, "the share the stopped viewer left");
     assert_eq!(screen.next(slot(3, 0.0217), 3), None, "the next viewer's write runs");
     assert_eq!(screen.next(slot(4, 0.0065), 4), Some(share(0.0065)), "its write ended");
+}
+
+#[test]
+fn a_running_viewer_gives_its_wish_and_a_screen_a_stopped_viewer_left_resets_to_world() {
+    let wish = |word| header([(VIEW_WISH_OFFSET, word)]);
+    let use_world = AfterRead::Use(ViewWish::World);
+    assert_eq!(after_read(Some((wish(1), true))), AfterRead::Use(ViewWish::Screen));
+    assert_eq!(after_read(Some((wish(0), true))), use_world);
+    assert_eq!(after_read(Some((wish(7), true))), use_world, "a word other than 1");
+    assert_eq!(after_read(Some((wish(1), false))), AfterRead::Reset, "a stopped viewer's Screen");
+    assert_eq!(after_read(Some((wish(0), false))), use_world, "World needs no write");
+    assert_eq!(after_read(Some((wish(7), false))), use_world, "a word that reads as World");
+    assert_eq!(after_read(None), use_world, "a header of another layout");
 }

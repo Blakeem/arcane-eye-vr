@@ -103,9 +103,9 @@ impl FrameState {
 
     /// Hands the eye cameras the placement of the next frame's proxies at the Present call of `now`,
     /// for the player's `stereo` settings in effect, while the view camera leaves the corner rays as
-    /// `rays` says and the game's newest reads are `game`. The view kind is decided first, so the UI
-    /// layer hands over the eye scale that kind's placement applies, the full eye distance with no
-    /// layer.
+    /// `rays` says and the game's newest reads are `game`. The view kind is decided first, with the
+    /// view wish the viewer link reads, so the UI layer hands over the eye scale that kind's
+    /// placement applies, the full eye distance with no layer.
     pub(crate) fn hand_placement(
         &mut self,
         stereo: StereoSettings,
@@ -113,7 +113,7 @@ impl FrameState {
         game: GameRead,
         now: Instant,
     ) -> Placement {
-        let kind = self.vr.decide(rays, game);
+        let kind = self.vr.decide(rays, game, self.viewer.view_wish(now));
         let eye_scale =
             self.ui_layer.as_mut().map_or(EyeScale::FULL, |layer| layer.hand_eye_scale(kind));
         let viewer = &mut self.viewer;

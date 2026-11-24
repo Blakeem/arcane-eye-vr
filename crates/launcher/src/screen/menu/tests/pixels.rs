@@ -12,7 +12,7 @@ use windows::Win32::Graphics::Dxgi::Common::{
 };
 use windows::core::HSTRING;
 
-use super::screen;
+use super::values;
 use crate::screen::menu::rows;
 use crate::screen::panel_image::{Source, prepare, target_format};
 
@@ -30,7 +30,7 @@ fn drawn_panel(
     let device = Device::create(adapter.luid).expect("a device");
     let draw = RegionDraw::create(device.d3d()).expect("the region draw");
     let mut painter = Painter::new().expect("the painter");
-    let menu = rows::menu(screen(2.5, 3.0)).expect("two rows");
+    let menu = rows::menu(values(2.5, 3.0)).expect("two rows");
     let paint = painter.paint(&menu, None, Press::Released).expect("paint");
     let pixels = paint.pixels.as_chunks::<4>().0.to_vec();
     let (width, height) = (PANEL_WIDTH, PANEL_HEIGHT);

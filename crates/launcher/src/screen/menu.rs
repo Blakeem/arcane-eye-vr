@@ -1,8 +1,9 @@
 //! The screen menu: a panel fixed to one controller whose buttons set the screen's distance and
-//! width, and the laser of the other controller that points at them. The caller replaces the laser
-//! of [`Shown`] with the laser of the game's pointer while that pointer's ray meets the game's
-//! picture on the screen quad or in the projection picture, or the launcher's picture. The menu
-//! works in every frame of both views.
+//! width, and in the view Immersive the view wish, and the laser of the other controller that
+//! points at them. The view wish is not saved, so each start begins with the wish `World`. The
+//! caller replaces the laser of [`Shown`] with the laser of the game's pointer while that pointer's
+//! ray meets the game's picture on the screen quad or in the projection picture, or the launcher's
+//! picture. The menu works in every frame of both views.
 //!
 //! `model.rs` decides what the menu does in each frame, `rows.rs` holds its rows and their steps,
 //! `place.rs` places its two quads and `save.rs` decides when the player file is written. This
@@ -23,6 +24,7 @@ use device_profile::profile::Hand;
 use diag::error_chain;
 use gfx::canvas::CanvasError;
 use gfx::region::RegionError;
+use ipc_layout::viewer_header::view_wish::ViewWish;
 use openxr::{Extent2Df, Posef};
 use overlay::layout::{PANEL_HEIGHT, PANEL_WIDTH};
 use overlay::menu::TooManyRows;
@@ -38,8 +40,10 @@ pub(crate) use self::model::Shown;
 use self::model::{Event, Model};
 use self::place::PANEL_SIZE;
 pub(crate) use self::place::{Laser, laser};
+use self::rows::Values;
 pub(crate) use self::save::PlayerFile;
 use self::save::{Saver, Saving};
+use super::View;
 use super::controls::Frame;
 use super::panel_image::{Gpu, PanelImageError, Source, show, views};
 
@@ -85,9 +89,10 @@ pub(crate) struct ScreenMenu {
 }
 
 impl ScreenMenu {
-    /// A closed menu over `screen`, the values that the player file in the root folder `root` gave
-    /// at the start, or the defaults when `file` says it gave none.
-    pub(crate) fn new(screen: ScreenSettings, file: PlayerFile, root: &Path) -> Self {
+    /// A closed menu of the session's view `view` over `screen`, the values that the player file in
+    /// the root folder `root` gave at the start, or the defaults when `file` says it gave none. The
+    /// menu of the view `Immersive` has the row View, which starts at the wish `World`.
+    pub(crate) fn new(screen: ScreenSettings, view: View, file: PlayerFile, root: &Path) -> Self {
         let drawing = match Painter::new() {
             Ok(painter) => Some(Drawing::new(painter)),
             Err(error) => {
@@ -96,12 +101,22 @@ impl ScreenMenu {
             }
         };
         let saver = Saver::new(screen, file);
-        Self { model: Model::new(screen), saver, root: root.into(), drawing }
+        let wish = match view {
+            View::Screen => None,
+            View::Immersive => Some(ViewWish::World),
+        };
+        let model = Model::new(Values { screen, wish });
+        Self { model, saver, root: root.into(), drawing }
     }
 
     /// The screen's values, which the menu's steps change.
     pub(crate) const fn screen(&self) -> ScreenSettings {
         self.model.screen()
+    }
+
+    /// The view wish the row View shows, or `None` for a menu with no such row.
+    pub(crate) const fn wish(&self) -> Option<ViewWish> {
+        self.model.values().wish
     }
 
     /// The hand the open menu is on, or `None` while the menu is closed or gone.
@@ -126,11 +141,11 @@ impl ScreenMenu {
 
     /// Draws the quads of `shown` with `gpu`.
     pub(crate) fn draw(&mut self, shown: Shown, gpu: &Gpu<'_>) {
-        let screen = self.model.screen();
+        let values = self.model.values();
         let Some(drawing) = &mut self.drawing else {
             return;
         };
-        if let Err(error) = drawing.draw(shown, screen, gpu) {
+        if let Err(error) = drawing.draw(shown, values, gpu) {
             self.fail(&error);
         }
     }
@@ -216,6 +231,7 @@ fn log(event: Event) {
             let (distance_m, width_m) = (screen.distance_m.meters(), screen.width_m.meters());
             info!(distance_m, width_m, "screen menu step");
         }
+        Event::Viewed(wish) => info!(view = wish.as_str(), "screen menu view"),
     }
 }
 
@@ -232,14 +248,9 @@ impl Drawing {
         Self { painter, panels: None, menu: Showing::Hidden, laser: Showing::Hidden }
     }
 
-    /// Draws the quads of `shown`, a frame of the menu over the screen values `screen`, with `gpu`.
-    /// The menu panel is drawn again only when the painter drew new pixels.
-    fn draw(
-        &mut self,
-        shown: Shown,
-        screen: ScreenSettings,
-        gpu: &Gpu<'_>,
-    ) -> Result<(), MenuError> {
+    /// Draws the quads of `shown`, a frame of the menu over `values`, with `gpu`. The menu panel is
+    /// drawn again only when the painter drew new pixels.
+    fn draw(&mut self, shown: Shown, values: Values, gpu: &Gpu<'_>) -> Result<(), MenuError> {
         (self.menu, self.laser) = (Showing::Hidden, Showing::Hidden);
         let Shown { panel, laser } = shown;
         if panel.is_none() && laser.is_none() {
@@ -250,7 +261,7 @@ impl Drawing {
             None => self.panels.insert(Panels::create(gpu)?),
         };
         if let Some(panel) = panel {
-            let painted = self.painter.paint(&rows::menu(screen)?, panel.point, panel.press)?;
+            let painted = self.painter.paint(&rows::menu(values)?, panel.point, panel.press)?;
             if painted.change == Change::Redrawn {
                 let (pixels, _) = painted.pixels.as_chunks::<4>();
                 let (width, height) = (PANEL_WIDTH, PANEL_HEIGHT);

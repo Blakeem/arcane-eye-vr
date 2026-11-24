@@ -1,9 +1,10 @@
 //! The names of the viewer link, the header read that every reader of the link shares, the head
-//! pose write and the screen write.
+//! pose write, the screen write and the view wish write.
 
 use ipc_layout::viewer_header::pose::HeadPose;
 use ipc_layout::viewer_header::screen::ParallelShare;
-use ipc_layout::viewer_header::{self, HeaderError, ViewerHeader};
+use ipc_layout::viewer_header::view_wish::ViewWish;
+use ipc_layout::viewer_header::{self, HeaderError, VIEW_WISH_OFFSET, ViewerHeader};
 use windows::core::HSTRING;
 
 use crate::{HeaderView, HeaderViewError};
@@ -92,4 +93,17 @@ pub fn write_screen(view: &HeaderView, share: ParallelShare) -> Result<u32, Head
     let (sequence, writes) = header.screen().writes(share);
     view.write_words(writes);
     Ok(sequence)
+}
+
+/// Writes `wish` as the view wish into the header of `view`. The wish is one word, which the core
+/// never reads torn, so the write takes no sequence number.
+///
+/// # Errors
+///
+/// Returns [`HeaderError`] when the header holds another magic value or layout version, which may
+/// hold another field at the view wish's offset. The header is then left as it is.
+pub fn write_view_wish(view: &HeaderView, wish: ViewWish) -> Result<(), HeaderError> {
+    ViewerHeader::decode(&view.read_words())?;
+    view.write_words([(VIEW_WISH_OFFSET, wish.to_word())]);
+    Ok(())
 }

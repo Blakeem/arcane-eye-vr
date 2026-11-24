@@ -62,6 +62,8 @@ During play in a level, the launch app shows the game around the player. Turn th
 
 The keyboard and the mouse work as in the game. The picture keeps the game's own field of view, so it covers a part of the view. The title screen, loading pictures, videos, cutscenes and dialogue show on the flat screen of the headset screen. The controllers work around the player and on the flat screen as they do on the headset screen: the menu opens, the laser ends on what it points at, and the mouse pointer sits there. This mode is a first stage.
 
+In this mode the menu has a third row, View, below Distance and Size. Its value World shows the game around the player during play. Its value Screen shows every picture on the flat screen, such as for the game's own menus or a scene that reads better flat. Either button of the row changes the value to the other one. Each start begins with World, and the launch app does not keep the value.
+
 ## Play in Bigscreen or another viewer app
 
 A viewer app with a side by side 3D mode can show the game from the monitor. This route is untested, and the menu names below come from older versions of Bigscreen. This route needs a mouse, since the launch app reads the controllers only in `--mode screen` and `--mode vr`.

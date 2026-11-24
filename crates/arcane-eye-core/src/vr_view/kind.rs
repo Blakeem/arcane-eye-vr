@@ -1,9 +1,10 @@
 //! The view kind: whether a frame's proxies place the eyes by the head pose, so the launch app
 //! shows the frame around the player, or on the head controller's right axis, so it shows the frame
-//! on the screen.
+//! on the screen. The viewing side's view wish `screen` makes every frame a screen frame.
 
 use game_bindings::game_client::StateId;
 use ipc_layout::launch_token::Mode;
+use ipc_layout::viewer_header::view_wish::ViewWish;
 use tracing::info;
 
 use super::Rays;
@@ -45,23 +46,24 @@ pub(crate) struct GameRead {
 }
 
 /// The view kind of the next frame's proxies: world only in the launch mode `vr` while the view
-/// camera rewrites the corner rays, the game runs a level and the main view shows no cinematic,
-/// and screen in every other case.
-pub(crate) fn decide(mode: Mode, rays: Rays, game: GameRead) -> ViewKind {
+/// camera rewrites the corner rays, the viewing side's view wish is world, the game runs a level
+/// and the main view shows no cinematic, and screen in every other case.
+pub(crate) fn decide(mode: Mode, rays: Rays, game: GameRead, wish: ViewWish) -> ViewKind {
     let world = mode == Mode::Vr
         && rays == Rays::Rewritten
+        && wish == ViewWish::World
         && game.state_id == Some(StateId::LEVEL)
         && game.cinematic == Some(NO_CINEMATIC);
     if world { ViewKind::World } else { ViewKind::Screen }
 }
 
-/// Logs the line of a change of the decided view kind to `kind` at the reads `game`, with -1 for a
-/// read that failed or never ran.
-pub(super) fn log_change(kind: ViewKind, game: GameRead) {
+/// Logs the line of a change of the decided view kind to `kind` at the reads `game` and the view
+/// wish `wish`, with -1 for a read that failed or never ran.
+pub(super) fn log_change(kind: ViewKind, game: GameRead, wish: ViewWish) {
     let state_id = game.state_id.map_or(NO_READ, |id| i64::from(id.get()));
     let cinematic = game.cinematic.map_or(NO_READ, i64::from);
     // Only a change of the decided kind reaches this line, so it needs no rate-limit macro.
-    info!(view = kind.as_str(), state_id, cinematic, "view kind changed");
+    info!(view = kind.as_str(), wish = wish.as_str(), state_id, cinematic, "view kind changed");
 }
 
 #[cfg(test)]

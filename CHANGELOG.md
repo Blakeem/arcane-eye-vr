@@ -21,6 +21,7 @@ These changes are on the main branch. No headset has tested them yet.
 - In `--mode vr`, a click lands on what the mouse cursor covers while the head is turned.
 - In `--mode vr`, the headset shows the game around the player only during play in a level. The title screen, loading pictures, cutscenes and dialogue show on the screen.
 - In `--mode vr`, the controllers work around the player and on the screen as in `--mode screen`: the menu opens, the laser ends on what it points at, and the mouse pointer sits there.
+- In `--mode vr`, the menu's row View keeps the game on the screen during play when its value is Screen.
 
 ## 0.0.1 Beta (2026-11-18)
 
