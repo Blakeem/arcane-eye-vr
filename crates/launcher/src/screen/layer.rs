@@ -1,5 +1,5 @@
 //! The layer a drawn frame shows on, the projection layer of its immersive choice or the screen
-//! quad, the screen quad of a picture's size, and whether the controllers point while it shows.
+//! quad, and the screen quad of a picture's size.
 
 use settings::player::ScreenSettings;
 use stereo_core::eye::PerEye;
@@ -9,10 +9,9 @@ use xr::session::Shown;
 use xr::swapchain::Swapchains;
 
 use super::immersive::Choice;
-use super::menu::Pointing;
 
 /// The layer of a drawn frame, which the swapchains that hold its halves join at the frame's end.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Layer {
     Projection(PerEye<EyeView>),
     Screen(ScreenQuad),
@@ -32,7 +31,7 @@ impl Layer {
         quad_of(frame, settings).map(Self::Screen)
     }
 
-    /// The screen quad, which the pointer points at, or `None` for a projection layer.
+    /// The screen quad, whose parallel share the frame writes, or `None` for a projection layer.
     pub(super) const fn screen_quad(self) -> Option<ScreenQuad> {
         match self {
             Self::Screen(quad) => Some(quad),
@@ -56,16 +55,6 @@ pub(super) fn quad_of(picture: (u32, u32), settings: ScreenSettings) -> Option<S
     quad::screen(distance_m, width_m, picture)
 }
 
-/// Whether the controllers point in a frame whose immersive choice is `choice`. They rest while a
-/// projection layer shows, and point in every other frame, also in a frame that shows no game
-/// frame.
-pub(super) const fn pointing(choice: Option<&Choice>) -> Pointing {
-    match choice {
-        Some(Choice::Projection(_)) => Pointing::Resting,
-        Some(Choice::Quad(_)) | None => Pointing::Active,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use ipc_layout::viewer_header::pose::FrameTag;
@@ -75,9 +64,8 @@ mod tests {
     use xr::projection::EyeView;
     use xr::quad;
 
-    use super::{Layer, pointing};
+    use super::Layer;
     use crate::screen::immersive::{Choice, Immersive};
-    use crate::screen::menu::Pointing;
 
     const FRAME: (u32, u32) = (3840, 1080);
 
@@ -92,22 +80,20 @@ mod tests {
     }
 
     #[test]
-    fn a_projection_choice_gives_the_projection_layer_and_no_screen_to_point_at() {
+    fn a_projection_choice_gives_the_projection_layer_and_no_screen_quad() {
         let layer = Layer::of(FRAME, Some(projection()), ScreenSettings::default());
         assert!(matches!(layer, Some(Layer::Projection(_))), "{layer:?}");
         assert_eq!(layer.and_then(Layer::screen_quad), None);
-        assert_eq!(pointing(Some(&projection())), Pointing::Resting);
     }
 
     #[test]
-    fn a_quad_choice_or_the_screen_mode_gives_the_screen_quad_of_the_settings_to_point_at() {
+    fn a_quad_choice_or_the_screen_mode_gives_the_screen_quad_of_the_settings() {
         let settings = ScreenSettings::default();
         let (distance_m, width_m) = (settings.distance_m.meters(), settings.width_m.meters());
         let expected = quad::screen(distance_m, width_m, FRAME).expect("a quad for the frame");
         for choice in [Some(quad_choice()), None] {
             let layer = Layer::of(FRAME, choice, settings);
             assert_eq!(layer.and_then(Layer::screen_quad), Some(expected), "{choice:?}");
-            assert_eq!(pointing(choice.as_ref()), Pointing::Active, "{choice:?}");
         }
     }
 

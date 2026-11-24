@@ -72,7 +72,7 @@ fn the_held_left_button_is_released_once_when_the_launcher_window_closes() {
     // A closed window leaves the status panel, so the screen shows no quad and the game takes the
     // input again.
     run.window = Window::Game;
-    let status = Sight { screen: None, ..closed() };
+    let status = Sight { surface: None, ..closed() };
     let held = HandInput { select: 1.0, ..centered() };
     run.frame(HandInput::default(), held, status);
     run.frame(HandInput::default(), held, status);

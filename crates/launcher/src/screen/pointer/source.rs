@@ -1,37 +1,53 @@
-//! What the pointer's place follows while the screen shows the game, and the decision of which
-//! change between the trace and the ray's hit on the screen the frame loop logs.
+//! What the pointer's place follows while a frame shows the game, and the decision of which change
+//! of the picture, or between the trace and the place the pointer takes without it, the frame loop
+//! logs.
 
 use std::time::{Duration, Instant};
 
 use diag::rate::RateLimit;
 
-use crate::screen::depth::{Depth, Fallback};
+use super::model::Picture;
+use crate::screen::depth::Fallback;
 
 /// The shortest time between two logged changes of the source. A source that alternates in each
 /// frame logs one line per period, and a change reaches the log at most this late.
 const PERIOD: Duration = Duration::from_secs(1);
 
-/// What the pointer's place follows while the screen shows the game.
+/// What the pointer's place follows while a frame shows the game.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Source {
     /// The mouse place where the ray meets the picture.
-    Trace,
-    /// The ray's hit on the screen quad, for the reason it holds.
-    Hit(Fallback),
+    Trace(Picture),
+    /// The ray's hit on the screen quad, or its far point in the projection picture, for the
+    /// reason it holds.
+    Untraced(Picture, Fallback),
 }
 
 impl Source {
-    pub(super) fn of(depth: Result<Depth<'_>, Fallback>) -> Self {
-        match depth {
-            Ok(_) => Self::Trace,
-            Err(fallback) => Self::Hit(fallback),
+    /// The source in `picture` under a depth that is `traced`, or the reason it is not.
+    pub(super) const fn of<T>(picture: Picture, traced: &Result<T, Fallback>) -> Self {
+        match traced {
+            Ok(_) => Self::Trace(picture),
+            Err(fallback) => Self::Untraced(picture, *fallback),
         }
     }
 
-    /// Whether the pointer changed between the trace and the hit from `before` to `self`. No
-    /// source before counts as a change.
+    const fn picture(self) -> Picture {
+        match self {
+            Self::Trace(picture) | Self::Untraced(picture, _) => picture,
+        }
+    }
+
+    const fn is_trace(self) -> bool {
+        matches!(self, Self::Trace(_))
+    }
+
+    /// Whether the pointer changed its picture, or changed between the trace and the place it
+    /// takes without it, from `before` to `self`. No source before counts as a change.
     pub(super) fn switched_from(self, before: Option<Self>) -> bool {
-        before.is_none_or(|before| (before == Self::Trace) != (self == Self::Trace))
+        before.is_none_or(|before| {
+            before.picture() != self.picture() || before.is_trace() != self.is_trace()
+        })
     }
 }
 
@@ -47,8 +63,9 @@ impl SourceLog {
     }
 
     /// The source to log for the frame at `now` whose place follows `source`, or `None`. A source
-    /// is logged when it changed between the trace and the hit from the one the log named last,
-    /// at most once per [`PERIOD`], so the log ends on the source in use after a run of changes.
+    /// is logged when it changed its picture, or between the trace and the place without it, from
+    /// the one the log named last, at most once per [`PERIOD`], so the log ends on the source in
+    /// use after a run of changes.
     pub(super) fn note(&mut self, source: Source, now: Instant) -> Option<Source> {
         if !source.switched_from(self.logged) {
             return None;

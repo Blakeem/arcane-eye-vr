@@ -1,14 +1,15 @@
 //! The trace against the worked numbers of an independent march: the screen quad 3.0 by 1.6875 m
-//! at 2.5 m, the eyes 0.065 m apart at the LOCAL origin and depth maps of 160 by 90 cells.
+//! at 2.5 m, the eyes 0.065 m apart at the LOCAL origin and depth maps of 160 by 90 cells. The
+//! trace into the projection picture takes the eye views of `lens_views`.
 
 use ipc_layout::viewer_header::depth_map::{Cell, Grid, INTERFACE, SCENE};
 use openxr::{Extent2Df, Posef, Quaternionf, Vector3f};
 use stereo_core::eye::PerEye;
 use xr::quad::ScreenQuad;
 
-use super::{Meeting, mouse_place, trace};
+use super::{Meeting, far_point, mouse_place, trace, trace_projection};
 use crate::screen::depth::{CellDepth, Depth, DepthView, Kind};
-use crate::screen::geometry::test_support::vector;
+use crate::screen::geometry::test_support::{lens_views, vector};
 use crate::screen::geometry::{Ray, Shares, length, normalized, sub};
 
 const COLUMNS: u16 = 160;
@@ -156,4 +157,56 @@ fn the_mouse_place_lies_midway_between_the_halves_less_half_the_scene_s_depth_of
     assert!((on_scene.x - 0.395).abs() < 1e-6, "{on_scene:?}");
     assert_eq!(mouse_place(Shares { x: 0.005, y: 0.3 }, interface, 0.0), None, "left of 0");
     assert_eq!(mouse_place(Shares { x: 0.999, y: 0.3 }, scene, 0.0), None, "right of 1");
+}
+
+/// The map of a world frame, whose depth offset is 0, with `cells`.
+fn world(cells: &[Cell]) -> DepthView<'_> {
+    let grid = Grid::new(u32::from(COLUMNS), u32::from(ROWS)).expect("a grid");
+    DepthView { grid, depth_offset: 0.0, cells }
+}
+
+/// The ray from below and right of the eyes toward the point 5 m ahead of them.
+fn projection_ray() -> Ray {
+    ray(vector(0.2, -0.3, 0.0), vector(0.0, 0.0, -5.0))
+}
+
+#[test]
+fn a_scene_5_m_ahead_meets_the_ray_in_the_projection_picture_at_its_mouse_place() {
+    let cells = uniform([-0.008_086, SCENE]);
+    let met = trace_projection(projection_ray(), world(&cells), lens_views()).expect("a meeting");
+    let apart = length(sub(met.point, vector(0.0, 0.0, -5.0)));
+    assert!(apart < 0.05, "the meeting point {:?} is {apart} m from the scene", met.point);
+    let Shares { x, y } = met.mouse;
+    assert!((x - 0.5).abs() < 0.002 && (y - 0.5).abs() < 0.002, "the mouse place ({x}, {y})");
+}
+
+#[test]
+fn an_interface_1_m_ahead_meets_the_ray_in_the_projection_picture_1_m_ahead() {
+    let cells = uniform([-0.040_429, INTERFACE]);
+    let met = trace_projection(projection_ray(), world(&cells), lens_views()).expect("a meeting");
+    let apart = length(sub(met.point, vector(0.16, -0.24, -1.0)));
+    assert!(apart < 0.02, "the meeting point {:?} is {apart} m from 1 m ahead", met.point);
+}
+
+#[test]
+fn a_ray_that_points_behind_or_beside_the_eye_views_meets_nothing_of_the_projection_picture() {
+    let cells = uniform([-0.008_086, SCENE]);
+    let behind = ray(vector(0.2, -0.3, 0.0), vector(0.0, 0.0, 5.0));
+    assert_eq!(trace_projection(behind, world(&cells), lens_views()), None);
+    assert_eq!(far_point(behind, lens_views()), None, "behind, with no map");
+    let beside = ray(vector(0.2, -0.3, 0.0), vector(10.0, 0.0, -1.0));
+    assert_eq!(trace_projection(beside, world(&cells), lens_views()), None);
+    assert_eq!(far_point(beside, lens_views()), None, "beside, with no map");
+}
+
+#[test]
+fn without_a_map_the_ray_takes_the_mouse_place_of_its_point_200_m_away() {
+    // The point 200 m along the ray lies at (-7.77928, 11.66892, -199.48202), with the left place
+    // (0.475467, 0.434308) and the right place (0.475264, 0.434308).
+    let met = far_point(projection_ray(), lens_views()).expect("a far point");
+    let far = vector(-7.779_281, 11.668_921, -199.482_02);
+    let apart = length(sub(met.point, far));
+    assert!(apart < 0.001, "the point {:?} is {apart} m from {far:?}", met.point);
+    let Shares { x, y } = met.mouse;
+    assert!((x - 0.475_365).abs() < 0.00001 && (y - 0.434_308).abs() < 0.00001, "({x}, {y})");
 }

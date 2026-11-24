@@ -1,15 +1,19 @@
-//! The game's pointer across frames: the pointing hand, the place its ray points at on the screen,
+//! The game's pointer across frames: the pointing hand, the place its ray points at in the picture,
 //! the window that takes its input, the buttons it holds pressed, the wheel's turn and the camera
 //! turn key.
 //!
 //! The pointing hand is the hand whose `select` was pressed last, and the right hand before any
 //! press. While the menu is open, the hand the menu is not on points, and the menu hand acts on
-//! nothing. A ray that meets the menu's panel acts on the menu only. The camera turns while the
-//! screen quad shows the game and the ray misses the menu's panel, whether or not the ray meets the
-//! screen. While the screen quad shows the Larian launcher's window, the ray moves the pointer in
-//! it and `select` is its left button, and no other control sends it input. With the depth of the
-//! game's picture, the pointer goes to the mouse place where the ray meets the picture
-//! (`trace.rs`), and a ray that meets no thing of the picture acts as a ray that misses the screen.
+//! nothing. A ray that meets the menu's panel acts on the menu only. The camera turns while a
+//! frame shows the game and the ray misses the menu's panel, whether or not the ray meets the
+//! game's picture. While the screen quad shows the Larian launcher's window, the ray moves the
+//! pointer in it and `select` is its left button, and no other control sends it input. With the
+//! depth of the game's picture, the pointer goes to the mouse place where the ray meets the picture
+//! (`trace.rs`), on the screen quad or in the projection picture. Without it, the pointer goes to
+//! the ray's hit on the screen quad, or in the projection picture to the ray's far point. A ray
+//! that meets no thing of the picture acts as a ray that misses the screen. A change of the layer
+//! that shows the game, between the screen quad and the projection picture, releases each held
+//! button and the held turn key.
 
 use std::time::Duration;
 
@@ -17,15 +21,17 @@ use device_profile::profile::Hand;
 use launch::mouse::Button;
 use launch::turn::TurnKey;
 use openxr::Vector3f;
+use stereo_core::eye::PerEye;
 use xr::input::{ButtonState, HandInput};
+use xr::projection::EyeView;
 use xr::quad::ScreenQuad;
 
 use super::filter::OneEuro;
-use super::trace::trace;
+use super::trace::{far_point, trace, trace_projection};
 use super::turn;
 use super::wheel::Wheel;
 use crate::screen::controls::{Buttons, Frame, rose};
-use crate::screen::depth::Depth;
+use crate::screen::depth::{Depth, DepthView};
 use crate::screen::geometry::{self, Ray, Shares};
 
 /// The smallest change of the filtered place, as a share of the client area's width or height,
@@ -40,7 +46,7 @@ pub(crate) enum Action {
     Move(Shares),
     Press(Button),
     Release(Button),
-    /// A turn of the wheel by entire notches, positive up.
+    /// A turn of the wheel by a count of notches, positive up.
     Wheel(i16),
     PressTurn(TurnKey),
     ReleaseTurn(TurnKey),
@@ -53,7 +59,7 @@ pub(crate) enum Sent {
     Failed,
 }
 
-/// The window whose picture the screen quad shows, which takes the pointer's input.
+/// The window whose picture shows, which takes the pointer's input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Window {
     Game,
@@ -67,22 +73,57 @@ pub(crate) enum PanelAim {
     Missed,
 }
 
+/// The picture the pointer points into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Picture {
+    Screen,
+    Projection,
+}
+
+impl Picture {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Screen => "screen",
+            Self::Projection => "projection",
+        }
+    }
+}
+
+/// The picture of a frame that the pointing hand's ray points into, with its depth.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Surface<'d> {
+    /// The screen quad, with the depth its picture shows to the located eyes, or `None` while the
+    /// pointer takes the ray's hit on the quad.
+    Screen(ScreenQuad, Option<Depth<'d>>),
+    /// The projection picture's two eye views, with the usable depth map, or `None` while the
+    /// pointer takes the ray's far point.
+    Projection(PerEye<EyeView>, Option<DepthView<'d>>),
+}
+
+impl Surface<'_> {
+    pub(crate) const fn picture(&self) -> Picture {
+        match self {
+            Self::Screen(..) => Picture::Screen,
+            Self::Projection(..) => Picture::Projection,
+        }
+    }
+}
+
 /// What the rest of the screen shows in a frame: the hand the open menu is on, whether the
-/// pointing hand's ray meets the menu's panel, the screen quad, when the screen is shown, the
-/// window that takes the input, and the depth of the picture the ray is traced through, `None`
-/// when the pointer takes the ray's hit on the screen quad.
+/// pointing hand's ray meets the menu's panel, the picture the ray points into, `None` while no
+/// picture shows, and the window that takes the input.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Sight<'d> {
     pub(crate) menu: Option<Hand>,
     pub(crate) panel: PanelAim,
-    pub(crate) screen: Option<ScreenQuad>,
+    pub(crate) surface: Option<Surface<'d>>,
     pub(crate) window: Window,
-    pub(crate) depth: Option<Depth<'d>>,
 }
 
 /// The pointing hand's ray, the point its laser ends at and the place of the window that the
 /// pointer moves to: the meeting point with the picture and its mouse place under a traced depth,
-/// else the ray's hit on the screen quad and its place there.
+/// else the ray's hit on the screen quad and its place there, or the ray's far point in the
+/// projection picture and its mouse place.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Aimed {
     pub(crate) ray: Ray,
@@ -116,6 +157,8 @@ pub(crate) struct Model {
     menu: Option<Hand>,
     /// The window that took the input in the frame before.
     window: Window,
+    /// The picture of the last frame that showed one.
+    picture: Option<Picture>,
     /// The mouse buttons the pointer holds pressed, in the order of [`BUTTONS`].
     held: [ButtonState; 2],
     /// The turn key the pointer holds pressed in the game.
@@ -135,6 +178,7 @@ impl Model {
             pointing: Hand::Right,
             menu: None,
             window: Window::Game,
+            picture: None,
             held: [ButtonState::Released; 2],
             turning: None,
             place: Place::default(),
@@ -145,7 +189,8 @@ impl Model {
     /// Takes the controllers' `frame`, `step` after the frame before, with what the screen shows in
     /// `sight`, and sends the mouse and turn key input through `send`. A button or a turn key whose
     /// release failed stays held, so a later frame releases it again. A change of the window that
-    /// takes the input releases each held button.
+    /// takes the input releases each held button, and a change of the picture between the screen
+    /// quad and the projection picture releases each held button and the turn key.
     pub(crate) fn update(
         &mut self,
         frame: &Frame,
@@ -159,16 +204,20 @@ impl Model {
         let window = sight.window;
         let switched = window != self.window;
         self.window = window;
+        let picture = sight.surface.map(|surface| surface.picture());
+        let relayered = picture.is_some_and(|now| self.picture.is_some_and(|last| last != now));
+        self.picture = picture.or(self.picture);
         let hand = frame.input.hand(self.pointing);
         let on_game = window == Window::Game;
         let turns = on_game
-            && sight.screen.is_some()
+            && picture.is_some()
             && sight.panel == PanelAim::Missed
-            && changed.is_none();
+            && changed.is_none()
+            && !relayered;
         let turn_x = if turns { hand.scroll.x } else { 0.0 };
         self.turn_camera(turn_x, send);
         let aimed = aim(hand, sight);
-        let restart = aimed.is_none() || changed.is_some() || switched;
+        let restart = aimed.is_none() || changed.is_some() || switched || relayered;
         if restart || opened {
             self.release_buttons(send);
         }
@@ -176,11 +225,11 @@ impl Model {
             self.place = Place::default();
             self.wheel.stop();
         }
-        let Some(on_screen) = aimed else {
+        let Some(on_picture) = aimed else {
             return Update { aimed, changed };
         };
         let seconds = step.as_secs_f32();
-        let moved = self.move_to(on_screen.shares, seconds, send);
+        let moved = self.move_to(on_picture.shares, seconds, send);
         self.press_and_release(frame.buttons(self.pointing), window, moved, send);
         if on_game {
             self.turn_wheel(hand, seconds, send);
@@ -306,19 +355,23 @@ impl Model {
     }
 }
 
-/// The ray of `hand` and where it meets the picture of the depth of `sight`, or with no depth where
-/// it meets the screen quad of `sight`. `None` when the hand has no `aim` pose, the ray meets the
-/// menu's panel or it misses the screen or the picture.
+/// The ray of `hand` and where it meets the picture of `sight` in the depth the picture shows, or
+/// without a depth where it meets the screen quad or its far point in the projection picture.
+/// `None` when the hand has no `aim` pose, the ray meets the menu's panel, no picture shows or the
+/// ray meets nothing of it.
 fn aim(hand: &HandInput, sight: Sight<'_>) -> Option<Aimed> {
     if sight.panel == PanelAim::Met {
         return None;
     }
     let ray = hand.aim.and_then(Ray::of)?;
-    let screen = sight.screen?;
-    let Some(depth) = sight.depth else {
-        let hit = geometry::hit(ray, screen.pose, screen.size)?;
-        return Some(Aimed { ray, point: hit.point, shares: hit.shares });
-    };
-    let meeting = trace(ray, depth, screen)?;
+    let meeting = match sight.surface? {
+        Surface::Screen(quad, None) => {
+            let hit = geometry::hit(ray, quad.pose, quad.size)?;
+            return Some(Aimed { ray, point: hit.point, shares: hit.shares });
+        }
+        Surface::Screen(quad, Some(depth)) => trace(ray, depth, quad),
+        Surface::Projection(views, Some(map)) => trace_projection(ray, map, views),
+        Surface::Projection(views, None) => far_point(ray, views),
+    }?;
     Some(Aimed { ray, point: meeting.point, shares: meeting.mouse })
 }

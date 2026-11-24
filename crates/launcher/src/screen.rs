@@ -5,18 +5,18 @@
 //! `picture.rs` reads the newest published frame from the viewer link, and `eyes.rs` draws its
 //! halves into the swapchains of the `xr` crate's session. `immersive.rs` writes the head pose into
 //! the viewer link and chooses between the projection layer and the screen quad for each frame, and
-//! `layer.rs` builds that layer. `immersive/decide.rs` places each eye's view. In the view
-//! [`View::Screen`], `share.rs` writes the screen quad's parallel share into the viewer link in
-//! each frame that shows the game's frame on it, so the stereo depth follows the screen's width,
-//! and `depth.rs` reads the core's depth map, through which the pointer traces its ray in that
-//! view. `quad_depth.rs` runs those two steps in each frame. `controls.rs` reads the device
-//! profiles and logs what the controllers do in each frame. `menu.rs` shows the menu that sets the
-//! screen's distance and width, `pointer.rs` sends the game the mouse input of the controller that
-//! points at the screen and the turn key input of the pointing controller's stick, and
-//! `geometry.rs` holds the vector math of the quads, the rays and the eye views. The menu and the
-//! pointer rest while a projection layer shows. `models.rs` draws every tracked controller model
-//! into one projection layer, which the compositor blends over the frame's layer and under the
-//! panels. `image.rs` finds the draw target of each swapchain image that the eyes, the panels and
+//! `layer.rs` builds that layer. `immersive/decide.rs` places each eye's view. In both views,
+//! `share.rs` writes the screen quad's parallel share into the viewer link in each frame that
+//! shows the game's frame on it, so the stereo depth follows the screen's width, and `depth.rs`
+//! reads the core's depth map, through which the pointer traces its ray on the screen quad and in
+//! the projection layer. `quad_depth.rs` runs those two steps in each frame. `controls.rs` reads
+//! the device profiles and logs what the controllers do in each frame. `menu.rs` shows the menu
+//! that sets the screen's distance and width, `pointer.rs` sends the game the mouse input of the
+//! controller that points at the game's picture and the turn key input of the pointing
+//! controller's stick, and `geometry.rs` holds the vector math of the quads, the rays and the eye
+//! views. The menu and the pointer work in every frame. `models.rs` draws every tracked controller
+//! model into one projection layer, which the compositor blends over the frame's layer and under
+//! the panels. `image.rs` finds the draw target of each swapchain image that the eyes, the panels and
 //! the models acquire. The session runs until Steam reports that the game ended, the runtime ends
 //! the session or the game's frames are of a kind it cannot show. The game window keeps the
 //! keyboard, since the session has no window, and the pointer's input reaches the game only while
@@ -175,16 +175,16 @@ fn open(
     };
     let draw = RegionDraw::create(device.d3d())?;
     let session = Session::open(&headset, device.d3d())?;
-    let (immersive, quad_depth) = match view {
-        View::Screen => (None, Some(QuadDepth::new(player.stereo.ipd_mm.meters()))),
-        View::Immersive => (Some(Immersive::new()), None),
+    let immersive = match view {
+        View::Screen => None,
+        View::Immersive => Some(Immersive::new()),
     };
     let status_panel = if start.is_done() { StatusPanel::closed() } else { StatusPanel::new() };
     Ok(Screen {
         eyes: None,
         models: Models::new(),
         immersive,
-        quad_depth,
+        quad_depth: QuadDepth::new(player.stereo.ipd_mm.meters()),
         status_panel,
         launcher: LauncherScreen::new(),
         menu: ScreenMenu::new(player.screen, file, root),
@@ -229,8 +229,7 @@ struct Screen {
     models: Models,
     /// `None` in the view [`View::Screen`].
     immersive: Option<Immersive>,
-    /// `None` in the view [`View::Immersive`].
-    quad_depth: Option<QuadDepth>,
+    quad_depth: QuadDepth,
     status_panel: StatusPanel,
     launcher: LauncherScreen,
     menu: ScreenMenu,
@@ -276,12 +275,12 @@ impl Screen {
     /// Waits for the session's next frame, reads the controllers, writes the head pose in the view
     /// [`View::Immersive`], draws the newest published frame into the swapchains once the start is
     /// done and the runtime shows the frame, chooses its layer, updates the menu, writes the screen
-    /// quad's parallel share in the view [`View::Screen`] while the quad shows a game frame, reads
-    /// the depth map in that view, shows the newest copy of the launcher window during the start
-    /// wait, sends the pointer's input to the game or the launcher window, draws the menu's quads,
-    /// the laser and the controller models, and ends the frame with the frame's layer, then the
-    /// controller models' layer, then the launcher's picture or else the status panel until a game
-    /// frame showed, then the menu's panels.
+    /// quad's parallel share while the quad shows a game frame, reads the depth map, shows the
+    /// newest copy of the launcher window during the start wait, sends the pointer's input to the
+    /// game or the launcher window, draws the menu's quads, the laser and the controller models,
+    /// and ends the frame with the frame's layer, then the controller models' layer, then the
+    /// launcher's picture or else the status panel until a game frame showed, then the menu's
+    /// panels.
     fn frame(&mut self) -> Result<(), FrameError> {
         let timing = self.session.wait_frame()?;
         let controls = self.controllers.read(&self.session, timing)?;
@@ -303,25 +302,27 @@ impl Screen {
             start,
             ..
         } = self;
-        if let Some(immersive) = immersive.as_mut() {
-            immersive.write_head(session.locate_head(timing), link)?;
+        // The view Immersive reads the head in every frame for its write, and the share write of
+        // a screen quad frame takes that read, so the session locates the head once per frame.
+        let head = immersive.as_ref().map(|_| session.locate_head(timing));
+        if let Some((immersive, located)) = immersive.as_mut().zip(head) {
+            immersive.write_head(located, link)?;
         }
         // A header left by an earlier game holds a texture no process shares, so the link reads
         // frames only once this start's game reported its goal status.
         let game = timing.should_render && start.is_done();
         let drawn = if game { show(eyes, link, session, draw, device)? } else { None };
         let choice = drawn.as_ref().zip(immersive.as_mut()).map(|(drawn, on)| on.choose(drawn.tag));
-        let mut menu_shown = menu.update(&controls, now, layer::pointing(choice.as_ref()));
+        let mut menu_shown = menu.update(&controls, now);
         let frame_layer = drawn.and_then(|drawn| Layer::of(drawn.frame, choice, menu.screen()));
         let shown = drawn.zip(frame_layer).map(|(drawn, on)| on.shown(drawn.swapchains));
         let game_quad = frame_layer.and_then(Layer::screen_quad);
-        let locate = || session.locate_head(timing);
-        let depth =
-            quad_depth.as_mut().map(|on| on.frame(game_quad, locate, link, now)).transpose()?;
+        let locate = || head.unwrap_or_else(|| session.locate_head(timing));
+        let depth = quad_depth.frame(game_quad, locate, link, now)?;
         let gpu = Gpu { session, draw, context: device.context() };
         let wait = if start.is_done() { Wait::Done } else { Wait::Running };
         launcher.update(now, wait, menu.screen(), &gpu);
-        let target = launcher::target(wait, launcher.shown(), game_quad);
+        let target = launcher::target(wait, launcher.shown(), frame_layer);
         let panel = if menu_shown.points_at_panel() { PanelAim::Met } else { PanelAim::Missed };
         let seen = Seen { menu: menu.hand(), panel, target, depth };
         if let Some(laser) = pointer.update(&controls, seen, now) {

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use xr::quad::{self, ScreenQuad};
 
 use super::{COPY_INTERVAL, Change, FIND_INTERVAL, Step, Target, Wait, Watch, target};
+use crate::screen::layer::Layer;
 
 /// The failure of a request for a copy, or of a copy's show, in these tests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,13 +197,13 @@ fn the_pointer_aims_at_nothing_then_the_launcher_then_the_game_across_the_start(
     let game_quad = game_quad.expect("a frame");
     let window = 7_u32;
     let status = target::<u32>(Wait::Running, None, None);
-    assert_eq!((status.quad(), status.launcher()), (None, None), "the status panel");
+    assert_eq!((&status, status.launcher()), (&Target::Nothing, None), "the status panel");
     let launcher = target(Wait::Running, Some((launcher_quad, &window)), None);
     assert_eq!(launcher, Target::Launcher { quad: launcher_quad, window: &window });
-    assert_eq!((launcher.quad(), launcher.launcher()), (Some(launcher_quad), Some(&window)));
+    assert_eq!(launcher.launcher(), Some(&window));
     let waiting = target::<u32>(Wait::Done, None, None);
     assert_eq!(waiting, Target::Nothing, "the status panel until the first game frame");
-    let game = target(Wait::Done, Some((launcher_quad, &window)), Some(game_quad));
-    assert_eq!(game, Target::Game(game_quad));
-    assert_eq!((game.quad(), game.launcher()), (Some(game_quad), None));
+    let game = target(Wait::Done, Some((launcher_quad, &window)), Some(Layer::Screen(game_quad)));
+    assert_eq!(game, Target::Game(Layer::Screen(game_quad)));
+    assert_eq!(game.launcher(), None);
 }

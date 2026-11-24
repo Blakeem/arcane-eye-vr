@@ -3,20 +3,15 @@
 
 use std::time::{Duration, Instant};
 
-use ipc_layout::viewer_header::depth_map::{
-    CELLS_OFFSET, Cell, Grid, INTERFACE, MapInfo, SCENE, SEQUENCE_OFFSET,
-};
+use ipc_layout::viewer_header::depth_map::{Cell, Grid, INTERFACE, SCENE, SEQUENCE_OFFSET};
 use openxr::{Posef, Vector3f};
 use stereo_core::eye::PerEye;
 use viewer_client::fixture::{CoreMapping, test_name};
 use xr::head::Head;
 
+use super::test_support::{grid, write};
 use super::{CellDepth, DepthView, DepthWatch, Fallback, Kind, depth, usable};
 use crate::screen::geometry::Shares;
-
-fn grid(columns: u32, rows: u32) -> Grid {
-    Grid::new(columns, rows).expect("a grid")
-}
 
 /// A map of 3 columns and 2 rows whose cells each hold a disparity of their own.
 const CELLS: [Cell; 6] = [
@@ -35,20 +30,6 @@ fn view(cells: &[Cell]) -> DepthView<'_> {
 fn head(left_x: f32) -> Head {
     let eye = |x| Vector3f { x, y: 1.6, z: 0.0 };
     Head { pose: Posef::IDENTITY, eyes: PerEye { left: eye(left_x), right: eye(0.032) } }
-}
-
-/// Writes the header of a map of `columns` by `rows` cells of `cell` under `sequence` into the
-/// section of `core`.
-fn write(core: &CoreMapping, sequence: u32, columns: u32, rows: u32, cell: Cell) {
-    let info = MapInfo { grid: grid(columns, rows), depth_offset: 0.02, present: sequence };
-    for (offset, word) in (0..).step_by(4).zip(info.words(sequence)) {
-        core.write_word(offset, word).expect("a header word");
-    }
-    let count = grid(columns, rows).cells();
-    let words = (0..count).flat_map(|_| cell.map(f32::to_bits));
-    for (offset, word) in (CELLS_OFFSET..).step_by(4).zip(words) {
-        core.write_word(offset, word).expect("a cell word");
-    }
 }
 
 #[test]

@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 
 use xr::quad::ScreenQuad;
 
+use crate::screen::layer::Layer;
+
 /// The shortest time between two searches for the launcher window.
 pub(crate) const FIND_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -165,17 +167,17 @@ pub(crate) enum Target<'w, W> {
     Nothing,
     /// The launcher window `window`, whose picture shows on `quad`.
     Launcher { quad: ScreenQuad, window: &'w W },
-    /// The game, whose frame shows on `quad`.
-    Game(ScreenQuad),
+    /// The game, whose frame shows on the layer, the screen quad or the projection layer.
+    Game(Layer),
 }
 
 /// The pointer's target in a frame of the start at `wait`: the launcher window while its picture
-/// shows on a quad in `launcher` during the wait, the game while its frame shows on the quad
+/// shows on a quad in `launcher` during the wait, the game while its frame shows on the layer
 /// `game` from the goal status on, and nothing otherwise, while the status panel shows.
 pub(crate) fn target<W>(
     wait: Wait,
     launcher: Option<(ScreenQuad, &W)>,
-    game: Option<ScreenQuad>,
+    game: Option<Layer>,
 ) -> Target<'_, W> {
     match wait {
         Wait::Running => {
@@ -186,14 +188,6 @@ pub(crate) fn target<W>(
 }
 
 impl<'w, W> Target<'w, W> {
-    /// The quad the pointer points at.
-    pub(crate) const fn quad(&self) -> Option<ScreenQuad> {
-        match self {
-            Self::Nothing => None,
-            Self::Launcher { quad, .. } | Self::Game(quad) => Some(*quad),
-        }
-    }
-
     /// The launcher window that takes the pointer's input, or `None` when the game takes it.
     pub(crate) const fn launcher(&self) -> Option<&'w W> {
         match self {

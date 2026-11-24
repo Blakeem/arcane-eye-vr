@@ -60,7 +60,7 @@ During play in a level, the launch app shows the game around the player. Turn th
 3. Start the entry. The launch app starts SteamVR when it does not run. The headset shows "Starting Baldur's Gate 3" until the Larian launcher or the game's first picture shows.
 4. When the Larian launcher opens, it shows on the screen in the headset. Point a controller at it, choose DirectX 11 and click Play with the trigger.
 
-The keyboard and the mouse work as in the game. The picture keeps the game's own field of view, so it covers a part of the view. The title screen, loading pictures, videos, cutscenes and dialogue show on the flat screen of the headset screen, where the menu and the controller's mouse pointer work. This mode is a first stage.
+The keyboard and the mouse work as in the game. The picture keeps the game's own field of view, so it covers a part of the view. The title screen, loading pictures, videos, cutscenes and dialogue show on the flat screen of the headset screen. The controllers work around the player and on the flat screen as they do on the headset screen: the menu opens, the laser ends on what it points at, and the mouse pointer sits there. This mode is a first stage.
 
 ## Play in Bigscreen or another viewer app
 

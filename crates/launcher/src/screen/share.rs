@@ -1,4 +1,4 @@
-//! The screen quad's parallel share in the view `Screen`: each session frame that shows the game's
+//! The screen quad's parallel share in both views: each session frame that shows the game's
 //! frame on the screen quad writes the parallel share of that quad into the viewer link, so the
 //! core's depth offset puts the far scene where the eyes look parallel, on a screen wide enough
 //! that the share stays within the core's largest screen offset.

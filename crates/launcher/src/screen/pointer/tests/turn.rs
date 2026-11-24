@@ -84,7 +84,7 @@ fn the_held_turn_key_is_released_once_while_the_ray_meets_the_menu_s_panel() {
 fn the_held_turn_key_is_released_once_when_the_screen_quad_no_longer_shows() {
     let mut run = Run::new();
     run.right(stick(0.8, centered()));
-    let hidden = Sight { screen: None, ..closed() };
+    let hidden = Sight { surface: None, ..closed() };
     run.frame(HandInput::default(), stick(0.8, centered()), hidden);
     run.frame(HandInput::default(), stick(0.8, centered()), hidden);
     let expected = [Action::PressTurn(TurnKey::Right), Action::ReleaseTurn(TurnKey::Right)];

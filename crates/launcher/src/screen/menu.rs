@@ -1,7 +1,8 @@
 //! The screen menu: a panel fixed to one controller whose buttons set the screen's distance and
 //! width, and the laser of the other controller that points at them. The caller replaces the laser
 //! of [`Shown`] with the laser of the game's pointer while that pointer's ray meets the game's
-//! picture in the depth the picture shows, or with no such depth while that ray hits the screen.
+//! picture on the screen quad or in the projection picture, or the launcher's picture. The menu
+//! works in every frame of both views.
 //!
 //! `model.rs` decides what the menu does in each frame, `rows.rs` holds its rows and their steps,
 //! `place.rs` places its two quads and `save.rs` decides when the player file is written. This
@@ -33,8 +34,8 @@ use windows::Win32::Graphics::Direct3D11::ID3D11RenderTargetView;
 use xr::error::XrError;
 use xr::panel::Panel;
 
+pub(crate) use self::model::Shown;
 use self::model::{Event, Model};
-pub(crate) use self::model::{Pointing, Shown};
 use self::place::PANEL_SIZE;
 pub(crate) use self::place::{Laser, laser};
 pub(crate) use self::save::PlayerFile;
@@ -108,13 +109,13 @@ impl ScreenMenu {
         self.model.hand()
     }
 
-    /// Takes the controllers' `frame` at `now` while they are `pointing`, and returns what the menu
-    /// shows. A menu that is gone shows nothing.
-    pub(crate) fn update(&mut self, frame: &Frame, now: Instant, pointing: Pointing) -> Shown {
+    /// Takes the controllers' `frame` at `now`, and returns what the menu shows. A menu that is
+    /// gone shows nothing.
+    pub(crate) fn update(&mut self, frame: &Frame, now: Instant) -> Shown {
         if self.drawing.is_none() {
             return Shown::default();
         }
-        match self.take(frame, now, pointing) {
+        match self.take(frame, now) {
             Ok(shown) => shown,
             Err(error) => {
                 self.fail(&error);
@@ -134,17 +135,11 @@ impl ScreenMenu {
         }
     }
 
-    /// Takes the controllers' `frame` at `now` while they are `pointing`, logs what the menu did,
-    /// writes the player file when the menu closed with changed values, and returns what the menu
-    /// shows.
-    fn take(
-        &mut self,
-        frame: &Frame,
-        now: Instant,
-        pointing: Pointing,
-    ) -> Result<Shown, MenuError> {
+    /// Takes the controllers' `frame` at `now`, logs what the menu did, writes the player file when
+    /// the menu closed with changed values, and returns what the menu shows.
+    fn take(&mut self, frame: &Frame, now: Instant) -> Result<Shown, MenuError> {
         let mut closes = 0_u32;
-        let shown = self.model.update(frame, now, pointing, &mut |event| {
+        let shown = self.model.update(frame, now, &mut |event| {
             closes = closes.saturating_add(u32::from(matches!(event, Event::Closed(_))));
             log(event);
         });

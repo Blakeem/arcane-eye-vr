@@ -15,8 +15,9 @@ pub(crate) struct Wheel {
 }
 
 impl Wheel {
-    /// The entire notches the wheel completes over `seconds` at the `scroll` position `y`, positive
-    /// up. A `y` inside the dead zone, or a turn against the turn not yet sent, drops that turn.
+    /// The count of notches the wheel completes over `seconds` at the `scroll` position `y`,
+    /// positive up. A `y` inside the dead zone, or a turn against the turn not yet sent, drops that
+    /// turn.
     pub(crate) fn turn(&mut self, y: f32, seconds: f32) -> i16 {
         let size = y.abs();
         if size.is_nan() || size <= DEAD_ZONE {
@@ -40,7 +41,7 @@ impl Wheel {
     }
 }
 
-/// The entire notches in `turn`, toward 0. A count up to the turn's size, since no lint-clean cast
+/// The count of notches in `turn`, toward 0. A count up to the turn's size, since no lint-clean cast
 /// turns a float into an integer, and a frame's turn holds few notches.
 fn whole(turn: f32) -> i16 {
     let size = turn.abs();

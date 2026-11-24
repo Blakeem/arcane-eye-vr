@@ -1,20 +1,22 @@
 //! The game's mouse from a controller: the laser of the pointing hand moves the game's pointer to
-//! the place it points at on the screen, `select` and `secondary` press the left and right button,
-//! the up and down of `scroll` turns the wheel, and its left and right turn the camera through the
-//! game's turn keys. While the screen shows the game and the screen has the depth of its picture,
-//! the laser ends where its ray meets what the picture shows, and the pointer goes to that thing's
-//! mouse place. While the screen shows the Larian launcher's window during the start wait, the
-//! laser moves the pointer in that window and `select` clicks it.
+//! the place it points at in the game's picture, on the screen quad or in the projection picture,
+//! `select` and `secondary` press the left and right button, the up and down of `scroll` turns the
+//! wheel, and its left and right turn the camera through the game's turn keys. While a frame shows
+//! the game with the depth of its picture, the laser ends where its ray meets what the picture
+//! shows, and the pointer goes to that thing's mouse place. Without the depth, the laser ends at
+//! the ray's hit on the screen quad, or at the ray's far point in the projection picture. While the
+//! screen shows the Larian launcher's window during the start wait, the laser moves the pointer in
+//! that window and `select` clicks it.
 //!
 //! `model.rs` decides what the pointer does in each frame, `trace.rs` finds where the ray meets
-//! the picture, `source.rs` decides which change between the trace and the ray's hit on the screen
-//! to log, `filter.rs` steadies the pointed place, `wheel.rs` turns the `scroll` position into
-//! notches and `turn.rs` into the held turn key. This module sends the decided input through the
-//! `launch` crate's mouse and turn key calls, which move, press and turn only while the game
-//! window is in the foreground and release in any window, or through its launcher window calls,
-//! which move and press only while the window at the target point is the launcher window or a
-//! window it owns, logs what failed, and logs each change between the trace and the ray's hit on
-//! the screen with its reason, at most once per second.
+//! the picture, `source.rs` decides which change of the pointer's source to log, `filter.rs`
+//! steadies the pointed place, `wheel.rs` turns the `scroll` position into notches and `turn.rs`
+//! into the held turn key. This module sends the decided input through the `launch` crate's mouse
+//! and turn key calls, which move, press and turn only while the game window is in the foreground
+//! and release in any window, or through its launcher window calls, which move and press only
+//! while the window at the target point is the launcher window or a window it owns, logs what
+//! failed, and logs each change of the picture the pointer points into, and each change between
+//! the trace and the place without it with its reason, at most once per second.
 
 mod filter;
 mod model;
@@ -36,22 +38,23 @@ use launch::turn as turn_keys;
 use tracing::info;
 
 pub(crate) use self::model::PanelAim;
-use self::model::{Action, Model, Sent, Sight, Window};
+use self::model::{Action, Model, Picture, Sent, Sight, Surface, Window};
 use self::source::{Source, SourceLog};
 use super::controls::Frame;
-use super::depth::{Depth, Fallback};
+use super::depth::FrameDepth;
 use super::geometry;
 use super::launcher::Target;
+use super::layer::Layer;
 use super::menu::{Laser, laser};
 
 /// What the rest of the screen shows in a frame: the hand the open menu is on, whether the
-/// pointing hand's ray meets the menu's panel, what the pointer acts on, and the depth of the
-/// game's picture or why the pointer does without it, `None` in the view that has no trace.
+/// pointing hand's ray meets the menu's panel, what the pointer acts on, and what the depth steps
+/// read for the game's picture.
 pub(crate) struct Seen<'t> {
     pub(crate) menu: Option<Hand>,
     pub(crate) panel: PanelAim,
     pub(crate) target: Target<'t, LauncherWindow>,
-    pub(crate) depth: Option<Result<Depth<'t>, Fallback>>,
+    pub(crate) depth: FrameDepth<'t>,
 }
 
 /// The shortest time between two warnings of a failed mouse or turn key input.
@@ -80,17 +83,17 @@ impl Pointer {
     /// mouse and turn key input to the game, or the mouse input to the launcher window that the
     /// target names, and returns the laser of the pointing hand's ray to the point where it meets
     /// the game's picture in the depth the picture shows, or with no such depth to its hit on the
-    /// screen, or `None` when the pointer gives no laser, such as for a ray on the menu's panel.
+    /// screen quad or its far point in the projection picture, or `None` when the pointer gives no
+    /// laser, such as for a ray on the menu's panel.
     pub(crate) fn update(&mut self, frame: &Frame, seen: Seen<'_>, now: Instant) -> Option<Laser> {
         let Seen { menu, panel, target, depth } = seen;
         let launcher = target.launcher();
         let window = launcher.map_or(Window::Game, |_| Window::Launcher);
-        let on_game = game_depth(&target, depth);
-        if let Some(game) = on_game {
-            self.note(game, now);
+        let (surface, source) = surface(&target, depth);
+        if let Some(source) = source {
+            self.note(source, now);
         }
-        let traced = on_game.and_then(Result::ok);
-        let sight = Sight { menu, panel, screen: target.quad(), window, depth: traced };
+        let sight = Sight { menu, panel, surface, window };
         let since =
             self.last_frame.map_or(Duration::ZERO, |last| now.saturating_duration_since(last));
         self.last_frame = Some(now);
@@ -107,25 +110,34 @@ impl Pointer {
         update.aimed.and_then(|aimed| laser(aimed.ray.origin, aimed.point, head))
     }
 
-    /// Takes the source of the place in a frame of the game at `now` under `depth`, and logs a
-    /// change between the trace and the hit with its reason.
-    fn note(&mut self, depth: Result<Depth<'_>, Fallback>, now: Instant) {
-        let Some(source) = self.source.note(Source::of(depth), now) else {
+    /// Takes the source of the place in a frame of the game at `now`, and logs a change of its
+    /// picture or between the trace and the place without it, with its reason.
+    fn note(&mut self, source: Source, now: Instant) {
+        let Some(source) = self.source.note(source, now) else {
             return;
         };
         // A plain `info!` fits the frame loop here, since the source log admits at most one line
         // per second.
         match source {
-            Source::Trace => info!(
+            Source::Trace(Picture::Screen) => info!(
+                picture = Picture::Screen.as_str(),
                 "the pointer goes where its ray meets the picture, since the depth map is usable \
                  and the eyes are located"
             ),
-            Source::Hit(fallback) => {
-                info!(
-                    reason = fallback.as_str(),
-                    "the pointer goes to its ray's hit on the screen"
-                );
-            }
+            Source::Trace(Picture::Projection) => info!(
+                picture = Picture::Projection.as_str(),
+                "the pointer goes where its ray meets the picture, since the depth map is usable"
+            ),
+            Source::Untraced(Picture::Screen, fallback) => info!(
+                picture = Picture::Screen.as_str(),
+                reason = fallback.as_str(),
+                "the pointer goes to its ray's hit on the screen"
+            ),
+            Source::Untraced(Picture::Projection, fallback) => info!(
+                picture = Picture::Projection.as_str(),
+                reason = fallback.as_str(),
+                "the pointer goes to its ray's far point in the projection"
+            ),
         }
     }
 
@@ -137,12 +149,26 @@ impl Pointer {
     }
 }
 
-/// The depth `depth` while `target` is the game, the one target whose picture has a depth map.
-fn game_depth<'d, W>(
+/// The picture that `target` shows and the pointer points into, with its depth from `depth`, and
+/// the pointer's source in it. Only the game's picture has a depth map, so the launcher's picture
+/// has no depth and no source, and nothing has neither.
+fn surface<'d, W>(
     target: &Target<'_, W>,
-    depth: Option<Result<Depth<'d>, Fallback>>,
-) -> Option<Result<Depth<'d>, Fallback>> {
-    depth.filter(|_| matches!(target, Target::Game(_)))
+    depth: FrameDepth<'d>,
+) -> (Option<Surface<'d>>, Option<Source>) {
+    match *target {
+        Target::Nothing => (None, None),
+        Target::Launcher { quad, .. } => (Some(Surface::Screen(quad, None)), None),
+        Target::Game(Layer::Screen(quad)) => {
+            let traced = depth.on_screen();
+            let source = Source::of(Picture::Screen, &traced);
+            (Some(Surface::Screen(quad, traced.ok())), Some(source))
+        }
+        Target::Game(Layer::Projection(views)) => {
+            let source = Source::of(Picture::Projection, &depth.map);
+            (Some(Surface::Projection(views, depth.map.ok())), Some(source))
+        }
+    }
 }
 
 /// Sends `action` to `launcher`, or to the game for `None`, and warns of a failure at most once

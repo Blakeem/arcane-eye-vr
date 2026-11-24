@@ -1,5 +1,5 @@
-//! The depth the screen quad's picture shows in the view `Screen`: the newest depth map the core
-//! published and the two eyes' positions, which the pointer's trace takes.
+//! The depth the game's picture shows: the newest depth map the core published, and on the screen
+//! quad the two eyes' positions, which the pointer's trace takes.
 //!
 //! A map is usable while it has columns and rows and its last change is at most [`LONGEST_AGE`]
 //! old. The map holds no time, so its age counts from the read that first gave its sequence number.
@@ -57,20 +57,38 @@ impl DepthView<'_> {
     }
 }
 
-/// The depth the picture shows to the viewer's two eyes: their positions in the LOCAL space and
-/// the depth map.
+/// The depth the screen quad's picture shows to the viewer's two eyes: their positions in the
+/// LOCAL space and the depth map.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Depth<'m> {
     pub(crate) eyes: PerEye<Vector3f>,
     pub(crate) map: DepthView<'m>,
 }
 
-/// Why the pointer goes to the ray's hit on the screen quad in place of the trace.
+/// What the depth steps read in a frame: the newest map while it is usable, or why it is not, and
+/// the head located for the screen quad's parallel share, `None` in a frame that located none.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FrameDepth<'m> {
+    pub(crate) map: Result<DepthView<'m>, Fallback>,
+    pub(crate) head: Option<Head>,
+}
+
+impl<'m> FrameDepth<'m> {
+    /// The depth the screen quad's picture shows to the located eyes, or why the pointer does
+    /// without it.
+    pub(crate) fn on_screen(self) -> Result<Depth<'m>, Fallback> {
+        depth(self.map, self.head.as_ref())
+    }
+}
+
+/// Why the pointer does without the trace: on the screen quad it goes to the ray's hit on the
+/// quad, and in the projection picture to the ray's far point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Fallback {
     NoMap,
     EmptyMap,
     OldMap,
+    /// The screen quad's eyes are not located. The projection picture's eye views need no head.
     NoEyes,
 }
 
@@ -87,7 +105,7 @@ impl Fallback {
 
 /// The depth of a frame: the usable map `map` and the eye positions of `head`, or why the pointer
 /// does without it.
-pub(crate) fn depth<'m>(
+fn depth<'m>(
     map: Result<DepthView<'m>, Fallback>,
     head: Option<&Head>,
 ) -> Result<Depth<'m>, Fallback> {
@@ -178,6 +196,9 @@ fn kind_of(value: f32) -> Kind {
 fn finite(v: Vector3f) -> bool {
     v.x.is_finite() && v.y.is_finite() && v.z.is_finite()
 }
+
+#[cfg(test)]
+pub(crate) mod test_support;
 
 #[cfg(test)]
 mod tests;

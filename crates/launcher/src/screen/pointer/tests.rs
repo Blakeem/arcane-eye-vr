@@ -1,10 +1,12 @@
 //! The game's pointer across frames of controller input: the place it points at, the pointing
 //! hand, its moves, presses, releases and wheel turns. `turn.rs` holds the tests of its turn keys,
-//! `launcher.rs` the tests of its input to the Larian launcher's window, and `depth.rs` the tests
-//! of its place under the depth of the game's picture.
+//! `launcher.rs` the tests of its input to the Larian launcher's window, `depth.rs` the tests of
+//! its place under the depth of the game's picture, and `projection.rs` the tests of its input in
+//! the projection picture.
 
 mod depth;
 mod launcher;
+mod projection;
 mod turn;
 
 use std::time::Duration;
@@ -15,7 +17,7 @@ use openxr::{Posef, Quaternionf, Vector2f, Vector3f};
 use xr::input::{ButtonState, HandInput, Input};
 use xr::quad::{self, ScreenQuad};
 
-use super::model::{Action, Model, PanelAim, Sent, Sight, Update, Window};
+use super::model::{Action, Model, PanelAim, Sent, Sight, Surface, Update, Window};
 use crate::screen::controls::{ControllerWatch, Frame};
 use crate::screen::geometry::Shares;
 
@@ -34,10 +36,10 @@ fn aiming(x: f32, y: f32) -> HandInput {
     HandInput { aim: Some(aim), ..HandInput::default() }
 }
 
-/// The screen with the menu closed.
+/// The screen with no depth and the menu closed.
 fn closed() -> Sight<'static> {
-    let screen = Some(screen());
-    Sight { menu: None, panel: PanelAim::Missed, screen, window: Window::Game, depth: None }
+    let surface = Some(Surface::Screen(screen(), None));
+    Sight { menu: None, panel: PanelAim::Missed, surface, window: Window::Game }
 }
 
 /// A hand that aims at the screen's center.
@@ -161,38 +163,9 @@ fn a_ray_that_meets_the_menu_s_panel_or_misses_the_screen_acts_on_nothing() {
     let pressed = HandInput { select: 1.0, ..centered() };
     assert_eq!(run.frame(HandInput::default(), pressed, on_panel).aimed, None);
     assert_eq!(run.right(beside()).aimed, None);
-    let hidden = Sight { screen: None, ..closed() };
+    let hidden = Sight { surface: None, ..closed() };
     assert_eq!(run.frame(HandInput::default(), centered(), hidden).aimed, None);
     assert!(run.sent.is_empty(), "{:?}", run.sent);
-}
-
-#[test]
-fn with_a_projection_layer_shown_no_mouse_or_turn_key_input_is_sent_and_no_laser_shows() {
-    // A frame that shows the projection layer closes the menu and gives the pointer no screen.
-    let projection = Sight { screen: None, ..closed() };
-    let mut run = Run::new();
-    let up = Vector2f { x: 0.0, y: 1.0 };
-    for right in [
-        centered(),
-        HandInput { select: 1.0, scroll: up, ..centered() },
-        HandInput { secondary: ButtonState::Pressed, ..centered() },
-        stick(0.8, centered()),
-        centered(),
-    ] {
-        assert_eq!(run.frame(HandInput::default(), right, projection).aimed, None, "no laser");
-    }
-    assert!(run.sent.is_empty(), "{:?}", run.sent);
-}
-
-#[test]
-fn the_left_button_held_on_the_screen_is_released_once_when_a_projection_layer_shows() {
-    let mut run = Run::new();
-    run.hold_left();
-    let projection = Sight { screen: None, ..closed() };
-    let held = HandInput { select: 1.0, ..centered() };
-    run.frame(HandInput::default(), held, projection);
-    run.frame(HandInput::default(), held, projection);
-    assert_eq!(run.count(Action::Release(Button::Left)), 1);
 }
 
 #[test]

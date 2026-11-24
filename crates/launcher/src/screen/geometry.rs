@@ -1,7 +1,8 @@
 //! The vector math of the headset screen in OpenXR's LOCAL space: rays from a hand's `aim` pose,
 //! the hit of a ray on a quad, the place where an eye's line through a point meets a quad's plane,
-//! the orientation of a quad from its axes, and the distance between the two eye views that the
-//! screen quad's parallel share and the immersive mode's head write take.
+//! the place of a point in an eye view's picture, the orientation of a quad from its axes, and the
+//! distance between the two eye views that the screen quad's parallel share and the immersive
+//! mode's head write take.
 //!
 //! The LOCAL space has Y up and -Z forward. A quad with the identity orientation is upright and
 //! faces +Z, and an `aim` pose points along its own -Z axis. Every orientation here is a unit
@@ -10,6 +11,7 @@
 use ipc_layout::viewer_header::pose::EYE_DISTANCE_M;
 use openxr::{Extent2Df, Posef, Quaternionf, Vector3f};
 use stereo_core::eye::PerEye;
+use xr::projection::EyeView;
 
 /// The shortest vector that gives a direction. A shorter one is float noise.
 const MIN_LENGTH: f32 = 1e-6;
@@ -198,6 +200,23 @@ pub(crate) fn place(point: Vector3f, pose: Posef, size: Extent2Df) -> Shares {
     Shares { x: local.x / size.width + 0.5, y: 0.5 - local.y / size.height }
 }
 
+/// The place of `point` in the picture of `view` as shares of the picture from its top left
+/// corner, below 0 or above 1 off the picture, or `None` when the point does not lie in front of
+/// the view.
+pub(crate) fn view_place(point: Vector3f, view: EyeView) -> Option<Shares> {
+    let local = rotate(inverse(view.pose.orientation), sub(point, view.pose.position));
+    let ahead = -local.z;
+    if ahead.is_nan() || ahead <= 0.0 {
+        return None;
+    }
+    let fov = view.fov;
+    let (left, right) = (fov.angle_left.tan(), fov.angle_right.tan());
+    let (up, down) = (fov.angle_up.tan(), fov.angle_down.tan());
+    let x = (local.x / ahead - left) / (right - left);
+    let y = (up - local.y / ahead) / (up - down);
+    Some(Shares { x, y })
+}
+
 #[cfg(test)]
 pub(crate) mod test_support;
 
@@ -206,8 +225,8 @@ mod tests {
     use openxr::{Extent2Df, Posef, Quaternionf};
     use stereo_core::eye::PerEye;
 
-    use super::test_support::{assert_near, ray_to, vector};
-    use super::{Ray, Shares, crossing, eye_distance_m, from_axes, hit, place, rotate};
+    use super::test_support::{assert_near, lens_views, ray_to, vector};
+    use super::{Ray, Shares, crossing, eye_distance_m, from_axes, hit, place, rotate, view_place};
 
     /// An upright quad 2 meters wide and 1 meter high at (0, 0, -1) that faces +Z.
     fn ahead() -> (Posef, Extent2Df) {
@@ -284,6 +303,40 @@ mod tests {
         assert!((off.x + 0.25).abs() < 1e-6 && (off.y - 0.5).abs() < 1e-6, "{off:?}");
         assert!(!off.inside());
         assert!(!Shares { x: f32::NAN, y: 0.5 }.inside(), "a place that is not a number");
+    }
+
+    /// Fails the test when `got` differs from `want` by 0.00001 or more.
+    fn assert_share(got: f32, want: f32, what: &str) {
+        assert!((got - want).abs() < 1e-5, "{what}: {got} is not near {want}");
+    }
+
+    #[test]
+    fn a_point_in_front_of_both_eye_views_has_its_place_and_its_disparity_in_their_pictures() {
+        let views = lens_views();
+        assert_share(views.left.fov.angle_up.tan(), 0.445_229, "tan(angle_up)");
+        assert_share(views.left.fov.angle_right.tan(), 0.791_518, "tan(angle_right)");
+        let places = |point| {
+            let place = |view| view_place(point, view).expect("a point in front of the view");
+            PerEye { left: place(views.left), right: place(views.right) }
+        };
+        let ahead = places(vector(0.0, 0.0, -5.0));
+        assert_share(ahead.left.x, 0.504_043, "the left place's x");
+        assert_share(ahead.right.x, 0.495_957, "the right place's x");
+        assert_share(ahead.left.y, 0.5, "the left place's y");
+        assert_share(ahead.right.y, 0.5, "the right place's y");
+        assert_share(ahead.right.x - ahead.left.x, -0.008_086, "the disparity");
+        let low = places(vector(1.0, -0.5, -4.0));
+        assert_share(low.left.x, 0.662_978, "the left place's x");
+        assert_share(low.left.y, 0.640_377, "the left place's y");
+        assert_share(low.right.x - low.left.x, -0.010_107, "the disparity");
+    }
+
+    #[test]
+    fn a_point_on_or_behind_an_eye_view_s_plane_or_not_a_number_has_no_place_in_its_picture() {
+        let view = lens_views().left;
+        assert_eq!(view_place(vector(0.0, 0.0, 5.0), view), None, "behind the view");
+        assert_eq!(view_place(vector(1.0, 0.0, 0.0), view), None, "on the view's plane");
+        assert_eq!(view_place(vector(f32::NAN, 0.0, -1.0), view), None, "not a number");
     }
 
     #[test]
