@@ -62,7 +62,7 @@ During play in a level, the launch app shows the game around the player. Turn th
 
 The keyboard and the mouse work as in the game. The picture keeps the game's own field of view, so it covers a part of the view. The title screen, loading pictures, videos, cutscenes and dialogue show on the flat screen of the headset screen. The controllers work around the player and on the flat screen as they do on the headset screen: the menu opens, the laser ends on what it points at, and the mouse pointer sits there. This mode is a first stage.
 
-In this mode the menu has a third row, View, below Distance and Size. Its value World shows the game around the player during play. Its value Screen shows every picture on the flat screen, such as for the game's own menus or a scene that reads better flat. Either button of the row changes the value to the other one. Each start begins with World, and the launch app does not keep the value.
+In this mode the menu has two more rows, View and Horizon, below Distance and Size. The value World of the row View shows the game around the player during play. Its value Screen shows every picture on the flat screen, such as for the game's own menus or a scene that reads better flat. The value Camera of the row Horizon tilts the world so that the game camera's view is straight ahead. Its value Level keeps the world's floor level, and the player looks down at the character. Either button of a row changes its value to the other one. Each start begins with World and Camera, and the launch app does not keep the values.
 
 ## Play in Bigscreen or another viewer app
 

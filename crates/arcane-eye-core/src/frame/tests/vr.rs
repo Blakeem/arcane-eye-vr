@@ -10,6 +10,7 @@ use game_bindings::game_client::StateId;
 use game_bindings::state::arm_alloc_guard;
 use ipc_layout::launch_token::Mode;
 use ipc_layout::viewer_header::STALE_AFTER;
+use ipc_layout::viewer_header::horizon_wish::HorizonWish;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose as XrPose};
 use ipc_layout::viewer_header::screen::ParallelShare;
 use ipc_layout::viewer_header::view_wish::ViewWish;
@@ -17,7 +18,9 @@ use settings::dev::{Horizon, VrFlags};
 use settings::player::StereoSettings;
 use stereo_core::eye::PerEye;
 use stereo_core::head::HeadPose;
-use viewer_client::header::{read_header, write_head_pose, write_screen, write_view_wish};
+use viewer_client::header::{
+    read_header, write_head_pose, write_horizon_wish, write_screen, write_view_wish,
+};
 
 use super::{call_times, log_lines, summaries, timed_frame};
 use crate::eye_camera::{Placement, ProxyFill};
@@ -28,7 +31,7 @@ use crate::ui_layer::depth_offset::{DepthOffset, OffsetFrom};
 use crate::ui_layer::test_support::idle_layer;
 use crate::view_camera::FrameCameras;
 use crate::viewer::ViewerLink;
-use crate::vr_view::{GameRead, PoseSource, Rays, ViewKind, VrReport, VrView};
+use crate::vr_view::{GameRead, HorizonFrom, PoseSource, Rays, ViewKind, VrReport, VrView};
 
 /// The main view camera of the tagged frames.
 const CAMERA: Camera = Camera {
@@ -256,21 +259,59 @@ fn a_header_pose_no_longer_places_the_eyes_once_the_viewer_stops_beating() {
 }
 
 #[test]
-fn the_vr_view_line_holds_the_view_kind_pose_source_sequence_turn_eye_distance_and_horizon() {
-    let report = VrReport {
+fn the_horizon_wish_the_viewer_wrote_builds_the_world_frames_anchor_while_it_beats() {
+    let test = TestSwapchain::new(320, 200);
+    let (mut state, _viewer) = viewed_vr_state("vr-horizon-wish", &test);
+    let stereo = StereoSettings::default();
+    let names = test_view_names("vr-horizon-wish");
+    let mut slot = None;
+    let (view, _header) = read_header(&mut slot, &names.mapping).expect("the header");
+    write_horizon_wish(view, HorizonWish::Camera).expect("write the wish");
+    let now = Instant::now();
+    let horizon = |placement: Placement| match placement {
+        Placement::Pose { horizon, .. } => Some(horizon),
+        Placement::Head { .. } => None,
+    };
+    let wished = state.hand_placement(stereo, Rays::Rewritten, PLAY, now);
+    assert_eq!(horizon(wished), Some(Horizon::Camera), "the wish camera over the flag level");
+    let stalled_at = now
+        .checked_add(STALE_AFTER)
+        .and_then(|limit| limit.checked_add(Duration::from_millis(100)))
+        .expect("a test time past the heartbeat's limit");
+    let stalled = state.hand_placement(stereo, Rays::Rewritten, PLAY, stalled_at);
+    assert_eq!(horizon(stalled), Some(Horizon::Level), "the flag once the viewer stopped beating");
+    let report = state.vr.report().expect("a vr view report");
+    assert_eq!((report.horizon, report.horizon_from), (Horizon::Level, HorizonFrom::Flag));
+    let header = read_header(&mut slot, &names.mapping).expect("the header").1;
+    assert_eq!(header.horizon_wish(), None, "the stopped viewer's wish was reset");
+}
+
+/// The `vr view` line's values of a world frame with a header pose and the horizon in use
+/// `horizon` from `horizon_from`.
+const fn line_report(horizon: Horizon, horizon_from: HorizonFrom) -> VrReport {
+    VrReport {
         view: ViewKind::World,
         source: PoseSource::Header,
         head_sequence: 8,
         yaw_deg: 20.0,
         pitch_deg: -5.5,
         eye_m: 0.064,
-        horizon: Horizon::Camera,
-    };
-    let lines = log_lines("vr-view-line", || log_vr(report));
-    let [line] = lines.as_slice() else { panic!("one vr view line: {lines:#?}") };
+        horizon,
+        horizon_from,
+    }
+}
+
+#[test]
+fn the_vr_view_line_holds_the_view_kind_pose_source_sequence_turn_eye_distance_and_horizon() {
+    let lines = log_lines("vr-view-line", || {
+        log_vr(line_report(Horizon::Camera, HorizonFrom::Wish));
+        log_vr(line_report(Horizon::Level, HorizonFrom::Flag));
+    });
+    let [wished, flagged] = lines.as_slice() else { panic!("two vr view lines: {lines:#?}") };
     let fields = " arcane_eye_core::frame msg=\"vr view\" view=world pose=header head_sequence=8 \
-                  yaw_deg=20.0 pitch_deg=-5.5 eye_m=0.064 horizon=camera";
-    assert!(line.ends_with(fields), "{line}");
+                  yaw_deg=20.0 pitch_deg=-5.5 eye_m=0.064 horizon=";
+    assert!(wished.ends_with(&format!("{fields}camera horizon_from=wish")), "{wished}");
+    assert!(flagged.ends_with(&format!("{fields}level horizon_from=flag")), "{flagged}");
 }
 
 #[test]
@@ -289,7 +330,7 @@ fn a_perf_window_logs_one_vr_view_line_before_the_summary_only_in_the_mode_vr() 
         assert_eq!(summaries(&lines).len(), 1, "{mode:?}");
         if let [line] = vr.as_slice() {
             let fields = " msg=\"vr view\" view=world pose=none head_sequence=0 yaw_deg=0.0 \
-                          pitch_deg=0.0 eye_m=0.065 horizon=level";
+                          pitch_deg=0.0 eye_m=0.065 horizon=level horizon_from=flag";
             assert!(line.ends_with(fields), "{line}");
             let position = |text: &str| lines.iter().position(|entry| entry.contains(text));
             assert!(position("\"vr view\"") < position("\"perf summary\""), "{lines:#?}");

@@ -1,26 +1,53 @@
-//! The publisher's view wish decision: the wish in use after each read of the header.
+//! The publisher's wish decision: the view wish and the horizon wish in use after each read of the
+//! header.
 //!
-//! A viewer that stopped leaves its last wish in the header. A read that finds no viewer running
-//! sets a wish `Screen` back to `World`, so a later viewer's heartbeat never takes it up.
+//! A viewer that stopped leaves its last wishes in the header. A read that finds no viewer running
+//! sets a view wish `Screen` back to `World` and a horizon wish back to no wish, so a later
+//! viewer's heartbeat never takes either up.
 
-use ipc_layout::viewer_header::ViewerHeader;
+use ipc_layout::viewer_header::horizon_wish::{HorizonWish, NO_WISH_WORD};
 use ipc_layout::viewer_header::view_wish::ViewWish;
+use ipc_layout::viewer_header::{HORIZON_WISH_OFFSET, VIEW_WISH_OFFSET, ViewerHeader};
 
-/// What a read of the view wish gives.
+/// The wishes in use, both from one read of the header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum AfterRead {
-    /// The wish in use, with the header left as it is.
-    Use(ViewWish),
-    /// The wish in use is `World`, and the header's wish `Screen` is set to `World`.
-    Reset,
+pub struct Wishes {
+    pub view: ViewWish,
+    /// The horizon wish, or `None` for no wish, which leaves the core's own horizon in use.
+    pub horizon: Option<HorizonWish>,
+}
+
+impl Default for Wishes {
+    /// The wishes in use while no viewer runs: the view wish `World` and no horizon wish.
+    fn default() -> Self {
+        Self { view: ViewWish::World, horizon: None }
+    }
+}
+
+/// What a read of the wishes gives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct AfterRead {
+    pub(super) wishes: Wishes,
+    /// The header words a read with no viewer running sets back, as byte offset and word: the view
+    /// wish `Screen` to `World` and a horizon wish to no wish.
+    pub(super) resets: [Option<(usize, u32)>; 2],
 }
 
 /// What a read gives that found `header` and whether the viewer runs, or `None` for a header of
 /// another layout.
 pub(super) fn after_read(read: Option<(ViewerHeader, bool)>) -> AfterRead {
-    match read {
-        Some((header, true)) => AfterRead::Use(header.view_wish()),
-        Some((header, false)) if header.view_wish() == ViewWish::Screen => AfterRead::Reset,
-        Some((_, false)) | None => AfterRead::Use(ViewWish::World),
-    }
+    let (wishes, resets) = match read {
+        Some((header, true)) => {
+            let wishes = Wishes { view: header.view_wish(), horizon: header.horizon_wish() };
+            (wishes, [None, None])
+        }
+        Some((header, false)) => {
+            let view = (header.view_wish() == ViewWish::Screen)
+                .then_some((VIEW_WISH_OFFSET, ViewWish::World.to_word()));
+            let horizon = header.horizon_wish().map(|_wish| (HORIZON_WISH_OFFSET, NO_WISH_WORD));
+            (Wishes::default(), [view, horizon])
+        }
+        None => (Wishes::default(), [None, None]),
+    };
+    AfterRead { wishes, resets }
 }

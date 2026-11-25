@@ -1,9 +1,10 @@
 //! The screen menu: a panel fixed to one controller whose buttons set the screen's distance and
-//! width, and in the view Immersive the view wish, and the laser of the other controller that
-//! points at them. The view wish is not saved, so each start begins with the wish `World`. The
-//! caller replaces the laser of [`Shown`] with the laser of the game's pointer while that pointer's
-//! ray meets the game's picture on the screen quad or in the projection picture, or the launcher's
-//! picture. The menu works in every frame of both views.
+//! width, and in the view Immersive the view wish and the horizon wish, and the laser of the other
+//! controller that points at them. The wishes are not saved, so each start begins with the view
+//! wish `World` and the horizon wish `Camera`. The caller replaces the laser of [`Shown`] with the
+//! laser of the game's pointer while that pointer's ray meets the game's picture on the screen quad
+//! or in the projection picture, or the launcher's picture. The menu works in every frame of both
+//! views.
 //!
 //! `model.rs` decides what the menu does in each frame, `rows.rs` holds its rows and their steps,
 //! `place.rs` places its two quads and `save.rs` decides when the player file is written. This
@@ -24,7 +25,6 @@ use device_profile::profile::Hand;
 use diag::error_chain;
 use gfx::canvas::CanvasError;
 use gfx::region::RegionError;
-use ipc_layout::viewer_header::view_wish::ViewWish;
 use openxr::{Extent2Df, Posef};
 use overlay::layout::{PANEL_HEIGHT, PANEL_WIDTH};
 use overlay::menu::TooManyRows;
@@ -41,6 +41,7 @@ use self::model::{Event, Model};
 use self::place::PANEL_SIZE;
 pub(crate) use self::place::{Laser, laser};
 use self::rows::Values;
+pub(crate) use self::rows::Wishes;
 pub(crate) use self::save::PlayerFile;
 use self::save::{Saver, Saving};
 use super::View;
@@ -91,7 +92,8 @@ pub(crate) struct ScreenMenu {
 impl ScreenMenu {
     /// A closed menu of the session's view `view` over `screen`, the values that the player file in
     /// the root folder `root` gave at the start, or the defaults when `file` says it gave none. The
-    /// menu of the view `Immersive` has the row View, which starts at the wish `World`.
+    /// menu of the view `Immersive` has the row View and the row Horizon, which start at
+    /// [`Wishes::default`].
     pub(crate) fn new(screen: ScreenSettings, view: View, file: PlayerFile, root: &Path) -> Self {
         let drawing = match Painter::new() {
             Ok(painter) => Some(Drawing::new(painter)),
@@ -101,11 +103,11 @@ impl ScreenMenu {
             }
         };
         let saver = Saver::new(screen, file);
-        let wish = match view {
+        let wishes = match view {
             View::Screen => None,
-            View::Immersive => Some(ViewWish::World),
+            View::Immersive => Some(Wishes::default()),
         };
-        let model = Model::new(Values { screen, wish });
+        let model = Model::new(Values { screen, wishes });
         Self { model, saver, root: root.into(), drawing }
     }
 
@@ -114,9 +116,9 @@ impl ScreenMenu {
         self.model.screen()
     }
 
-    /// The view wish the row View shows, or `None` for a menu with no such row.
-    pub(crate) const fn wish(&self) -> Option<ViewWish> {
-        self.model.values().wish
+    /// The wishes the rows View and Horizon show, or `None` for a menu with neither row.
+    pub(crate) const fn wishes(&self) -> Option<Wishes> {
+        self.model.values().wishes
     }
 
     /// The hand the open menu is on, or `None` while the menu is closed or gone.
@@ -232,6 +234,7 @@ fn log(event: Event) {
             info!(distance_m, width_m, "screen menu step");
         }
         Event::Viewed(wish) => info!(view = wish.as_str(), "screen menu view"),
+        Event::Horizon(wish) => info!(horizon = wish.as_str(), "screen menu horizon"),
     }
 }
 

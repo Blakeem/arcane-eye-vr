@@ -1,7 +1,9 @@
 //! The header view against a mapping this test creates in the core's place.
 
+use ipc_layout::viewer_header::horizon_wish::HorizonWish;
 use ipc_layout::viewer_header::pose::{HeadPose, HeadRead, HeadSample};
 use ipc_layout::viewer_header::screen::{ParallelShare, ScreenRead};
+use ipc_layout::viewer_header::view_wish::ViewWish;
 use ipc_layout::viewer_header::{self, HeaderError, TextureInfo, ViewerHeader};
 use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
 use windows::Win32::System::Memory::{CreateFileMappingW, PAGE_READONLY};
@@ -9,7 +11,7 @@ use windows::core::HSTRING;
 
 use super::fixture::{CoreMapping, LAYOUT_VERSION_OFFSET, test_name};
 use super::{HeaderView, HeaderViewError};
-use crate::header::{write_head_pose, write_screen};
+use crate::header::{write_head_pose, write_horizon_wish, write_screen, write_view_wish};
 
 #[test]
 fn header_view_reads_the_core_header_and_writes_only_the_heartbeat() {
@@ -84,6 +86,20 @@ fn a_screen_write_into_another_layout_version_fails_and_writes_nothing() {
     assert_eq!(written, Err(HeaderError::LayoutVersion { found: 3 }));
     let words = view.read_words();
     assert_eq!(words.get(32..34), Some([0; 2].as_slice()), "a screen word was written");
+}
+
+#[test]
+fn a_wish_write_into_another_layout_version_fails_and_writes_nothing() {
+    let header = ViewerHeader::new(TextureInfo::default(), 1, 1, 1);
+    let core = CoreMapping::create("wish-layout", &header).expect("the core's mapping");
+    core.write_word(LAYOUT_VERSION_OFFSET, 4).expect("write the layout version");
+    let view = HeaderView::open(&core.name).expect("open the header").expect("the header exists");
+    let refused = Err(HeaderError::LayoutVersion { found: 4 });
+    assert_eq!(write_view_wish(&view, ViewWish::Screen), refused, "the view wish write");
+    assert_eq!(write_horizon_wish(&view, HorizonWish::Camera), refused, "the horizon wish write");
+    let words = view.read_words();
+    assert_eq!(words.get(31), Some(&0), "the view wish word at byte 124 was written");
+    assert_eq!(words.get(34), Some(&0), "the horizon wish word at byte 136 was written");
 }
 
 #[test]

@@ -1,5 +1,5 @@
 //! The screen menu across frames of controller input and its writes of the player file. `pixels.rs`
-//! holds the draw of its pixels into a panel image and `view.rs` the row View.
+//! holds the draw of its pixels into a panel image and `view.rs` the rows View and Horizon.
 
 mod pixels;
 mod view;
@@ -41,7 +41,7 @@ pub(super) fn screen(distance_m: f32, width_m: f32) -> ScreenSettings {
 
 /// The values of a menu with no row View over the screen values `distance_m` and `width_m`.
 pub(super) fn values(distance_m: f32, width_m: f32) -> Values {
-    Values { screen: screen(distance_m, width_m), wish: None }
+    Values { screen: screen(distance_m, width_m), wishes: None }
 }
 
 /// The left grip of a thumb-up hand, which puts the panel upright at (0, 0, -0.5) facing +Z.
@@ -72,7 +72,7 @@ struct Hands {
 impl Run {
     /// A run of a menu with no row View over the screen values `screen`.
     fn new(screen: ScreenSettings) -> Self {
-        Self::of(Values { screen, wish: None })
+        Self::of(Values { screen, wishes: None })
     }
 
     fn of(values: Values) -> Self {
@@ -126,7 +126,7 @@ fn controls(watch: &mut ControllerWatch, hands: Hands) -> Frame {
 /// The right aim position in front of the center of the `button` of the distance row of a menu with
 /// no row View over the screen values `screen`, so that its ray along -Z meets the panel there.
 fn aim_at(screen: ScreenSettings, button: Button) -> Vector3f {
-    aim_at_row(Values { screen, wish: None }, 0, button)
+    aim_at_row(Values { screen, wishes: None }, 0, button)
 }
 
 /// The right aim position in front of the center of the `button` of the row `row` from the top of
@@ -256,7 +256,7 @@ fn the_laser_ends_on_the_panel_and_the_point_lies_over_the_button() {
     assert!((laser.size.height - 0.5).abs() < 1e-5, "from z 0 to the panel at z -0.5");
     let point = shown.panel.and_then(|panel| panel.point).expect("a point on the panel");
     let laid =
-        layout::layout(&rows::menu(Values { screen: values, wish: None }).expect("two rows"));
+        layout::layout(&rows::menu(Values { screen: values, wishes: None }).expect("two rows"));
     let hit = layout::hit(&laid, point).expect("a button");
     assert_eq!((hit.row, hit.button), (0, Button::Plus));
 }

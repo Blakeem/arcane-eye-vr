@@ -1,5 +1,5 @@
 //! The game's side of the headset session: the viewer link's header with the head pose write, the
-//! screen write and the view wish write, the shared texture opened at its generation, and the
+//! screen write and the wishes write, the shared texture opened at its generation, and the
 //! private copy of the newest published frame that the eye draws read, with the frame's tag.
 //!
 //! The copy holds the keyed mutex for one copy of the entire frame and the read of the frame's tag,
@@ -11,6 +11,7 @@ use std::time::Duration;
 use diag::rate::RateLimit;
 use diag::warn_every;
 use gfx::region::{RegionDraw, RegionError};
+use ipc_layout::viewer_header::horizon_wish::HorizonWish;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose};
 use ipc_layout::viewer_header::screen::ParallelShare;
 use ipc_layout::viewer_header::view_wish::ViewWish;
@@ -18,7 +19,8 @@ use ipc_layout::viewer_header::{AdapterLuid, TextureInfo};
 use tracing::info;
 use viewer_client::frame::PixelFormat;
 use viewer_client::header::{
-    HeaderReadError, Names, read_header, write_head_pose, write_screen, write_view_wish,
+    HeaderReadError, Names, read_header, write_head_pose, write_horizon_wish, write_screen,
+    write_view_wish,
 };
 use viewer_client::region::Region;
 use viewer_client::{Device, GpuError, HeaderView, SharedTexture};
@@ -123,7 +125,8 @@ impl Picture {
 }
 
 /// The session's view of the viewer link, which reads the frames and writes the head pose, the
-/// screen and the view wish. The heartbeat thread holds its own view of the header.
+/// screen, the view wish and the horizon wish. The heartbeat thread holds its own view of the
+/// header.
 pub(crate) struct Link {
     picture: Option<Picture>,
     header: Option<HeaderView>,
@@ -190,15 +193,20 @@ impl Link {
         Ok(())
     }
 
-    /// Writes `wish` as the view wish into the viewer header, and writes nothing while no core
-    /// created the header.
+    /// Writes `view_wish` as the view wish and `horizon_wish` as the horizon wish into the viewer
+    /// header, and writes nothing while no core created the header.
     ///
     /// # Errors
     ///
     /// Returns the [`HeaderReadError`] of a header that cannot be opened or holds another layout.
-    pub(crate) fn write_view_wish(&mut self, wish: ViewWish) -> Result<(), HeaderReadError> {
+    pub(crate) fn write_wishes(
+        &mut self,
+        view_wish: ViewWish,
+        horizon_wish: HorizonWish,
+    ) -> Result<(), HeaderReadError> {
         let Some(view) = self.header_view()? else { return Ok(()) };
-        write_view_wish(view, wish)?;
+        write_view_wish(view, view_wish)?;
+        write_horizon_wish(view, horizon_wish)?;
         Ok(())
     }
 

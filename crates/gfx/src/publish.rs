@@ -5,12 +5,12 @@
 //! every frame it handles, so the present number of each published frame shows the frames it did
 //! not publish. It writes each published frame's tag beside the present number.
 //! [`Publisher::head_pose`] reads the head pose, [`Publisher::parallel_share`] the screen's
-//! parallel share and [`Publisher::view_wish`] the view wish that the viewer writes, and
-//! [`Publisher::next_present`] gives the next frame's present number, while the same heartbeat rule
-//! finds the viewer running. With no viewer, each of these four calls and [`Publisher::on_frame`]
-//! costs one read of the header. The acquire step's decision is in `publish/acquire.rs`, the
-//! heartbeat's in `publish/heartbeat.rs`, the head pose's in `publish/head.rs`, the share's in
-//! `publish/screen.rs` and the view wish's in `publish/wish.rs`.
+//! parallel share and [`Publisher::wishes`] the view wish and the horizon wish that the viewer
+//! writes, and [`Publisher::next_present`] gives the next frame's present number, while the same
+//! heartbeat rule finds the viewer running. With no viewer, each of these four calls and
+//! [`Publisher::on_frame`] costs one read of the header. The acquire step's decision is in
+//! `publish/acquire.rs`, the heartbeat's in `publish/heartbeat.rs`, the head pose's in
+//! `publish/head.rs`, the share's in `publish/screen.rs` and the wishes' in `publish/wish.rs`.
 
 mod acquire;
 mod head;
@@ -23,11 +23,9 @@ use std::time::Instant;
 
 use ipc_layout::viewer_header::pose::{FrameTag, HeadSample};
 use ipc_layout::viewer_header::screen::ParallelShare;
-use ipc_layout::viewer_header::view_wish::ViewWish;
 use ipc_layout::viewer_header::{
     self, Acquire, EyeRect, FRAME_OFFSET, FRAME_TAG_OFFSETS, PRESENT_OFFSET,
-    SCREEN_SEQUENCE_OFFSET, STALE_AFTER, TextureInfo, VIEW_WISH_OFFSET, ViewerHeader, WIDTH_OFFSET,
-    depth_map,
+    SCREEN_SEQUENCE_OFFSET, STALE_AFTER, TextureInfo, ViewerHeader, WIDTH_OFFSET, depth_map,
 };
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D};
 use windows::core::{HRESULT, HSTRING};
@@ -36,6 +34,7 @@ use self::acquire::{AfterAcquire, after_acquire};
 use self::head::KeptHead;
 use self::heartbeat::Heartbeat;
 use self::screen::KeptShare;
+pub use self::wish::Wishes;
 use self::wish::{AfterRead, after_read};
 use crate::raw::{self, HeaderView, SharedTexture, SourceKey};
 
@@ -290,16 +289,13 @@ impl Publisher {
         self.screen.after(&reads)
     }
 
-    /// The view wish the viewer wrote last, read at `now`, or `World` while no viewer runs or the
-    /// header holds another layout. A read with no viewer running sets a wish `Screen` to `World`.
-    pub fn view_wish(&mut self, now: Instant) -> ViewWish {
-        match after_read(self.read_once(now)) {
-            AfterRead::Use(wish) => wish,
-            AfterRead::Reset => {
-                self.header.write_words([(VIEW_WISH_OFFSET, ViewWish::World.to_word())]);
-                ViewWish::World
-            }
-        }
+    /// The view wish and the horizon wish the viewer wrote last, both from one read at `now`, or
+    /// [`Wishes::default`] while no viewer runs or the header holds another layout. A read with no
+    /// viewer running sets a view wish `Screen` to `World` and a horizon wish to no wish.
+    pub fn wishes(&mut self, now: Instant) -> Wishes {
+        let AfterRead { wishes, resets } = after_read(self.read_once(now));
+        self.header.write_words(resets.into_iter().flatten());
+        wishes
     }
 
     /// The header read at `now`, and read again right after while the viewer runs. A slot's

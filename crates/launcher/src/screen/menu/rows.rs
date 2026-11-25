@@ -1,7 +1,9 @@
 //! The rows of the screen menu: the screen's distance and its width, each with its value and a
 //! minus and a plus button that step it by [`STEP_M`] within the range of the player file, and in a
-//! menu with a view wish the row View below them, whose two buttons each switch the wish.
+//! menu with wishes the row View and the row Horizon below them, whose two buttons each switch the
+//! row's wish.
 
+use ipc_layout::viewer_header::horizon_wish::HorizonWish;
 use ipc_layout::viewer_header::view_wish::ViewWish;
 use overlay::menu::{Button, ButtonState, Menu, Row, TooManyRows};
 use settings::player::{ScreenDistanceM, ScreenSettings, ScreenWidthM};
@@ -19,8 +21,25 @@ const TITLE: &str = "Screen";
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Values {
     pub(crate) screen: ScreenSettings,
-    /// The view wish of the row View, or `None` for a menu with no such row.
-    pub(crate) wish: Option<ViewWish>,
+    /// The wishes of the rows View and Horizon, or `None` for a menu with neither row.
+    pub(crate) wishes: Option<Wishes>,
+}
+
+/// The wishes the menu writes into the viewer link, one per row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Wishes {
+    /// The view wish of the row View.
+    pub(crate) view: ViewWish,
+    /// The horizon wish of the row Horizon.
+    pub(crate) horizon: HorizonWish,
+}
+
+impl Default for Wishes {
+    /// The wishes of each start, which the menu does not save: the view wish `World` and the
+    /// horizon wish `Camera`.
+    fn default() -> Self {
+        Self { view: ViewWish::World, horizon: HorizonWish::Camera }
+    }
 }
 
 /// A screen value the menu sets, one per row.
@@ -40,13 +59,18 @@ pub(crate) enum Line {
     Setting(Setting),
     /// The row View, which shows the view wish.
     View(ViewWish),
+    /// The row Horizon, which shows the horizon wish.
+    Horizon(HorizonWish),
 }
 
 impl Line {
-    /// The rows of a menu over `values` from the top: the screen settings, then the row View while
-    /// `values` holds a view wish.
+    /// The rows of a menu over `values` from the top: the screen settings, then the row View and
+    /// the row Horizon while `values` holds wishes.
     fn all(values: Values) -> impl Iterator<Item = Self> {
-        SETTING_ROWS.into_iter().map(Self::Setting).chain(values.wish.map(Self::View))
+        let wishes = values.wishes.into_iter();
+        let wish_rows =
+            wishes.flat_map(|wish| [Self::View(wish.view), Self::Horizon(wish.horizon)]);
+        SETTING_ROWS.into_iter().map(Self::Setting).chain(wish_rows)
     }
 
     /// The row `row` from the top of a menu over `values`, or `None` for a row the menu lacks.
@@ -108,6 +132,15 @@ pub(crate) const fn switched(wish: ViewWish) -> ViewWish {
     }
 }
 
+/// The horizon wish after a press of either button of the row Horizon that shows `wish`: the other
+/// one.
+pub(crate) const fn switched_horizon(wish: HorizonWish) -> HorizonWish {
+    match wish {
+        HorizonWish::Level => HorizonWish::Camera,
+        HorizonWish::Camera => HorizonWish::Level,
+    }
+}
+
 /// The menu that shows `values`, with a button of a screen setting disabled when its step would
 /// leave the range.
 ///
@@ -123,14 +156,20 @@ pub(crate) fn menu(values: Values) -> Result<Menu, TooManyRows> {
             minus: state(stepped(screen, setting, Button::Minus)),
             plus: state(stepped(screen, setting, Button::Plus)),
         },
-        Line::View(wish) => Row {
-            label: "View".to_owned(),
-            value: view_text(wish).to_owned(),
-            minus: ButtonState::Enabled,
-            plus: ButtonState::Enabled,
-        },
+        Line::View(wish) => switch_row("View", view_text(wish)),
+        Line::Horizon(wish) => switch_row("Horizon", horizon_text(wish)),
     });
     Menu::new(TITLE.to_owned(), rows.collect())
+}
+
+/// A row labeled `label` that shows `value` and whose two buttons each switch it.
+fn switch_row(label: &str, value: &str) -> Row {
+    Row {
+        label: label.to_owned(),
+        value: value.to_owned(),
+        minus: ButtonState::Enabled,
+        plus: ButtonState::Enabled,
+    }
 }
 
 /// `meters` with one decimal place and the unit, such as "2.5 m", or with two for a value such as
@@ -149,6 +188,13 @@ const fn view_text(wish: ViewWish) -> &'static str {
     }
 }
 
+const fn horizon_text(wish: HorizonWish) -> &'static str {
+    match wish {
+        HorizonWish::Level => "Level",
+        HorizonWish::Camera => "Camera",
+    }
+}
+
 const fn state(step: Option<ScreenSettings>) -> ButtonState {
     match step {
         Some(_) => ButtonState::Enabled,
@@ -158,10 +204,11 @@ const fn state(step: Option<ScreenSettings>) -> ButtonState {
 
 #[cfg(test)]
 mod tests {
+    use ipc_layout::viewer_header::horizon_wish::HorizonWish;
     use ipc_layout::viewer_header::view_wish::ViewWish;
     use overlay::menu::{Button, ButtonState};
 
-    use super::{Line, Setting, Values, menu, stepped, switched};
+    use super::{Line, Setting, Values, Wishes, menu, stepped, switched, switched_horizon};
     use crate::screen::menu::tests::{screen, values};
 
     #[test]
@@ -174,12 +221,23 @@ mod tests {
     }
 
     #[test]
-    fn a_menu_with_a_view_wish_shows_the_row_view_below_the_screen_rows() {
-        for (wish, text) in [(ViewWish::World, "World"), (ViewWish::Screen, "Screen")] {
-            let shown = menu(Values { wish: Some(wish), ..values(2.5, 3.0) }).expect("three rows");
-            let [_, _, view] = shown.rows() else { panic!("three rows: {shown:?}") };
-            assert_eq!((view.label.as_str(), view.value.as_str()), ("View", text));
-            assert_eq!((view.minus, view.plus), (ButtonState::Enabled, ButtonState::Enabled));
+    fn a_menu_with_wishes_shows_the_row_view_then_the_row_horizon_below_the_screen_rows() {
+        let cases = [
+            (ViewWish::World, HorizonWish::Camera, "World", "Camera"),
+            (ViewWish::Screen, HorizonWish::Level, "Screen", "Level"),
+        ];
+        for (view, horizon, view_shown, horizon_shown) in cases {
+            let wishes = Some(Wishes { view, horizon });
+            let shown = menu(Values { wishes, ..values(2.5, 3.0) }).expect("four rows");
+            let [_, _, view_row, horizon_row] = shown.rows() else {
+                panic!("four rows: {shown:?}")
+            };
+            assert_eq!((view_row.label.as_str(), view_row.value.as_str()), ("View", view_shown));
+            let horizon_texts = (horizon_row.label.as_str(), horizon_row.value.as_str());
+            assert_eq!(horizon_texts, ("Horizon", horizon_shown));
+            for row in [view_row, horizon_row] {
+                assert_eq!((row.minus, row.plus), (ButtonState::Enabled, ButtonState::Enabled));
+            }
         }
     }
 
@@ -189,7 +247,7 @@ mod tests {
         let values_shown: Vec<&str> = shown.rows().iter().map(|row| row.value.as_str()).collect();
         assert_eq!(values_shown, ["2.55 m", "10.0 m"]);
         let farther = stepped(screen(2.55, 3.0), Setting::Distance, Button::Plus);
-        let after = Values { screen: farther.expect("in range"), wish: None };
+        let after = Values { screen: farther.expect("in range"), wishes: None };
         let after = menu(after).expect("two rows");
         assert_eq!(after.rows().first().map(|row| row.value.as_str()), Some("2.65 m"));
     }
@@ -214,9 +272,17 @@ mod tests {
     }
 
     #[test]
-    fn a_switch_gives_the_other_view_wish() {
+    fn a_switch_gives_the_other_wish() {
         assert_eq!(switched(ViewWish::World), ViewWish::Screen);
         assert_eq!(switched(ViewWish::Screen), ViewWish::World);
+        assert_eq!(switched_horizon(HorizonWish::Camera), HorizonWish::Level);
+        assert_eq!(switched_horizon(HorizonWish::Level), HorizonWish::Camera);
+    }
+
+    #[test]
+    fn each_start_begins_with_the_view_wish_world_and_the_horizon_wish_camera() {
+        let start = Wishes::default();
+        assert_eq!((start.view, start.horizon), (ViewWish::World, HorizonWish::Camera));
     }
 
     #[test]
@@ -225,8 +291,10 @@ mod tests {
         assert_eq!(Line::of_row(0, no_view), Some(Line::Setting(Setting::Distance)));
         assert_eq!(Line::of_row(1, no_view), Some(Line::Setting(Setting::Size)));
         assert_eq!(Line::of_row(2, no_view), None);
-        let view = Values { wish: Some(ViewWish::Screen), ..no_view };
+        let wishes = Some(Wishes { view: ViewWish::Screen, horizon: HorizonWish::Level });
+        let view = Values { wishes, ..no_view };
         assert_eq!(Line::of_row(2, view), Some(Line::View(ViewWish::Screen)));
-        assert_eq!(Line::of_row(3, view), None);
+        assert_eq!(Line::of_row(3, view), Some(Line::Horizon(HorizonWish::Level)));
+        assert_eq!(Line::of_row(4, view), None);
     }
 }

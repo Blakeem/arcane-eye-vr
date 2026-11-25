@@ -1,16 +1,17 @@
 //! The publisher's pure decisions: the step after a keyed mutex acquire, the heartbeat, the head
-//! pose in use, the parallel share in use and the view wish in use.
+//! pose in use, the parallel share in use and the wishes in use.
 
 use super::{
     AfterAcquire, AfterRead, Heartbeat, KeptHead, KeptShare, PublishError, Reads, STALE_AFTER,
-    Step, after_acquire, after_read,
+    Step, Wishes, after_acquire, after_read,
 };
+use ipc_layout::viewer_header::horizon_wish::HorizonWish;
 use ipc_layout::viewer_header::pose::{HeadPose, HeadSample, HeadSlot};
 use ipc_layout::viewer_header::screen::{ParallelShare, ScreenSlot};
 use ipc_layout::viewer_header::view_wish::ViewWish;
 use ipc_layout::viewer_header::{
-    Acquire, HEAD_SEQUENCE_OFFSET, PARALLEL_SHARE_OFFSET, SCREEN_SEQUENCE_OFFSET, TextureInfo,
-    VIEW_WISH_OFFSET, ViewerHeader, WORD_SIZE,
+    Acquire, HEAD_SEQUENCE_OFFSET, HORIZON_WISH_OFFSET, PARALLEL_SHARE_OFFSET,
+    SCREEN_SEQUENCE_OFFSET, TextureInfo, VIEW_WISH_OFFSET, ViewerHeader, WORD_SIZE,
 };
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::E_FAIL;
@@ -140,15 +141,50 @@ fn a_write_counts_unless_the_slot_held_its_number_while_no_viewer_ran() {
     assert_eq!(screen.next(slot(4, 0.0065), 4), Some(share(0.0065)), "its write ended");
 }
 
+/// What a read gives with no write: the view wish `view` and the horizon wish `horizon`.
+const fn use_only(view: ViewWish, horizon: Option<HorizonWish>) -> AfterRead {
+    AfterRead { wishes: Wishes { view, horizon }, resets: [None, None] }
+}
+
+/// The view wish word 0 and the horizon wish word 0, which a header the core made holds.
+const UNWRITTEN: AfterRead = use_only(ViewWish::World, None);
+
 #[test]
-fn a_running_viewer_gives_its_wish_and_a_screen_a_stopped_viewer_left_resets_to_world() {
+fn a_running_viewer_gives_its_view_wish_and_a_screen_a_stopped_viewer_left_resets_to_world() {
     let wish = |word| header([(VIEW_WISH_OFFSET, word)]);
-    let use_world = AfterRead::Use(ViewWish::World);
-    assert_eq!(after_read(Some((wish(1), true))), AfterRead::Use(ViewWish::Screen));
-    assert_eq!(after_read(Some((wish(0), true))), use_world);
-    assert_eq!(after_read(Some((wish(7), true))), use_world, "a word other than 1");
-    assert_eq!(after_read(Some((wish(1), false))), AfterRead::Reset, "a stopped viewer's Screen");
-    assert_eq!(after_read(Some((wish(0), false))), use_world, "World needs no write");
-    assert_eq!(after_read(Some((wish(7), false))), use_world, "a word that reads as World");
-    assert_eq!(after_read(None), use_world, "a header of another layout");
+    let screen = use_only(ViewWish::Screen, None);
+    assert_eq!(after_read(Some((wish(1), true))), screen);
+    assert_eq!(after_read(Some((wish(0), true))), UNWRITTEN);
+    assert_eq!(after_read(Some((wish(7), true))), UNWRITTEN, "a word other than 1");
+    let reset = AfterRead { resets: [Some((124, 0)), None], ..UNWRITTEN };
+    assert_eq!(after_read(Some((wish(1), false))), reset, "a stopped viewer's Screen");
+    assert_eq!(after_read(Some((wish(0), false))), UNWRITTEN, "World needs no write");
+    assert_eq!(after_read(Some((wish(7), false))), UNWRITTEN, "a word that reads as World");
+    assert_eq!(after_read(None), UNWRITTEN, "a header of another layout");
+}
+
+#[test]
+fn a_running_viewer_gives_its_horizon_wish_and_a_stopped_viewer_left_resets_to_no_wish() {
+    let wish = |word| header([(HORIZON_WISH_OFFSET, word)]);
+    let level = use_only(ViewWish::World, Some(HorizonWish::Level));
+    assert_eq!(after_read(Some((wish(1), true))), level, "the word 1");
+    let camera = use_only(ViewWish::World, Some(HorizonWish::Camera));
+    assert_eq!(after_read(Some((wish(2), true))), camera, "the word 2");
+    assert_eq!(after_read(Some((wish(0), true))), UNWRITTEN, "the word 0");
+    assert_eq!(after_read(Some((wish(7), true))), UNWRITTEN, "a word that holds no wish");
+    let reset = AfterRead { resets: [None, Some((136, 0))], ..UNWRITTEN };
+    for word in [1, 2] {
+        assert_eq!(after_read(Some((wish(word), false))), reset, "a stopped viewer's {word}");
+    }
+    assert_eq!(after_read(Some((wish(0), false))), UNWRITTEN, "no wish needs no write");
+    assert_eq!(after_read(Some((wish(7), false))), UNWRITTEN, "a word that holds no wish");
+}
+
+#[test]
+fn both_wishes_come_from_one_read_and_a_stopped_viewer_left_resets_both() {
+    let both = header([(VIEW_WISH_OFFSET, 1), (HORIZON_WISH_OFFSET, 1)]);
+    let running = use_only(ViewWish::Screen, Some(HorizonWish::Level));
+    assert_eq!(after_read(Some((both, true))), running);
+    let reset = AfterRead { resets: [Some((124, 0)), Some((136, 0))], ..UNWRITTEN };
+    assert_eq!(after_read(Some((both, false))), reset);
 }

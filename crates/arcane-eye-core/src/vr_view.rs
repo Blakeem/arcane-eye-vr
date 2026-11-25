@@ -14,15 +14,18 @@
 //!   [eyes]       the header's eye distance from 0.04 to 0.09 m with a header pose, else
 //!                `stereo.ipd_mm`, at the eye scale 1, which the UI depth of a world frame also
 //!                computes with
-//!   [placement]  for a world kind the pose in the anchor of `vr.horizon`, and for a screen kind the
-//!                head controller's right axis at the UI layer's eye scale in use, for the next
-//!                frame's proxies
+//!   [horizon]    the viewing side's horizon wish while its heartbeat runs and the word holds a
+//!                wish, else `vr.horizon`, in `horizon`
+//!   [placement]  for a world kind the pose in the anchor of the horizon in use, and for a screen
+//!                kind the head controller's right axis at the UI layer's eye scale in use, for the
+//!                next frame's proxies
 //!   [frame]      the presented frame follows the view kind its main view proxy was filled with: a
 //!                world frame has no depth offset and a tag with the pose's sequence number and the
 //!                main view camera's lens, and a screen frame the values of the mode desktop-stereo
 //! ```
 
 mod head;
+mod horizon;
 mod kind;
 
 use std::time::Instant;
@@ -32,6 +35,7 @@ use diag::once;
 use diag::rate::Once;
 use game_bindings::camera::Camera;
 use ipc_layout::launch_token::Mode;
+use ipc_layout::viewer_header::horizon_wish::HorizonWish;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadSample};
 use ipc_layout::viewer_header::screen::ParallelShare;
 use ipc_layout::viewer_header::view_wish::ViewWish;
@@ -44,6 +48,8 @@ pub(crate) use self::head::PoseSource;
 use self::head::{
     HeadInUse, TestPose, choose, next_test_sequence, test_orientation, yaw_pitch_deg,
 };
+pub(crate) use self::horizon::HorizonFrom;
+use self::horizon::HorizonInUse;
 pub(crate) use self::kind::{GameRead, ViewKind};
 use crate::eye_camera::{Placement, ProxyFill};
 use crate::ui_layer::depth_offset::DepthOffset;
@@ -75,6 +81,9 @@ pub(crate) struct PresentCall {
     pub(crate) rays: Rays,
     /// The view kind [`VrView::decide`] gave at the call.
     pub(crate) kind: ViewKind,
+    /// The viewing side's horizon wish, read with the view wish that decided `kind`, or `None`
+    /// for no wish.
+    pub(crate) horizon: Option<HorizonWish>,
     /// The time of the call.
     pub(crate) now: Instant,
 }
@@ -91,7 +100,9 @@ pub(crate) struct VrReport {
     /// The turn upward in degrees.
     pub(crate) pitch_deg: f32,
     pub(crate) eye_m: f32,
+    /// The horizon in use.
     pub(crate) horizon: Horizon,
+    pub(crate) horizon_from: HorizonFrom,
 }
 
 /// The start time and the last sequence number of the test pose.
@@ -128,6 +139,9 @@ pub(crate) struct VrView {
     /// The head pose in use at the newest Present call, `None` before the first one in the mode
     /// `vr`.
     newest: Option<HeadInUse>,
+    /// The horizon in use at the newest Present call in the mode `vr`, the dev flag's before the
+    /// first one.
+    horizon: HorizonInUse,
     /// The warning that the eyes do not turn while the view camera does not rewrite the rays.
     unturned: Once,
 }
@@ -147,6 +161,7 @@ impl VrView {
             test: TestClock::default(),
             decided: ViewKind::Screen,
             newest: None,
+            horizon: HorizonInUse::of(None, flags.horizon),
             unturned: Once::default(),
         }
     }
@@ -166,19 +181,20 @@ impl VrView {
     /// The placement of the next frame's proxies at the Present call `call`, by the call's view
     /// kind. A screen kind places each eye on the head controller's right axis at the eye distance
     /// of the call's stereo settings times its eye scale. In the mode `vr` the head pose in use
-    /// places the eyes of a world kind at the eye scale 1, and `header` reads the viewer link
-    /// header's pose only while the test pose is off. While the call's rays are the game's, the
-    /// mode `vr` uses no head pose and logs that once.
+    /// places the eyes of a world kind at the eye scale 1 in the anchor of the horizon in use, and
+    /// `header` reads the viewer link header's pose only while the test pose is off. While the
+    /// call's rays are the game's, the mode `vr` uses no head pose and logs that once.
     pub(crate) fn placement(
         &mut self,
         header: impl FnOnce() -> Option<HeadSample>,
         call: PresentCall,
     ) -> Placement {
-        let PresentCall { stereo, eye_scale, rays, kind, now } = call;
+        let PresentCall { stereo, eye_scale, rays, kind, horizon, now } = call;
         let screen = Placement::head(stereo, eye_scale);
         if self.mode == Mode::DesktopStereo {
             return screen;
         }
+        self.horizon = HorizonInUse::of(horizon, self.flags.horizon);
         let ipd_m = stereo.ipd_mm.meters();
         if rays == Rays::GameBuilt {
             once!(
@@ -195,7 +211,7 @@ impl VrView {
         let head = choose(header, test, ipd_m);
         self.newest = Some(head);
         match kind {
-            ViewKind::World => pose_placement(head, self.flags.horizon),
+            ViewKind::World => pose_placement(head, self.horizon.horizon),
             ViewKind::Screen => screen,
         }
     }
@@ -222,7 +238,8 @@ impl VrView {
             yaw_deg,
             pitch_deg,
             eye_m: head.eye_m,
-            horizon: self.flags.horizon,
+            horizon: self.horizon.horizon,
+            horizon_from: self.horizon.from,
         })
     }
 }

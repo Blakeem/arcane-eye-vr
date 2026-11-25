@@ -1,14 +1,16 @@
 //! The menu's state across frames: the hand it is on, its panel's pose, the press of the pointing
-//! hand's `select` with its repeat, and the values that the steps change: the screen's values and
-//! the view wish of the row View.
+//! hand's `select` with its repeat, and the values that the steps change: the screen's values, the
+//! view wish of the row View and the horizon wish of the row Horizon.
 //!
 //! The pointing hand is the hand the menu is not on. A press of `select` over an enabled button
 //! gives one step. While the press holds over a button of a screen setting, the step repeats after
-//! [`REPEAT_DELAY`] and then every [`REPEAT_PERIOD`]. A button of the row View does not repeat.
+//! [`REPEAT_DELAY`] and then every [`REPEAT_PERIOD`]. A button of the row View or the row Horizon
+//! does not repeat.
 
 use std::time::{Duration, Instant};
 
 use device_profile::profile::Hand;
+use ipc_layout::viewer_header::horizon_wish::HorizonWish;
 use ipc_layout::viewer_header::view_wish::ViewWish;
 use openxr::Posef;
 use overlay::layout::{self, Hit, PanelPoint};
@@ -18,7 +20,7 @@ use settings::player::ScreenSettings;
 use xr::input::ButtonState;
 
 use super::place::{LASER_REACH_M, Laser, PANEL_SIZE, laser, panel_point, panel_pose};
-use super::rows::{self, Line, Values, stepped, switched};
+use super::rows::{self, Line, Values, Wishes, stepped, switched, switched_horizon};
 use crate::screen::controls::{Buttons, Frame};
 use crate::screen::geometry::{self, Ray};
 
@@ -56,6 +58,8 @@ pub(crate) enum Event {
     Stepped(ScreenSettings),
     /// A press of the row View gave this view wish.
     Viewed(ViewWish),
+    /// A press of the row Horizon gave this horizon wish.
+    Horizon(HorizonWish),
 }
 
 impl Event {
@@ -246,10 +250,12 @@ impl Model {
     }
 
     /// Takes one press of the button `hit`: a step of a screen setting within its range, or a
-    /// switch of the view wish.
+    /// switch of the view wish or the horizon wish.
     fn step(&mut self, hit: Hit, on_event: &mut impl FnMut(Event)) -> Step {
-        match Line::of_row(hit.row, self.values) {
-            Some(Line::Setting(setting)) => {
+        let line = Line::of_row(hit.row, self.values);
+        let wishes = self.values.wishes;
+        match (line, wishes) {
+            (Some(Line::Setting(setting)), _) => {
                 let Some(screen) = stepped(self.values.screen, setting, hit.button) else {
                     return Step::Refused;
                 };
@@ -257,13 +263,19 @@ impl Model {
                 on_event(Event::Stepped(screen));
                 Step::Repeats
             }
-            Some(Line::View(wish)) => {
-                let wish = switched(wish);
-                self.values.wish = Some(wish);
-                on_event(Event::Viewed(wish));
+            (Some(Line::View(view)), Some(wishes)) => {
+                let view = switched(view);
+                self.values.wishes = Some(Wishes { view, ..wishes });
+                on_event(Event::Viewed(view));
                 Step::Once
             }
-            None => Step::Refused,
+            (Some(Line::Horizon(horizon)), Some(wishes)) => {
+                let horizon = switched_horizon(horizon);
+                self.values.wishes = Some(Wishes { horizon, ..wishes });
+                on_event(Event::Horizon(horizon));
+                Step::Once
+            }
+            (Some(Line::View(_) | Line::Horizon(_)), None) | (None, _) => Step::Refused,
         }
     }
 }

@@ -8,6 +8,7 @@ use diag::health::{Feature, Health};
 use game_bindings::camera::Camera;
 use game_bindings::game_client::StateId;
 use ipc_layout::launch_token::Mode;
+use ipc_layout::viewer_header::horizon_wish::HorizonWish;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose as XrPose, HeadSample};
 use ipc_layout::viewer_header::screen::ParallelShare;
 use ipc_layout::viewer_header::view_wish::ViewWish;
@@ -18,7 +19,8 @@ use stereo_core::head::HeadPose;
 
 use super::head::{PoseSource, choose, next_test_sequence};
 use super::{
-    GameRead, PresentCall, Rays, TestClock, ViewKind, VrReport, VrView, depth_offset, tag,
+    GameRead, HorizonFrom, PresentCall, Rays, TestClock, ViewKind, VrReport, VrView, depth_offset,
+    tag,
 };
 use crate::eye_camera::{Placement, ProxyFill};
 use crate::logged;
@@ -93,13 +95,24 @@ const fn read_call(game: GameRead, ipd_mm: f32, eye_scale: EyeScale, rays: Rays)
     Call { game, ipd_mm, eye_scale, rays }
 }
 
-/// The placement of `view` at the Present call `call`, after the view kind it decides, as the frame
-/// handler places the next frame's proxies.
+/// The placement of `view` at the Present call `call` with no horizon wish, after the view kind it
+/// decides, as the frame handler places the next frame's proxies.
 fn place(view: &mut VrView, header: impl FnOnce() -> Option<HeadSample>, call: Call) -> Placement {
+    place_wished(view, header, call, None)
+}
+
+/// The placement of [`place`] with the horizon wish `horizon`.
+fn place_wished(
+    view: &mut VrView,
+    header: impl FnOnce() -> Option<HeadSample>,
+    call: Call,
+    horizon: Option<HorizonWish>,
+) -> Placement {
     let Call { game, ipd_mm, eye_scale, rays } = call;
     let kind = view.decide(rays, game, ViewWish::World);
     let now = Instant::now();
-    view.placement(header, PresentCall { stereo: stereo(ipd_mm), eye_scale, rays, kind, now })
+    let stereo = stereo(ipd_mm);
+    view.placement(header, PresentCall { stereo, eye_scale, rays, kind, horizon, now })
 }
 
 /// A header pose of the sequence number `sequence`, turned 20 degrees right, with the eye
@@ -252,7 +265,34 @@ const fn no_pose_report(view: ViewKind) -> VrReport {
         pitch_deg: 0.0,
         eye_m: 0.065,
         horizon: Horizon::Level,
+        horizon_from: HorizonFrom::Flag,
     }
+}
+
+#[test]
+fn in_the_mode_vr_a_world_kind_takes_the_horizon_wish_over_the_dev_flag_and_the_flag_without() {
+    let camera_flag = VrFlags { horizon: Horizon::Camera, ..VrFlags::default() };
+    let mut view = VrView::new(Mode::Vr, camera_flag);
+    let present = call(65.0, EyeScale::FULL, Rays::Rewritten);
+    let at = |horizon| Placement::Pose {
+        pose: HeadPose::IDENTITY,
+        sequence: 0,
+        offsets_m: PerEye { left: -0.0325, right: 0.0325 },
+        horizon,
+    };
+    let in_use = |of: &VrView| of.report().map(|report| (report.horizon, report.horizon_from));
+    let wished = place_wished(&mut view, || None, present, Some(HorizonWish::Level));
+    assert_eq!(wished, at(Horizon::Level), "the wish level over the flag camera");
+    assert_eq!(in_use(&view), Some((Horizon::Level, HorizonFrom::Wish)));
+    let camera = place_wished(&mut view, || None, present, Some(HorizonWish::Camera));
+    assert_eq!(camera, at(Horizon::Camera), "the wish camera");
+    assert_eq!(in_use(&view), Some((Horizon::Camera, HorizonFrom::Wish)));
+    let level_flag = VrFlags { horizon: Horizon::Level, ..VrFlags::default() };
+    let mut flagged = VrView::new(Mode::Vr, level_flag);
+    assert_eq!(place(&mut flagged, || None, present), at(Horizon::Level), "no wish, flag level");
+    assert_eq!(in_use(&flagged), Some((Horizon::Level, HorizonFrom::Flag)));
+    assert_eq!(place(&mut view, || None, present), at(Horizon::Camera), "no wish, flag camera");
+    assert_eq!(in_use(&view), Some((Horizon::Camera, HorizonFrom::Flag)));
 }
 
 #[test]

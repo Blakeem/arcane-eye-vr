@@ -1,20 +1,23 @@
 //! The viewer link from the core's publisher to the reading side: the frame tag, the depth map,
-//! the head pose, the screen's parallel share and the view wish.
+//! the head pose, the screen's parallel share, the view wish and the horizon wish.
 
 use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
 use game_bindings::state::arm_alloc_guard;
 use gfx::depth_map::{MapScene, MapStart, MapUi};
-use gfx::publish::{Outcome, Present, Publisher, ViewNames};
+use gfx::publish::{Outcome, Present, Publisher, ViewNames, Wishes};
 use ipc_layout::viewer_header::STALE_AFTER;
 use ipc_layout::viewer_header::depth_map::{Grid, INTERFACE, SCENE};
+use ipc_layout::viewer_header::horizon_wish::HorizonWish;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose, HeadSample};
 use ipc_layout::viewer_header::screen::ParallelShare;
 use ipc_layout::viewer_header::view_wish::ViewWish;
 use viewer_client::depth_map::DepthMapReader;
 use viewer_client::frame::{FrameReader, ReadError};
-use viewer_client::header::{Names, read_header, write_head_pose, write_screen, write_view_wish};
+use viewer_client::header::{
+    Names, read_header, write_head_pose, write_horizon_wish, write_screen, write_view_wish,
+};
 use viewer_client::region::Region;
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use windows::core::HSTRING;
@@ -221,11 +224,33 @@ fn a_view_wish_the_reading_side_wrote_is_read_by_the_publisher_while_it_beats() 
     let mut slot = None;
     let (view, _header) = read_header(&mut slot, &names.mapping).expect("open the header");
     let now = Instant::now();
-    assert_eq!(publisher.view_wish(now), ViewWish::World, "no wish written yet");
+    assert_eq!(publisher.wishes(now).view, ViewWish::World, "no wish written yet");
     assert_eq!(write_view_wish(view, ViewWish::Screen), Ok(()));
-    assert_eq!(publisher.view_wish(now), ViewWish::Screen);
+    assert_eq!(publisher.wishes(now).view, ViewWish::Screen);
     let stalled = now.checked_add(STALE_AFTER + Duration::from_millis(1)).expect("a test time");
-    assert_eq!(publisher.view_wish(stalled), ViewWish::World, "the heartbeat stopped");
+    assert_eq!(publisher.wishes(stalled).view, ViewWish::World, "the heartbeat stopped");
+}
+
+#[test]
+fn a_horizon_wish_the_reading_side_wrote_is_read_by_the_publisher_while_it_beats() {
+    let names = test_view_names("link-horizon-wish");
+    let mut publisher = Publisher::create(&names).expect("create the header");
+    let mut viewer = TestViewer::open(&names);
+    viewer.beat();
+    let mut slot = None;
+    let (view, _header) = read_header(&mut slot, &names.mapping).expect("open the header");
+    let now = Instant::now();
+    assert_eq!(publisher.wishes(now), Wishes::default(), "no wish written yet");
+    assert_eq!(write_horizon_wish(view, HorizonWish::Camera), Ok(()));
+    assert_eq!(write_view_wish(view, ViewWish::Screen), Ok(()));
+    let both = Wishes { view: ViewWish::Screen, horizon: Some(HorizonWish::Camera) };
+    assert_eq!(publisher.wishes(now), both, "both wishes of one read");
+    assert_eq!(write_horizon_wish(view, HorizonWish::Level), Ok(()));
+    assert_eq!(publisher.wishes(now).horizon, Some(HorizonWish::Level));
+    let stalled = now.checked_add(STALE_AFTER + Duration::from_millis(1)).expect("a test time");
+    assert_eq!(publisher.wishes(stalled), Wishes::default(), "the heartbeat stopped");
+    viewer.beat();
+    assert_eq!(publisher.wishes(stalled).horizon, None, "the stopped viewer's wish is gone");
 }
 
 #[test]
@@ -238,13 +263,17 @@ fn a_view_wish_a_stopped_viewer_left_is_not_taken_up_by_a_later_heartbeat() {
     let (view, _header) = read_header(&mut slot, &names.mapping).expect("open the header");
     let now = Instant::now();
     assert_eq!(write_view_wish(view, ViewWish::Screen), Ok(()));
-    assert_eq!(publisher.view_wish(now), ViewWish::Screen);
+    assert_eq!(publisher.wishes(now).view, ViewWish::Screen);
     let stalled = now.checked_add(STALE_AFTER + Duration::from_millis(1)).expect("a test time");
-    assert_eq!(publisher.view_wish(stalled), ViewWish::World, "the heartbeat stopped");
+    assert_eq!(publisher.wishes(stalled).view, ViewWish::World, "the heartbeat stopped");
     viewer.beat();
-    assert_eq!(publisher.view_wish(stalled), ViewWish::World, "the stopped viewer's wish is gone");
+    assert_eq!(
+        publisher.wishes(stalled).view,
+        ViewWish::World,
+        "the stopped viewer's wish is gone"
+    );
     assert_eq!(write_view_wish(view, ViewWish::Screen), Ok(()));
-    assert_eq!(publisher.view_wish(stalled), ViewWish::Screen, "the wish written again");
+    assert_eq!(publisher.wishes(stalled).view, ViewWish::Screen, "the wish written again");
     assert_eq!(write_view_wish(view, ViewWish::World), Ok(()));
-    assert_eq!(publisher.view_wish(stalled), ViewWish::World, "the wish written back");
+    assert_eq!(publisher.wishes(stalled).view, ViewWish::World, "the wish written back");
 }
