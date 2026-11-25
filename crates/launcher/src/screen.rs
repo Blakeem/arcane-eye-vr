@@ -16,7 +16,7 @@
 //! horizon wish, whose value Level keeps the world view level and Camera tilts it with the game
 //! camera's pitch.
 //! `pointer.rs` sends the game the mouse input of the controller that points at the game's picture
-//! and the turn key input of the pointing controller's stick, and `geometry.rs` holds the vector
+//! and the camera key input of both controllers' sticks, and `geometry.rs` holds the vector
 //! math of the quads, the rays and the eye views. The menu and the pointer work in every frame.
 //! `models.rs` draws every tracked controller model into one projection layer, which the
 //! compositor blends over the frame's layer and under the panels. `image.rs` finds the draw target

@@ -10,7 +10,7 @@ These changes are on the main branch. No headset has tested them yet.
 - The mouse cursor sits at the depth of the scene under it, at an unchanged size.
 - The interface comes forward only when the scene under it stays nearer, so a thing that passes the camera does not move it.
 - In `--mode screen`, the menu button of a controller opens a menu that sets the distance and the size of the screen.
-- In `--mode screen`, a controller that points at the screen works as the mouse, and its thumbstick's left and right turn the camera.
+- In `--mode screen`, a controller that points at the screen works as the mouse.
 - In `--mode screen` and on the flat screen of `--mode vr`, the depth of the picture follows the width of the screen and the distance between the eyes. The far scene then sits at the distance where the eyes look straight ahead on every screen size.
 - In `--mode screen`, the laser of a controller ends on what it points at in the 3D picture, and the mouse pointer sits there.
 - In `--mode screen` and `--mode vr`, the launch app opens the headset before it starts the game, and starts SteamVR when it does not run. The headset shows "Starting Baldur's Gate 3" until the Larian launcher or the game's first picture shows.
@@ -23,6 +23,7 @@ These changes are on the main branch. No headset has tested them yet.
 - In `--mode vr`, the controllers work around the player and on the screen as in `--mode screen`: the menu opens, the laser ends on what it points at, and the mouse pointer sits there.
 - In `--mode vr`, the menu's row View keeps the game on the screen during play when its value is Screen.
 - In `--mode vr`, the menu's row Horizon tilts the world with the game camera when its value is Camera, and keeps the world's floor level when its value is Level.
+- In `--mode screen` and `--mode vr`, the left thumbstick pans the camera with the keys W, A, S and D. The right thumbstick turns the camera and is the mouse wheel, whichever controller points.
 
 ## 0.0.1 Beta (2026-11-18)
 

@@ -1,10 +1,10 @@
 //! The pointer's input while the projection picture shows the game: its place where the ray meets
-//! the picture, its far point without a depth map, its buttons, wheel and turn keys, and the
+//! the picture, its far point without a depth map, its buttons, wheel and camera keys, and the
 //! releases at a change between the screen quad and the projection picture.
 
 use ipc_layout::viewer_header::depth_map::{Cell, Grid, SCENE};
+use launch::camera_key::{CameraKey, PanKey, TurnKey};
 use launch::mouse::Button;
-use launch::turn::TurnKey;
 use openxr::Vector2f;
 use xr::input::{ButtonState, HandInput};
 
@@ -101,12 +101,16 @@ fn a_ray_beside_the_projection_picture_releases_the_held_left_button_once() {
 }
 
 #[test]
-fn a_frame_that_shows_the_game_in_the_projection_picture_turns_the_camera() {
+fn a_frame_that_shows_the_game_in_the_projection_picture_pans_and_turns_the_camera() {
     let mut run = Run::new();
     for _ in 0..10 {
-        run.frame(HandInput::default(), stick(0.8, centered()), projection(None));
+        run.frame(stick(-0.8, centered()), stick(0.8, centered()), projection(None));
     }
-    assert_eq!(run.turns(), [Action::PressTurn(TurnKey::Right)]);
+    let expected = [
+        Action::PressKey(CameraKey::Pan(PanKey::Left)),
+        Action::PressKey(CameraKey::Turn(TurnKey::Right)),
+    ];
+    assert_eq!(run.keys(), expected);
 }
 
 #[test]
@@ -121,15 +125,20 @@ fn a_change_from_the_screen_quad_to_the_projection_picture_releases_the_held_but
 }
 
 #[test]
-fn a_change_between_the_layers_releases_the_held_turn_key_and_presses_it_again_after() {
+fn a_change_between_the_layers_releases_each_held_key_and_presses_it_again_after() {
     let mut run = Run::new();
-    run.frame(HandInput::default(), stick(0.8, centered()), projection(None));
-    run.frame(HandInput::default(), stick(0.8, centered()), closed());
-    run.frame(HandInput::default(), stick(0.8, centered()), closed());
+    let (left, right) = (stick(-0.8, centered()), stick(0.8, centered()));
+    run.frame(left, right, projection(None));
+    run.frame(left, right, closed());
+    run.frame(left, right, closed());
+    let (pan, turn) = (CameraKey::Pan(PanKey::Left), CameraKey::Turn(TurnKey::Right));
     let expected = [
-        Action::PressTurn(TurnKey::Right),
-        Action::ReleaseTurn(TurnKey::Right),
-        Action::PressTurn(TurnKey::Right),
+        Action::PressKey(pan),
+        Action::PressKey(turn),
+        Action::ReleaseKey(pan),
+        Action::ReleaseKey(turn),
+        Action::PressKey(pan),
+        Action::PressKey(turn),
     ];
-    assert_eq!(run.turns(), expected);
+    assert_eq!(run.keys(), expected);
 }

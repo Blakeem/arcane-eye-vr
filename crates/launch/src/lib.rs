@@ -5,7 +5,7 @@
 //! files again. The trial runner also runs on a desktop of its own (`desktop.rs`), moves the cursor
 //! in the game window (`cursor.rs`) and copies another process's window from the screen
 //! (`window_copy.rs`). The headset screen sends the game its mouse input (`mouse.rs`) and its
-//! camera turn keys (`turn.rs`), and shows and clicks the Larian launcher's window
+//! camera turn and pan keys (`camera_key.rs`), and shows and clicks the Larian launcher's window
 //! (`launcher_window.rs`). The pure decisions are in `decide.rs` and `vdf.rs`. `raw.rs` and
 //! the files under `raw\` hold every unsafe Windows call.
 
@@ -16,6 +16,7 @@ macro_rules! steam_app_id {
     };
 }
 
+pub mod camera_key;
 pub mod checks;
 pub mod cursor;
 mod decide;
@@ -33,7 +34,6 @@ pub mod status;
 pub mod steam;
 pub mod stop;
 pub mod token;
-pub mod turn;
 mod vdf;
 pub mod window_copy;
 

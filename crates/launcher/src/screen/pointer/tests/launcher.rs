@@ -1,8 +1,8 @@
 //! The pointer's input to the Larian launcher's window, whose picture the screen quad shows during
 //! the start wait.
 
+use launch::camera_key::{CameraKey, PanKey, TurnKey};
 use launch::mouse::Button;
-use launch::turn::TurnKey;
 use openxr::Vector2f;
 use xr::input::{ButtonState, HandInput};
 
@@ -46,20 +46,21 @@ fn on_the_launcher_a_select_pressed_in_a_frame_whose_move_was_refused_presses_no
 }
 
 #[test]
-fn on_the_launcher_secondary_and_scroll_send_nothing() {
+fn on_the_launcher_secondary_and_either_stick_send_nothing() {
     let mut run = on_launcher();
     let up = Vector2f { x: 0.0, y: 1.0 };
-    for right in [
+    let down = Vector2f { x: 0.0, y: -1.0 };
+    for hand in [
         centered(),
         HandInput { secondary: ButtonState::Pressed, ..centered() },
         centered(),
         HandInput { scroll: up, ..centered() },
-        HandInput { scroll: Vector2f { x: 0.0, y: -1.0 }, ..centered() },
+        HandInput { scroll: down, ..centered() },
         stick(0.8, centered()),
         stick(-0.8, centered()),
     ] {
         for _ in 0..30 {
-            run.right(right);
+            run.frame(hand, hand, Sight { window: Window::Launcher, ..closed() });
         }
     }
     assert!(clicks(&run).is_empty(), "{:?}", run.sent);
@@ -92,12 +93,19 @@ fn the_held_left_button_is_released_once_when_the_game_s_frame_replaces_the_laun
 }
 
 #[test]
-fn a_turn_key_held_on_the_game_is_released_when_the_launcher_shows() {
+fn each_key_held_on_the_game_is_released_once_when_the_launcher_shows() {
     let mut run = Run::new();
-    run.right(stick(0.8, centered()));
-    run.window = Window::Launcher;
-    run.right(stick(0.8, centered()));
-    run.right(stick(0.8, centered()));
-    let turns = [Action::PressTurn(TurnKey::Right), Action::ReleaseTurn(TurnKey::Right)];
-    assert_eq!(run.turns(), turns);
+    run.frame(stick(0.8, centered()), stick(0.8, centered()), closed());
+    let launcher = Sight { window: Window::Launcher, ..closed() };
+    run.frame(stick(0.8, centered()), stick(0.8, centered()), launcher);
+    run.frame(stick(0.8, centered()), stick(0.8, centered()), launcher);
+    let pan = CameraKey::Pan(PanKey::Right);
+    let turn = CameraKey::Turn(TurnKey::Right);
+    let keys = [
+        Action::PressKey(pan),
+        Action::PressKey(turn),
+        Action::ReleaseKey(pan),
+        Action::ReleaseKey(turn),
+    ];
+    assert_eq!(run.keys(), keys);
 }

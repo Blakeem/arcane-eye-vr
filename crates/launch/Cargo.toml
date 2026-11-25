@@ -1,6 +1,6 @@
 [package]
 name = "launch"
-description = "Starts and stops the game with a launch token: the Steam start, the direct start, the status wait, the window close, the settings reload request, a desktop of its own, the cursor position, the game's mouse input, the game's camera turn keys, the copy of a window from the screen and the Larian launcher's window."
+description = "Starts and stops the game with a launch token: the Steam start, the direct start, the status wait, the window close, the settings reload request, a desktop of its own, the cursor position, the game's mouse input, the game's camera turn and pan keys, the copy of a window from the screen and the Larian launcher's window."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true

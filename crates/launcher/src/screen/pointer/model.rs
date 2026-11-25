@@ -1,25 +1,25 @@
 //! The game's pointer across frames: the pointing hand, the place its ray points at in the picture,
-//! the window that takes its input, the buttons it holds pressed, the wheel's turn and the camera
-//! turn key.
+//! the window that takes its input, the buttons it holds pressed, and the sticks' camera keys and
+//! wheel turn (`sticks.rs`).
 //!
 //! The pointing hand is the hand whose `select` was pressed last, and the right hand before any
 //! press. While the menu is open, the hand the menu is not on points, and the menu hand acts on
-//! nothing. A ray that meets the menu's panel acts on the menu only. The camera turns while a
-//! frame shows the game and the ray misses the menu's panel, whether or not the ray meets the
-//! game's picture. While the screen quad shows the Larian launcher's window, the ray moves the
-//! pointer in it and `select` is its left button, and no other control sends it input. With the
-//! depth of the game's picture, the pointer goes to the mouse place where the ray meets the picture
-//! (`trace.rs`), on the screen quad or in the projection picture. Without it, the pointer goes to
-//! the ray's hit on the screen quad, or in the projection picture to the ray's far point. A ray
-//! that meets no thing of the picture acts as a ray that misses the screen. A change of the layer
-//! that shows the game, between the screen quad and the projection picture, releases each held
-//! button and the held turn key.
+//! nothing. A ray that meets the menu's panel acts on the menu only. A hand's stick acts while a
+//! frame shows the game, the hand does not hold the open menu, and the hand's ray misses the menu's
+//! panel while that hand points, whether or not the ray meets the game's picture. While the screen
+//! quad shows the Larian launcher's window, the ray moves the pointer in it and `select` is its
+//! left button, and no other control sends it input. With the depth of the game's picture, the
+//! pointer goes to the mouse place where the ray meets the picture (`trace.rs`), on the screen quad
+//! or in the projection picture. Without it, the pointer goes to the ray's hit on the screen quad,
+//! or in the projection picture to the ray's far point. A ray that meets no thing of the picture
+//! acts as a ray that misses the screen. A change of the layer that shows the game, between the
+//! screen quad and the projection picture, releases each held button and each key the sticks hold.
 
 use std::time::Duration;
 
 use device_profile::profile::Hand;
+use launch::camera_key::CameraKey;
 use launch::mouse::Button;
-use launch::turn::TurnKey;
 use openxr::Vector3f;
 use stereo_core::eye::PerEye;
 use xr::input::{ButtonState, HandInput};
@@ -27,9 +27,8 @@ use xr::projection::EyeView;
 use xr::quad::ScreenQuad;
 
 use super::filter::OneEuro;
+use super::sticks::{Stick, Sticks};
 use super::trace::{far_point, trace, trace_projection};
-use super::turn;
-use super::wheel::Wheel;
 use crate::screen::controls::{Buttons, Frame, rose};
 use crate::screen::depth::{Depth, DepthView};
 use crate::screen::geometry::{self, Ray, Shares};
@@ -38,7 +37,7 @@ use crate::screen::geometry::{self, Ray, Shares};
 /// that moves the mouse pointer. A controller at rest moves less, so a hand mouse keeps working.
 const MOVE_THRESHOLD: f32 = 0.0005;
 
-/// A mouse or turn key input the pointer sends to the window the screen shows, the game or the
+/// A mouse or camera key input the pointer sends to the window the screen shows, the game or the
 /// launcher window.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Action {
@@ -48,8 +47,8 @@ pub(crate) enum Action {
     Release(Button),
     /// A turn of the wheel by a count of notches, positive up.
     Wheel(i16),
-    PressTurn(TurnKey),
-    ReleaseTurn(TurnKey),
+    PressKey(CameraKey),
+    ReleaseKey(CameraKey),
 }
 
 /// Whether the send of an action succeeded.
@@ -160,18 +159,16 @@ pub(crate) struct Model {
     /// The picture of the last frame that showed one.
     picture: Option<Picture>,
     /// The mouse buttons the pointer holds pressed, in the order of [`BUTTONS`].
-    held: [ButtonState; 2],
-    /// The turn key the pointer holds pressed in the game.
-    turning: Option<TurnKey>,
+    held: [ButtonState; BUTTONS.len()],
+    sticks: Sticks,
     place: Place,
-    wheel: Wheel,
 }
 
 /// The mouse buttons, in the order of [`Model::held`].
 const BUTTONS: [Button; 2] = [Button::Left, Button::Right];
 
 impl Model {
-    /// A pointer of the right hand that holds no button and no turn key.
+    /// A pointer of the right hand that holds no button and no camera key.
     pub(crate) fn new() -> Self {
         Self {
             last_select: Hand::Right,
@@ -179,18 +176,17 @@ impl Model {
             menu: None,
             window: Window::Game,
             picture: None,
-            held: [ButtonState::Released; 2],
-            turning: None,
+            held: [ButtonState::Released; BUTTONS.len()],
+            sticks: Sticks::default(),
             place: Place::default(),
-            wheel: Wheel::default(),
         }
     }
 
     /// Takes the controllers' `frame`, `step` after the frame before, with what the screen shows in
-    /// `sight`, and sends the mouse and turn key input through `send`. A button or a turn key whose
-    /// release failed stays held, so a later frame releases it again. A change of the window that
-    /// takes the input releases each held button, and a change of the picture between the screen
-    /// quad and the projection picture releases each held button and the turn key.
+    /// `sight`, and sends the mouse and camera key input through `send`. A button or a camera key
+    /// whose release failed stays held, so a later frame releases it again. A change of the window
+    /// that takes the input releases each held button, and a change of the picture between the
+    /// screen quad and the projection picture releases each held button and camera key.
     pub(crate) fn update(
         &mut self,
         frame: &Frame,
@@ -207,40 +203,38 @@ impl Model {
         let picture = sight.surface.map(|surface| surface.picture());
         let relayered = picture.is_some_and(|now| self.picture.is_some_and(|last| last != now));
         self.picture = picture.or(self.picture);
-        let hand = frame.input.hand(self.pointing);
-        let on_game = window == Window::Game;
-        let turns = on_game
-            && picture.is_some()
-            && sight.panel == PanelAim::Missed
-            && changed.is_none()
-            && !relayered;
-        let turn_x = if turns { hand.scroll.x } else { 0.0 };
-        self.turn_camera(turn_x, send);
-        let aimed = aim(hand, sight);
+        let seconds = step.as_secs_f32();
+        let pointing = self.pointing;
+        let aimed = aim(frame.input.hand(pointing), sight);
         let restart = aimed.is_none() || changed.is_some() || switched || relayered;
         if restart || opened {
             self.release_buttons(send);
         }
         if restart {
             self.place = Place::default();
-            self.wheel.stop();
         }
-        let Some(on_picture) = aimed else {
-            return Update { aimed, changed };
+        if let Some(on_picture) = aimed {
+            let moved = self.move_to(on_picture.shares, seconds, send);
+            self.press_and_release(frame.buttons(pointing), window, moved, send);
+        }
+        // The sticks run after the move, so a wheel turn reaches the place the ray points at.
+        let shows_game = window == Window::Game && picture.is_some() && !relayered;
+        let stick = |hand: Hand| {
+            let aims_at_panel = hand == pointing && sight.panel == PanelAim::Met;
+            if shows_game && sight.menu != Some(hand) && !aims_at_panel {
+                Stick::Acts
+            } else {
+                Stick::Stopped
+            }
         };
-        let seconds = step.as_secs_f32();
-        let moved = self.move_to(on_picture.shares, seconds, send);
-        self.press_and_release(frame.buttons(self.pointing), window, moved, send);
-        if on_game {
-            self.turn_wheel(hand, seconds, send);
-        }
+        self.sticks.update(&frame.input, stick, seconds, send);
         Update { aimed, changed }
     }
 
-    /// Releases each button and the turn key the pointer holds pressed, as at the session's end.
+    /// Releases each button and camera key the pointer holds pressed, as at the session's end.
     pub(crate) fn release_all(&mut self, send: &mut impl FnMut(Action) -> Sent) {
         self.release_buttons(send);
-        self.turn_camera(0.0, send);
+        self.sticks.release_all(send);
     }
 
     /// Releases each button the pointer holds pressed.
@@ -249,25 +243,6 @@ impl Model {
             if *held == ButtonState::Pressed && send(Action::Release(button)) == Sent::Done {
                 *held = ButtonState::Released;
             }
-        }
-    }
-
-    /// Holds the turn key that the `scroll` position `x` asks for. A held key that `x` no longer
-    /// asks for is released first, and the key `x` asks for is pressed once no key is held. A
-    /// refused press holds no key, so a later frame presses it again.
-    fn turn_camera(&mut self, x: f32, send: &mut impl FnMut(Action) -> Sent) {
-        let wanted = turn::held_at(self.turning, x);
-        if let Some(held) = self.turning
-            && Some(held) != wanted
-            && send(Action::ReleaseTurn(held)) == Sent::Done
-        {
-            self.turning = None;
-        }
-        if let Some(key) = wanted
-            && self.turning.is_none()
-            && send(Action::PressTurn(key)) == Sent::Done
-        {
-            self.turning = Some(key);
         }
     }
 
@@ -339,18 +314,6 @@ impl Model {
             if send(action) == Sent::Done {
                 *held = is;
             }
-        }
-    }
-
-    fn turn_wheel(
-        &mut self,
-        hand: &HandInput,
-        seconds: f32,
-        send: &mut impl FnMut(Action) -> Sent,
-    ) {
-        let notches = self.wheel.turn(hand.scroll.y, seconds);
-        if notches != 0 {
-            send(Action::Wheel(notches));
         }
     }
 }

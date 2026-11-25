@@ -1,13 +1,13 @@
 //! The game's pointer across frames of controller input: the place it points at, the pointing
-//! hand, its moves, presses, releases and wheel turns. `turn.rs` holds the tests of its turn keys,
-//! `launcher.rs` the tests of its input to the Larian launcher's window, `depth.rs` the tests of
-//! its place under the depth of the game's picture, and `projection.rs` the tests of its input in
-//! the projection picture.
+//! hand, its moves, presses, releases and wheel turns. `sticks.rs` holds the tests of the sticks'
+//! camera keys and wheel across the pointing hand, the menu and the layers, `launcher.rs` the tests
+//! of its input to the Larian launcher's window, `depth.rs` the tests of its place under the depth
+//! of the game's picture, and `projection.rs` the tests of its input in the projection picture.
 
 mod depth;
 mod launcher;
 mod projection;
-mod turn;
+mod sticks;
 
 use std::time::Duration;
 
@@ -124,16 +124,16 @@ impl Run {
             Action::Move(_)
             | Action::Press(_)
             | Action::Release(_)
-            | Action::PressTurn(_)
-            | Action::ReleaseTurn(_) => None,
+            | Action::PressKey(_)
+            | Action::ReleaseKey(_) => None,
         });
         turns.sum()
     }
 
-    /// The turn key presses and releases sent, in order.
-    fn turns(&self) -> Vec<Action> {
-        let turn = |sent: &&Action| matches!(sent, Action::PressTurn(_) | Action::ReleaseTurn(_));
-        self.sent.iter().filter(turn).copied().collect()
+    /// The camera key presses and releases sent, in order.
+    fn keys(&self) -> Vec<Action> {
+        let key = |sent: &&Action| matches!(sent, Action::PressKey(_) | Action::ReleaseKey(_));
+        self.sent.iter().filter(key).copied().collect()
     }
 
     /// Presses the right hand's `select` over the screen's center, so the pointer holds the left
@@ -310,16 +310,14 @@ fn a_failed_release_is_sent_again_in_the_next_frame() {
 }
 
 #[test]
-fn the_wheel_turns_12_notches_up_in_a_second_and_never_with_a_ray_beside_the_screen() {
+fn the_wheel_turns_12_notches_up_in_a_second_whether_or_not_the_ray_meets_the_screen() {
     let up = Vector2f { x: 0.0, y: 1.0 };
-    let turned = |hand: HandInput| {
+    for hand in [centered(), beside(), HandInput::default()] {
         let mut run = Run::new();
         for _ in 0..91 {
-            run.right(hand);
+            run.right(HandInput { scroll: up, ..hand });
         }
-        run.notches()
-    };
-    let notches = turned(HandInput { scroll: up, ..centered() });
-    assert!((notches - 12).abs() <= 1, "{notches}");
-    assert_eq!(turned(HandInput { scroll: up, ..beside() }), 0, "a ray beside the screen");
+        let notches = run.notches();
+        assert!((notches - 12).abs() <= 1, "{hand:?}: {notches}");
+    }
 }

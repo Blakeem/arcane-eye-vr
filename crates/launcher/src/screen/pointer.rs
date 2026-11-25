@@ -1,28 +1,31 @@
-//! The game's mouse from a controller: the laser of the pointing hand moves the game's pointer to
-//! the place it points at in the game's picture, on the screen quad or in the projection picture,
-//! `select` and `secondary` press the left and right button, the up and down of `scroll` turns the
-//! wheel, and its left and right turn the camera through the game's turn keys. While a frame shows
-//! the game with the depth of its picture, the laser ends where its ray meets what the picture
-//! shows, and the pointer goes to that thing's mouse place. Without the depth, the laser ends at
-//! the ray's hit on the screen quad, or at the ray's far point in the projection picture. While the
-//! screen shows the Larian launcher's window during the start wait, the laser moves the pointer in
-//! that window and `select` clicks it.
+//! The game's mouse and camera keys from the controllers: the laser of the pointing hand moves the
+//! game's pointer to the place it points at in the game's picture, on the screen quad or in the
+//! projection picture, and `select` and `secondary` press the left and right button. The left
+//! hand's `scroll` pans the camera through the game's pan keys, and the right hand's `scroll` turns
+//! the camera through the game's turn keys with its left and right and turns the wheel with its up
+//! and down. While a frame shows the game with the depth of its picture, the laser ends where its
+//! ray meets what the picture shows, and the pointer goes to that thing's mouse place. Without the
+//! depth, the laser ends at the ray's hit on the screen quad, or at the ray's far point in the
+//! projection picture. While the screen shows the Larian launcher's window during the start wait,
+//! the laser moves the pointer in that window and `select` clicks it.
 //!
 //! `model.rs` decides what the pointer does in each frame, `trace.rs` finds where the ray meets
 //! the picture, `source.rs` decides which change of the pointer's source to log, `filter.rs`
-//! steadies the pointed place, `wheel.rs` turns the `scroll` position into notches and `turn.rs`
-//! into the held turn key. This module sends the decided input through the `launch` crate's mouse
-//! and turn key calls, which move, press and turn only while the game window is in the foreground
+//! steadies the pointed place, `sticks.rs` turns the two `scroll` positions into held camera keys
+//! and wheel notches, with `axis.rs` for the key an axis holds and `wheel.rs` for the notches. This
+//! module sends the decided input through the `launch` crate's mouse and camera key calls, which
+//! move, press and turn only while the game window is in the foreground
 //! and release in any window, or through its launcher window calls, which move and press only
 //! while the window at the target point is the launcher window or a window it owns, logs what
 //! failed, and logs each change of the picture the pointer points into, and each change between
 //! the trace and the place without it with its reason, at most once per second.
 
+mod axis;
 mod filter;
 mod model;
 mod source;
+mod sticks;
 mod trace;
-mod turn;
 mod wheel;
 
 use std::error::Error;
@@ -32,9 +35,9 @@ use device_profile::profile::Hand;
 use diag::error_chain;
 use diag::rate::RateLimit;
 use diag::warn_every;
+use launch::camera_key;
 use launch::launcher_window::LauncherWindow;
 use launch::mouse::{self, ClientShares};
-use launch::turn as turn_keys;
 use tracing::info;
 
 pub(crate) use self::model::PanelAim;
@@ -57,7 +60,7 @@ pub(crate) struct Seen<'t> {
     pub(crate) depth: FrameDepth<'t>,
 }
 
-/// The shortest time between two warnings of a failed mouse or turn key input.
+/// The shortest time between two warnings of a failed mouse or camera key input.
 const FAILURE_PERIOD: Duration = Duration::from_secs(10);
 
 /// The longest time between two frames that the filter and the wheel count. A session that idled
@@ -80,7 +83,7 @@ impl Pointer {
     }
 
     /// Takes the controllers' `frame` at `now` with what the screen shows in `seen`, sends the
-    /// mouse and turn key input to the game, or the mouse input to the launcher window that the
+    /// mouse and camera key input to the game, or the mouse input to the launcher window that the
     /// target names, and returns the laser of the pointing hand's ray to the point where it meets
     /// the game's picture in the depth the picture shows, or with no such depth to its hit on the
     /// screen quad or its far point in the projection picture, or `None` when the pointer gives no
@@ -141,8 +144,7 @@ impl Pointer {
         }
     }
 
-    /// Releases each mouse button and the turn key the pointer holds pressed, at the
-    /// session's end.
+    /// Releases each mouse button and camera key the pointer holds pressed, at the session's end.
     pub(crate) fn finish(&mut self) {
         let failure = &mut self.failure;
         self.model.release_all(&mut |action| send(action, None, failure));
@@ -185,8 +187,8 @@ fn send(action: Action, launcher: Option<&LauncherWindow>, failure: &mut RateLim
         (Action::Press(button), None) => reached(action, mouse::press(button), failure),
         (Action::Release(button), _) => reached(action, mouse::release(button), failure),
         (Action::Wheel(notches), _) => reached(action, mouse::turn_wheel(notches), failure),
-        (Action::PressTurn(key), _) => reached(action, turn_keys::press(key), failure),
-        (Action::ReleaseTurn(key), _) => reached(action, turn_keys::release(key), failure),
+        (Action::PressKey(key), _) => reached(action, camera_key::press(key), failure),
+        (Action::ReleaseKey(key), _) => reached(action, camera_key::release(key), failure),
     }
 }
 
@@ -201,7 +203,7 @@ fn reached<E: Error>(action: Action, result: Result<(), E>, failure: &mut RateLi
         FAILURE_PERIOD,
         action = ?action,
         error = %error_chain::chain(&error),
-        "the mouse or turn key input failed, so the screen goes on without it"
+        "the mouse or camera key input failed, so the screen goes on without it"
     );
     Sent::Failed
 }
