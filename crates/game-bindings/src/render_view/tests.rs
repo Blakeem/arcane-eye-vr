@@ -116,18 +116,21 @@ fn the_last_seen_controller_reads_a_null_pointer_and_nothing_from_an_unmapped_vi
 }
 
 #[test]
-fn a_controller_copy_holds_its_bytes_and_view_matrix_and_the_vtable_its_slots() {
+fn a_controller_copy_holds_its_bytes_view_matrix_and_projection_and_the_vtable_its_slots() {
     let slots: Vec<usize> = (1..=CONTROLLER_VTABLE_SLOTS).collect();
     let slots = black_box(slots);
     let matrix: Vec<f32> = (0_u8..16).map(|value| f32::from(value) + 0.5).collect();
+    let projection: Vec<f32> = (16_u8..32).map(|value| f32::from(value) + 0.25).collect();
     let mut object = vec![0x5A_u8; CONTROLLER_SIZE];
     put(&mut object, 0, &slots.as_ptr().expose_provenance().to_ne_bytes());
     put(&mut object, CONTROLLER_VIEW, &floats(&matrix));
+    put(&mut object, 0x110, &floats(&projection));
     let object = black_box(object);
     let controller = CameraController::new(address_of(&object));
     let copy = controller.copy().expect("a readable controller");
     assert_eq!(copy.bytes().as_slice(), object.as_slice());
     assert_eq!(copy.view().to_vec(), matrix);
+    assert_eq!(copy.projection().to_vec(), projection, "the projection at +0x110");
     let read = controller.vtable_slots().map(|read| read.to_vec());
     assert_eq!(read.as_ref(), Some(&slots));
     assert_eq!(CameraController::new(UNMAPPED).copy(), None);

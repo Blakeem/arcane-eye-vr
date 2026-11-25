@@ -18,9 +18,13 @@
 //!   [horizon]    the viewing side's horizon wish while its heartbeat runs and the word holds a
 //!                wish, else `vr.horizon`, in `horizon`
 //!   [scale]      the viewing side's scale wish of the same read, kept for the frame's draw
-//!   [placement]  for a world kind the pose in the anchor of the horizon in use, and for a screen
-//!                kind the head controller's right axis at the UI layer's eye scale in use, for the
-//!                next frame's proxies
+//!   [lens]       for a world kind the viewing side's lens wish of the same read while it lies
+//!                within its bounds, else `vr.lens_fov_y_deg` and `vr.lens_aspect` while the
+//!                first is not 0, else the game's lens, and the game's lens for a screen kind, in
+//!                `lens`
+//!   [placement]  for a world kind the pose in the anchor of the horizon in use with the lens in
+//!                use, and for a screen kind the head controller's right axis at the UI layer's eye
+//!                scale in use, for the next frame's proxies
 //!   [frame]      the presented frame follows the view kind its main view proxy was filled with: a
 //!                world frame has no depth offset and a tag with the pose's sequence number and the
 //!                main view camera's lens, and a screen frame the values of the mode
@@ -32,6 +36,7 @@
 mod head;
 mod horizon;
 mod kind;
+mod lens;
 mod scale;
 
 use std::time::Instant;
@@ -58,6 +63,7 @@ use self::head::{
 pub(crate) use self::horizon::HorizonFrom;
 use self::horizon::HorizonInUse;
 pub(crate) use self::kind::{GameRead, ViewKind};
+pub(crate) use self::lens::LensInUse;
 use crate::eye_camera::{Placement, ProxyFill};
 use crate::ui_layer::depth_offset::DepthOffset;
 
@@ -109,6 +115,8 @@ pub(crate) struct VrReport {
     /// The horizon in use.
     pub(crate) horizon: Horizon,
     pub(crate) horizon_from: HorizonFrom,
+    /// The lens the call chose for the next frame's proxies of the view kind.
+    pub(crate) lens: LensInUse,
 }
 
 /// The start time and the last sequence number of the test pose.
@@ -151,6 +159,9 @@ pub(crate) struct VrView {
     /// The viewing side's scale wish at the newest Present call in the mode `vr`, `None` for no
     /// wish and before the first one.
     scale_wish: Option<ScaleWish>,
+    /// The lens in use of the view kind decided at the newest Present call in the mode `vr`, the
+    /// game's before the first one.
+    lens: LensInUse,
     /// The warning that the eyes do not turn while the view camera does not rewrite the rays.
     unturned: Once,
 }
@@ -172,6 +183,7 @@ impl VrView {
             newest: None,
             horizon: HorizonInUse::of(None, flags.horizon),
             scale_wish: None,
+            lens: LensInUse::Game,
             unturned: Once::default(),
         }
     }
@@ -191,10 +203,10 @@ impl VrView {
     /// The placement of the next frame's proxies at the Present call `call`, by the call's view
     /// kind. A screen kind places each eye on the head controller's right axis at the eye distance
     /// of the call's stereo settings times its eye scale. In the mode `vr` the head pose in use
-    /// places the eyes of a world kind at the eye scale 1 in the anchor of the horizon in use, and
-    /// `header` reads the viewer link header's pose only while the test pose is off. While the
-    /// call's rays are the game's, the mode `vr` uses no head pose and logs that once. The mode
-    /// `vr` keeps the call's scale wish for [`Self::menu_scale`].
+    /// places the eyes of a world kind at the eye scale 1 in the anchor of the horizon in use with
+    /// the lens in use, and `header` reads the viewer link header's pose only while the test pose
+    /// is off. While the call's rays are the game's, the mode `vr` uses no head pose and logs that
+    /// once. The mode `vr` keeps the call's scale wish for [`Self::menu_scale`].
     pub(crate) fn placement(
         &mut self,
         header: impl FnOnce() -> Option<HeadSample>,
@@ -207,6 +219,8 @@ impl VrView {
         }
         self.horizon = HorizonInUse::of(wishes.horizon, self.flags.horizon);
         self.scale_wish = wishes.scale;
+        let VrFlags { lens_fov_y_deg, lens_aspect, .. } = self.flags;
+        self.lens = LensInUse::of(kind, wishes.lens, lens_fov_y_deg, lens_aspect);
         let ipd_m = stereo.ipd_mm.meters();
         if rays == Rays::GameBuilt {
             once!(
@@ -223,7 +237,7 @@ impl VrView {
         let head = choose(header, test, ipd_m);
         self.newest = Some(head);
         match kind {
-            ViewKind::World => pose_placement(head, self.horizon.horizon),
+            ViewKind::World => pose_placement(head, self.horizon.horizon, self.lens),
             ViewKind::Screen => screen,
         }
     }
@@ -258,6 +272,7 @@ impl VrView {
             eye_m: head.eye_m,
             horizon: self.horizon.horizon,
             horizon_from: self.horizon.from,
+            lens: self.lens,
         })
     }
 }
@@ -288,13 +303,14 @@ pub(crate) fn tag(fill: ProxyFill, camera: Option<Camera>) -> FrameTag {
     FrameTag { head_sequence: fill.head_sequence, fov_y_rad, aspect }
 }
 
-/// The placement of `head` in the anchor of `horizon`.
-fn pose_placement(head: HeadInUse, horizon: Horizon) -> Placement {
+/// The placement of `head` in the anchor of `horizon` with the lens of `lens`.
+fn pose_placement(head: HeadInUse, horizon: Horizon, lens: LensInUse) -> Placement {
     Placement::Pose {
         pose: head.pose,
         sequence: head.sequence,
         offsets_m: eye::offsets_m(head.eye_m),
         horizon,
+        lens: lens.lens(),
     }
 }
 

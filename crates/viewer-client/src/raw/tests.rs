@@ -1,6 +1,7 @@
 //! The header view against a mapping this test creates in the core's place.
 
 use ipc_layout::viewer_header::horizon_wish::HorizonWish;
+use ipc_layout::viewer_header::lens_wish::LensWish;
 use ipc_layout::viewer_header::pose::{HeadPose, HeadRead, HeadSample};
 use ipc_layout::viewer_header::scale_wish::ScaleWish;
 use ipc_layout::viewer_header::screen::{ParallelShare, ScreenRead};
@@ -13,7 +14,8 @@ use windows::core::HSTRING;
 use super::fixture::{CoreMapping, LAYOUT_VERSION_OFFSET, test_name};
 use super::{HeaderView, HeaderViewError};
 use crate::header::{
-    write_head_pose, write_horizon_wish, write_scale_wish, write_screen, write_view_wish,
+    write_head_pose, write_horizon_wish, write_lens_wish, write_scale_wish, write_screen,
+    write_view_wish,
 };
 
 #[test]
@@ -102,10 +104,13 @@ fn a_wish_write_into_another_layout_version_fails_and_writes_nothing() {
     assert_eq!(write_horizon_wish(&view, HorizonWish::Camera), refused, "the horizon wish write");
     let scale = ScaleWish::from_percent(70).expect("a scale");
     assert_eq!(write_scale_wish(&view, scale), refused, "the scale wish write");
+    let lens = LensWish { fov_y_rad: 1.6, aspect: 1.0 };
+    assert_eq!(write_lens_wish(&view, lens), refused, "the lens wish write");
     let words = view.read_words();
     assert_eq!(words.get(31), Some(&0), "the view wish word at byte 124 was written");
     assert_eq!(words.get(34), Some(&0), "the horizon wish word at byte 136 was written");
     assert_eq!(words.get(35), Some(&0), "the scale wish word at byte 140 was written");
+    assert_eq!(words.get(36..38), Some([0; 2].as_slice()), "a lens wish word was written");
 }
 
 #[test]
@@ -120,6 +125,24 @@ fn a_scale_wish_write_reaches_the_word_at_byte_140_and_changes_no_core_word() {
     let read = ViewerHeader::decode(&view.read_words()).expect("a valid header");
     assert_eq!(read.scale_wish(), Some(scale));
     assert_eq!(view.read_words().get(35), Some(&70));
+    let core_words: Vec<(usize, u32)> = read.core_words().collect();
+    assert_eq!(core_words, header.core_words().collect::<Vec<_>>(), "a core word changed");
+}
+
+#[test]
+fn a_lens_wish_write_reaches_the_words_at_bytes_144_and_148_and_changes_no_core_word() {
+    let header = ViewerHeader::new(TextureInfo { width: 64, ..TextureInfo::default() }, 3, 9, 12);
+    let core = CoreMapping::create("lens-wish", &header).expect("the core's mapping");
+    let view = HeaderView::open(&core.name).expect("open the header").expect("the header exists");
+    let lens = LensWish { fov_y_rad: 1.745_329_3, aspect: 0.9 };
+
+    assert_eq!(write_lens_wish(&view, lens), Ok(()));
+
+    let read = ViewerHeader::decode(&view.read_words()).expect("a valid header");
+    assert_eq!(read.lens_wish(), Some(lens));
+    let words = view.read_words();
+    let expected = [1.745_329_3_f32.to_bits(), 0.9_f32.to_bits()];
+    assert_eq!(words.get(36..38), Some(expected.as_slice()));
     let core_words: Vec<(usize, u32)> = read.core_words().collect();
     assert_eq!(core_words, header.core_words().collect::<Vec<_>>(), "a core word changed");
 }

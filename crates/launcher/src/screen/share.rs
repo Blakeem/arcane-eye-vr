@@ -108,13 +108,15 @@ mod tests {
     use xr::quad::{self, ScreenQuad};
 
     use super::{ShareWriter, parallel_share};
+    use crate::screen::geometry::test_support::headset_fovs;
     use crate::screen::picture::Link;
 
     /// A head whose eye views lie `apart_m` meters apart.
     fn head(apart_m: f32) -> Head {
         let half = apart_m / 2.0;
         let eye = |x| Vector3f { x, y: 1.6, z: 0.0 };
-        Head { pose: Posef::IDENTITY, eyes: PerEye { left: eye(-half), right: eye(half) } }
+        let eyes = PerEye { left: eye(-half), right: eye(half) };
+        Head { pose: Posef::IDENTITY, eyes, fovs: headset_fovs() }
     }
 
     fn share(head: Option<&Head>, width_m: f32) -> f32 {

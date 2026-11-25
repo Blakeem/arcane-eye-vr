@@ -62,6 +62,12 @@ impl HeadController {
         black_box(Self { vtable, object })
     }
 
+    /// Writes `matrix` into the controller's bytes at `offset`.
+    pub(crate) fn set_matrix(&mut self, offset: usize, matrix: &[f32; 16]) {
+        let bytes: Vec<u8> = matrix.iter().flat_map(|value| value.to_ne_bytes()).collect();
+        self.object[offset..][..bytes.len()].copy_from_slice(&bytes);
+    }
+
     pub(crate) fn address(&self) -> GameAddr {
         GameAddr::new(self.object.as_ptr().expose_provenance())
     }

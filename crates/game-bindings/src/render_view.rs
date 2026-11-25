@@ -11,15 +11,15 @@ use game_mem::{
 
 use crate::camera::{BlockPair, PerCamera};
 use crate::offsets::{
-    CONTROLLER_SIZE, CONTROLLER_VIEW, CONTROLLER_VTABLE_SLOTS, CONTROLLER_WORLD_TRANSLATE_SLOT,
-    ENVIRONMENT_RECORD_ID, PER_CAMERA_FAR, PER_CAMERA_NEAR, PER_CAMERA_POSITION,
-    PER_CAMERA_PROJECTION, PER_CAMERA_VIEW, PER_VIEW_CORNER_RAYS, SCENE_ACTIVE, VIEW_ATMOSPHERE,
-    VIEW_ATMOSPHERE_LOCK, VIEW_ATMOSPHERE_REQUEST, VIEW_ATMOSPHERE_TARGET, VIEW_FOG_VARIANT,
-    VIEW_JOB_CONTEXT, VIEW_LAST_SEEN_CONTROLLER, VIEW_LIGHTING, VIEW_LIGHTING_LOCK,
-    VIEW_LIGHTING_REQUEST, VIEW_LIGHTING_TARGET, VIEW_OCCLUSION, VIEW_PER_VIEW_1, VIEW_PLAYER_ROOM,
-    VIEW_PLAYER_ROOM_SIZE, VIEW_READ_STATE_CONTROLLER, VIEW_SCENE, VIEW_SPLIT_INDEX,
-    VIEW_SPLIT_SIDE, VIEW_STAGE_ARRAY, VIEW_STAGE_OWNER, VIEW_WRITE_STATE_CONTROLLER,
-    VIEW_WRITE_STATE_ENABLED,
+    CONTROLLER_PROJECTION, CONTROLLER_SIZE, CONTROLLER_VIEW, CONTROLLER_VTABLE_SLOTS,
+    CONTROLLER_WORLD_TRANSLATE_SLOT, ENVIRONMENT_RECORD_ID, PER_CAMERA_FAR, PER_CAMERA_NEAR,
+    PER_CAMERA_POSITION, PER_CAMERA_PROJECTION, PER_CAMERA_VIEW, PER_VIEW_CORNER_RAYS,
+    SCENE_ACTIVE, VIEW_ATMOSPHERE, VIEW_ATMOSPHERE_LOCK, VIEW_ATMOSPHERE_REQUEST,
+    VIEW_ATMOSPHERE_TARGET, VIEW_FOG_VARIANT, VIEW_JOB_CONTEXT, VIEW_LAST_SEEN_CONTROLLER,
+    VIEW_LIGHTING, VIEW_LIGHTING_LOCK, VIEW_LIGHTING_REQUEST, VIEW_LIGHTING_TARGET, VIEW_OCCLUSION,
+    VIEW_PER_VIEW_1, VIEW_PLAYER_ROOM, VIEW_PLAYER_ROOM_SIZE, VIEW_READ_STATE_CONTROLLER,
+    VIEW_SCENE, VIEW_SPLIT_INDEX, VIEW_SPLIT_SIDE, VIEW_STAGE_ARRAY, VIEW_STAGE_OWNER,
+    VIEW_WRITE_STATE_CONTROLLER, VIEW_WRITE_STATE_ENABLED,
 };
 
 /// A render view, by its address in the game process.
@@ -44,6 +44,9 @@ pub struct ControllerCopy([u8; CONTROLLER_SIZE]);
 
 /// The index of the view matrix's first `f32` in a controller's bytes.
 const VIEW_WORD: usize = CONTROLLER_VIEW / size_of::<f32>();
+
+/// The index of the projection's first `f32` in a controller's bytes.
+const PROJECTION_WORD: usize = CONTROLLER_PROJECTION / size_of::<f32>();
 
 // `WRITE_LEN` ends at the player fields, so every other written field must come before them.
 const _: () = assert!(VIEW_READ_STATE_CONTROLLER < VIEW_PLAYER_ROOM);
@@ -365,12 +368,22 @@ impl ControllerCopy {
 
     /// The copied world-to-camera view matrix, 16 `f32` in column-major order.
     pub fn view(&self) -> [f32; 16] {
+        self.matrix_at(VIEW_WORD)
+    }
+
+    /// The copied projection, 16 `f32` in column-major order.
+    pub fn projection(&self) -> [f32; 16] {
+        self.matrix_at(PROJECTION_WORD)
+    }
+
+    /// The 16 `f32` that start at the copy's `f32` index `first`.
+    fn matrix_at(&self, first: usize) -> [f32; 16] {
         let (words, _) = self.0.as_chunks::<4>();
-        let mut view = [0.0; 16];
-        for (value, word) in view.iter_mut().zip(words.iter().skip(VIEW_WORD)) {
+        let mut matrix = [0.0; 16];
+        for (value, word) in matrix.iter_mut().zip(words.iter().skip(first)) {
             *value = f32::from_ne_bytes(*word);
         }
-        view
+        matrix
     }
 }
 

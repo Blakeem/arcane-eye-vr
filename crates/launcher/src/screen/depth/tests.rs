@@ -14,6 +14,7 @@ use xr::head::Head;
 use super::test_support::{grid, write};
 use super::{CellDepth, DepthView, DepthWatch, Fallback, Kind, depth, usable};
 use crate::screen::geometry::Shares;
+use crate::screen::geometry::test_support::headset_fovs;
 
 /// A map of 3 columns and 2 rows whose cells each hold a disparity of their own.
 const CELLS: [Cell; 6] = [
@@ -31,7 +32,8 @@ fn view(cells: &[Cell]) -> DepthView<'_> {
 
 fn head(left_x: f32) -> Head {
     let eye = |x| Vector3f { x, y: 1.6, z: 0.0 };
-    Head { pose: Posef::IDENTITY, eyes: PerEye { left: eye(left_x), right: eye(0.032) } }
+    let eyes = PerEye { left: eye(left_x), right: eye(0.032) };
+    Head { pose: Posef::IDENTITY, eyes, fovs: headset_fovs() }
 }
 
 #[test]

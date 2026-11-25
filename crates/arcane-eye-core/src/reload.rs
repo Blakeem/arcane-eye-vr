@@ -154,6 +154,8 @@ fn info_changed_dev(started: Config, flags: DevFlags) {
             test_head = flags.vr.test_head.as_str(),
             test_yaw_deg = flags.vr.test_yaw_deg.degrees(),
             ui_scale_percent = flags.vr.ui_scale_percent.percent(),
+            lens_fov_y_deg = flags.vr.lens_fov_y_deg.degrees(),
+            lens_aspect = flags.vr.lens_aspect.aspect(),
             "dev file changed, and its vr flags apply at the next start"
         );
     }

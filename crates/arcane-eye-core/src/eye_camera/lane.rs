@@ -64,8 +64,8 @@ impl Lane {
     }
 
     /// Fills the lane's next proxy in `pages` from `head`, the `ReadState` controller of `view`, with
-    /// the lane's eye placed by its placement, and points `view` at it through `writes`. The lane's
-    /// turn ends even when a read or write faults.
+    /// the lane's eye placed by its placement and the placement's lens, and points `view` at it
+    /// through `writes`. The lane's turn ends even when a read or write faults.
     pub(super) fn proxy(
         &mut self,
         pages: &SharedPages,
@@ -81,6 +81,7 @@ impl Lane {
         let head_view = copy.view();
         let camera = self.placement.camera(&head_view, self.eye);
         let head_position = eye_camera::position(&head_view);
+        let lens = self.placement.lens_write(&copy.projection());
         let [next, ..] = self.ring;
         self.ring.rotate_left(1);
         let parts = ProxyParts {
@@ -89,6 +90,7 @@ impl Lane {
             eye: self.eye,
             camera: &camera,
             head_position,
+            lens: lens.scales(),
         };
         let Ok(proxy_writes) = pages.destination().offset(next) else {
             return Err(EyeFault::ProxyWrite);
@@ -97,7 +99,7 @@ impl Lane {
         let Ok(()) = proxy::write(proxy_writes, &parts) else { return Err(EyeFault::ProxyWrite) };
         point_view(writes, head, CameraController::new(proxy), history)?;
         self.last = Some(LastProxy { head, proxy });
-        Ok(Outcome::Proxied { eye: self.eye, proxy, history })
+        Ok(Outcome::Proxied { eye: self.eye, proxy, history, lens })
     }
 
     /// Kept when the view saw last the proxy of the lane's last proxied frame and that frame's head

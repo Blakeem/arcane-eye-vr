@@ -2,16 +2,17 @@
 
 use std::f32::consts::FRAC_1_SQRT_2;
 
+use ipc_layout::viewer_header::lens_wish::LensWish;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose};
-use openxr::{Posef, Quaternionf};
+use openxr::{Fovf, Posef, Quaternionf};
 use stereo_core::eye::PerEye;
 use xr::head::Head;
 
 use super::{
     Choice, KeptPoses, QuadCause, TALLY_FRAMES, Tallies, Tally, Written, choose, eye_views, fov,
-    head_write,
+    head_write, lens_logged, lens_wish,
 };
-use crate::screen::geometry::test_support::{assert_near, vector};
+use crate::screen::geometry::test_support::{assert_near, headset_fovs, vector};
 
 /// A lens 55 degrees high with the aspect 16 by 9.
 const FOV_Y_RAD: f32 = 0.959_931_1;
@@ -37,7 +38,7 @@ fn assert_close(got: f32, want: f32, tolerance: f32, what: &str) {
 #[test]
 fn a_head_read_writes_its_pose_in_the_link_layout_unless_a_value_is_not_finite() {
     let pose = Posef { orientation: LEFT_TURN, position: vector(0.1, 1.6, -0.2) };
-    let head = Head { pose, eyes: eyes_apart(0.064) };
+    let head = Head { pose, eyes: eyes_apart(0.064), fovs: headset_fovs() };
     let (link, eye_m) = head_write(&head).expect("a finite head");
     let expected = HeadPose {
         position: [0.1, 1.6, -0.2],
@@ -86,6 +87,94 @@ fn each_eye_sits_half_the_eye_distance_along_the_head_pose_s_x_axis() {
     assert_near(turned.left.pose.position, vector(0.0, 1.6, 0.032));
     assert_near(turned.right.pose.position, vector(0.0, 1.6, -0.032));
     assert_eq!(turned.right.pose.orientation, LEFT_TURN);
+}
+
+const fn angles(angle_left: f32, angle_right: f32, angle_up: f32, angle_down: f32) -> Fovf {
+    Fovf { angle_left, angle_right, angle_up, angle_down }
+}
+
+#[test]
+fn the_lens_wish_takes_the_largest_half_width_and_half_height_of_both_eye_views() {
+    let fovs =
+        PerEye { left: angles(-0.9, 0.7, 0.8, -0.85), right: angles(-0.75, 0.95, 0.82, -0.78) };
+    let wish = lens_wish(fovs).expect("a lens wish");
+    // The half width is 0.95 radians and the half height 0.85, so the aspect is
+    // tan(0.95) / tan(0.85) = 1.228 448.
+    assert_close(wish.fov_y_rad, 1.7, 1e-6, "twice the half height");
+    assert_close(wish.aspect, 1.228_448, 1e-5, "the aspect");
+}
+
+#[test]
+fn the_lens_wish_holds_each_half_angle_to_60_degrees() {
+    let wide = angles(-1.2, 1.3, 1.1, -1.25);
+    let wish = lens_wish(PerEye { left: wide, right: wide }).expect("a lens wish");
+    assert_close(wish.fov_y_rad, 2.094_395_1, 1e-6, "twice 60 degrees");
+    assert_close(wish.aspect, 1.0, 1e-6, "both halves held to 60 degrees");
+    let tall = angles(-0.7, 0.7, 1.4, -0.7);
+    let held = lens_wish(PerEye { left: tall, right: tall }).expect("a lens wish");
+    assert_close(held.fov_y_rad, 2.094_395_1, 1e-6, "the height held");
+    // tan(0.7) / tan(60 degrees) = 0.842 288 / 1.732 051 = 0.486 295.
+    assert_close(held.aspect, 0.5, 1e-6, "the aspect of 0.486 held to 0.5");
+}
+
+#[test]
+fn the_lens_wish_holds_its_aspect_from_0_5_to_2_by_a_larger_half_width_or_half_height() {
+    let narrow = angles(-0.6, 0.6, 0.9, -0.9);
+    let kept = lens_wish(PerEye { left: narrow, right: narrow }).expect("a lens wish");
+    // tan(0.6) / tan(0.9) = 0.684 137 / 1.260 158 = 0.542 898, inside the range.
+    assert_close(kept.fov_y_rad, 1.8, 1e-6, "the height kept");
+    assert_close(kept.aspect, 0.542_898, 1e-5, "the aspect kept");
+    let wide = angles(-1.3, 1.3, 0.5, -0.5);
+    let held = lens_wish(PerEye { left: wide, right: wide }).expect("a lens wish");
+    // The half width is held to 60 degrees, and tan(60 degrees) / tan(0.5) = 3.170 is past 2,
+    // so the half height grows to atan(1.732 051 / 2) = 0.713 724 radians.
+    assert_close(held.fov_y_rad, 1.427_448, 1e-5, "twice the grown half height");
+    assert_close(held.aspect, 2.0, 1e-6, "the aspect held to 2");
+    for wish in [held, lens_wish(PerEye { left: wide, right: narrow }).expect("a lens wish")] {
+        assert!(wish.is_within_bounds(), "{wish:?} is a wish the core takes");
+    }
+}
+
+#[test]
+fn eye_views_with_an_angle_that_is_not_finite_or_of_no_size_give_no_wish() {
+    let good = angles(-0.8, 0.8, 0.8, -0.8);
+    for (bad, what) in [
+        (angles(0.0, 0.8, 0.8, -0.8), "a left angle of 0"),
+        (angles(-0.8, 0.8, 0.8, -0.0), "a down angle of -0"),
+        (angles(-0.8, f32::NAN, 0.8, -0.8), "a right angle that is not a number"),
+        (angles(-0.8, 0.8, f32::INFINITY, -0.8), "an infinite up angle"),
+    ] {
+        assert_eq!(lens_wish(PerEye { left: good, right: bad }), None, "{what}");
+        assert_eq!(lens_wish(PerEye { left: bad, right: good }), None, "{what}");
+    }
+}
+
+#[test]
+fn the_lens_wish_is_logged_first_and_after_a_change_of_more_than_half_a_degree() {
+    let logged = LensWish { fov_y_rad: 1.6, aspect: 1.0 };
+    let half_degree = 0.5_f32.to_radians();
+    assert!(lens_logged(None, logged), "the first wish");
+    let small = LensWish { fov_y_rad: 1.6 + 0.8 * half_degree, ..logged };
+    assert!(!lens_logged(Some(logged), small), "a change of 0.4 degrees");
+    let taller = LensWish { fov_y_rad: 1.6 + 1.2 * half_degree, ..logged };
+    assert!(lens_logged(Some(logged), taller), "a change of 0.6 degrees in height");
+    let wider = LensWish { aspect: 1.02, ..logged };
+    assert!(lens_logged(Some(logged), wider), "a change of about 1 degree in width");
+}
+
+#[test]
+fn a_tag_with_the_lens_100_degrees_high_and_the_aspect_1_gives_four_angles_of_50_degrees() {
+    let tagged = FrameTag { head_sequence: 2, fov_y_rad: 1.745_329_3, aspect: 1.0 };
+    let Choice::Projection(views) = choose(tagged, &mut kept([2])) else {
+        panic!("a kept pose and a usable lens");
+    };
+    for view in [views.left, views.right] {
+        let Fovf { angle_left, angle_right, angle_up, angle_down } = view.fov;
+        for (angle, what) in [(-angle_left, "left"), (angle_right, "right"), (angle_up, "up")] {
+            assert_close(angle, 0.872_664_6, 1e-6, what);
+        }
+        assert_close(-angle_down, 0.872_664_6, 1e-6, "down");
+    }
 }
 
 fn tag(head_sequence: u32, fov_y_rad: f32) -> FrameTag {

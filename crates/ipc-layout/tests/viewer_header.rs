@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests {
     use ipc_layout::viewer_header::horizon_wish::{HorizonWish, NO_WISH_WORD};
+    use ipc_layout::viewer_header::lens_wish::{self, LensWish};
     use ipc_layout::viewer_header::pose::{FrameTag, HeadPose, HeadRead, HeadSample};
     use ipc_layout::viewer_header::scale_wish::ScaleWish;
     use ipc_layout::viewer_header::screen::{ParallelShare, ScreenRead};
@@ -11,9 +12,9 @@ mod tests {
         Acquire, AdapterLuid, EYE_DISTANCE_OFFSET, EyeRect, FRAME_ASPECT_OFFSET,
         FRAME_FOV_Y_OFFSET, FRAME_HEAD_SEQUENCE_OFFSET, FRAME_OFFSET, GENERATION_OFFSET,
         HEAD_ORIENTATION_OFFSET, HEAD_POSITION_OFFSET, HEAD_SEQUENCE_OFFSET, HEARTBEAT_OFFSET,
-        HORIZON_WISH_OFFSET, HeaderError, PARALLEL_SHARE_OFFSET, PRESENT_OFFSET, SCALE_WISH_OFFSET,
-        SCREEN_SEQUENCE_OFFSET, SIZE, TextureInfo, VIEW_WISH_OFFSET, ViewerHeader, WIDTH_OFFSET,
-        WORDS,
+        HORIZON_WISH_OFFSET, HeaderError, LENS_ASPECT_OFFSET, LENS_FOV_Y_OFFSET, LENS_WISH_OFFSETS,
+        PARALLEL_SHARE_OFFSET, PRESENT_OFFSET, SCALE_WISH_OFFSET, SCREEN_SEQUENCE_OFFSET, SIZE,
+        TextureInfo, VIEW_WISH_OFFSET, ViewerHeader, WIDTH_OFFSET, WORDS,
     };
 
     /// A LUID low part whose four bytes differ, so a swapped byte order shows.
@@ -53,19 +54,21 @@ mod tests {
     }
 
     #[test]
-    fn the_screen_slot_sits_at_bytes_128_and_132_and_the_wishes_at_136_and_140_of_192_bytes() {
+    fn the_screen_slot_sits_at_bytes_128_and_132_and_the_wishes_from_136_to_148_of_192_bytes() {
         assert_eq!((SIZE, WORDS), (192, 48));
         assert_eq!(SCREEN_SEQUENCE_OFFSET, 128);
         assert_eq!(PARALLEL_SHARE_OFFSET, 132);
         assert_eq!(HORIZON_WISH_OFFSET, 136);
         assert_eq!(SCALE_WISH_OFFSET, 140);
+        assert_eq!((LENS_FOV_Y_OFFSET, LENS_ASPECT_OFFSET), (144, 148));
+        assert_eq!(LENS_WISH_OFFSETS, [144, 148]);
     }
 
     #[test]
     fn encode_writes_each_field_at_its_layout_word() {
         let words = ViewerHeader::new(texture(), 7, FRAME, PRESENT).encode();
         assert_eq!(words[0].to_le_bytes(), *b"B3SV");
-        assert_eq!(words[1], 7, "layout version 7");
+        assert_eq!(words[1], 8, "layout version 8");
         assert_eq!(words[2], LUID_LOW, "adapter LUID low part");
         assert_eq!(words[3], LUID_HIGH_BITS, "adapter LUID high part -2");
         assert_eq!(words[4..7], [1920, 1080, 28], "width, height and format");
@@ -82,8 +85,8 @@ mod tests {
         assert_eq!(
             words[20..],
             [0; 28],
-            "head pose, frame tag, view wish world, screen, no horizon wish, no scale wish and \
-             reserved"
+            "head pose, frame tag, view wish world, screen, no horizon wish, no scale wish, no lens \
+             wish and reserved"
         );
     }
 
@@ -123,10 +126,10 @@ mod tests {
         words[1] = 2;
         let error = ViewerHeader::decode(&words).expect_err("layout version 2");
         assert_eq!(error, HeaderError::LayoutVersion { found: 2 });
-        assert_eq!(error.to_string(), "the viewer header's layout version is 2, not 7");
-        words[1] = 6;
-        let version_6 = ViewerHeader::decode(&words).expect_err("layout version 6");
-        assert_eq!(version_6, HeaderError::LayoutVersion { found: 6 });
+        assert_eq!(error.to_string(), "the viewer header's layout version is 2, not 8");
+        words[1] = 7;
+        let version_7 = ViewerHeader::decode(&words).expect_err("layout version 7");
+        assert_eq!(version_7, HeaderError::LayoutVersion { found: 7 });
     }
 
     #[test]
@@ -135,12 +138,12 @@ mod tests {
         let words = header.encode();
         let written: Vec<(usize, u32)> = header.core_words().collect();
         let left_out = "the heartbeat, 9 head pose words, the view wish, 2 screen words, the \
-                        horizon wish and the scale wish left out";
-        assert_eq!(written.len(), WORDS - 15, "{left_out}");
+                        horizon wish, the scale wish and 2 lens wish words left out";
+        assert_eq!(written.len(), WORDS - 17, "{left_out}");
         let viewer_owned = |offset: usize| {
             offset == HEARTBEAT_OFFSET
                 || (76..112).contains(&offset)
-                || (124..144).contains(&offset)
+                || (124..152).contains(&offset)
         };
         assert!(written.iter().all(|(offset, _word)| !viewer_owned(*offset)), "{written:?}");
         assert!(written.is_sorted_by_key(|(offset, _word)| *offset), "{written:?}");
@@ -332,6 +335,32 @@ mod tests {
         }
         let header = ViewerHeader::decode(&words).expect("a header");
         assert_eq!(header.scale_wish().map(ScaleWish::percent), Some(70));
+    }
+
+    #[test]
+    fn the_lens_wish_is_two_f32_words_and_a_field_of_view_word_of_0_is_no_wish() {
+        let mut words = ViewerHeader::new(texture(), 1, 1, 1).encode();
+        let wish = |read: &[u32; WORDS]| ViewerHeader::decode(read).expect("a header").lens_wish();
+        assert_eq!(wish(&words), None, "a header the core made");
+        let lens = LensWish { fov_y_rad: 1.745_329_3, aspect: 0.9 };
+        assert_eq!(lens.to_words(), [1.745_329_3_f32.to_bits(), 0.9_f32.to_bits()]);
+        [words[36], words[37]] = lens.to_words();
+        assert_eq!(wish(&words), Some(lens), "the words at bytes 144 and 148");
+        words[36] = lens_wish::NO_WISH_WORD;
+        assert_eq!(wish(&words), None, "a field of view word of 0 with an aspect");
+        assert_eq!(lens_wish::NO_WISH_WORD, 0.0_f32.to_bits());
+    }
+
+    #[test]
+    fn the_core_words_leave_the_lens_wish_as_the_viewer_wrote_it() {
+        let mut words = ViewerHeader::new(texture(), 1, 1, 1).encode();
+        let lens = LensWish { fov_y_rad: 1.6, aspect: 1.1 };
+        [words[36], words[37]] = lens.to_words();
+        for (offset, word) in ViewerHeader::new(texture(), 2, 2, 2).core_words() {
+            words[offset / 4] = word;
+        }
+        let header = ViewerHeader::decode(&words).expect("a header");
+        assert_eq!(header.lens_wish(), Some(lens));
     }
 
     const S_FALSE: i32 = 1;

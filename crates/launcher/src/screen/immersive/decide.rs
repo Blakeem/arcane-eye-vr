@@ -1,9 +1,11 @@
-//! The immersive mode's decisions: the head pose and the eye distance a head read writes, the kept
-//! head poses, the choice between the projection layer and the screen quad for a frame's tag, each
-//! eye's view of the projection layer, and the tally of the shown frames.
+//! The immersive mode's decisions: the head pose and the eye distance a head read writes, the lens
+//! wish of the head read's eye views and when it is logged, the kept head poses, the choice between
+//! the projection layer and the screen quad for a frame's tag, each eye's view of the projection
+//! layer, and the tally of the shown frames.
 
 use std::collections::VecDeque;
 
+use ipc_layout::viewer_header::lens_wish::{self, LensWish};
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose};
 use openxr::{Fovf, Posef, Vector3f};
 use stereo_core::eye::PerEye;
@@ -19,6 +21,14 @@ pub(crate) const KEPT_POSES: usize = 64;
 /// tangent.
 const MAX_FOV_Y_RAD: f32 = 3.1;
 
+/// The largest half height and half width of a lens wish, 60 degrees, so its height stays below
+/// [`lens_wish::MAX_FOV_Y_RAD`].
+const MAX_HALF_ANGLE_RAD: f32 = 60.0_f32.to_radians();
+
+/// The change of a lens wish's height or width past which the launch app logs it again, 0.5
+/// degrees.
+const LENS_LOG_CHANGE_RAD: f32 = 0.5_f32.to_radians();
+
 /// The session frames between two tally lines.
 pub(crate) const TALLY_FRAMES: u32 = 600;
 
@@ -29,6 +39,44 @@ pub(crate) struct Written {
     pub(crate) sequence: u32,
     pub(crate) pose: Posef,
     pub(crate) eye_distance_m: f32,
+}
+
+/// The lens wish of the eye views whose fields of view are `fovs`: a centered lens whose half
+/// height is the largest size of an up or down angle of both eyes and whose half width is the
+/// largest size of a left or right angle of both eyes, each held to [`MAX_HALF_ANGLE_RAD`]. An
+/// aspect outside [`lens_wish::ASPECT`] is held to it by a larger half width or half height, so the
+/// lens still covers both. It is `None` while an angle's size is not finite or not above 0.
+pub(crate) fn lens_wish(fovs: PerEye<Fovf>) -> Option<LensWish> {
+    let PerEye { left, right } = fovs;
+    let widths = [left.angle_left, left.angle_right, right.angle_left, right.angle_right];
+    let heights = [left.angle_up, left.angle_down, right.angle_up, right.angle_down];
+    let (widths, heights) = (widths.map(f32::abs), heights.map(f32::abs));
+    let usable = widths.iter().chain(&heights).all(|size| size.is_finite() && *size > 0.0);
+    if !usable {
+        return None;
+    }
+    let held = |sizes: [f32; 4]| sizes.into_iter().fold(0.0, f32::max).min(MAX_HALF_ANGLE_RAD);
+    let (half_width, half_height) = (held(widths), held(heights));
+    let (min_aspect, max_aspect) = (*lens_wish::ASPECT.start(), *lens_wish::ASPECT.end());
+    let eye_aspect = half_width.tan() / half_height.tan();
+    let aspect = eye_aspect.clamp(min_aspect, max_aspect);
+    let half_height =
+        if eye_aspect > max_aspect { (half_width.tan() / max_aspect).atan() } else { half_height };
+    Some(LensWish { fov_y_rad: 2.0 * half_height, aspect })
+}
+
+/// Whether the launch app logs the lens wish `wish` after it logged `logged` last: at the first
+/// wish, and when the wish's height or width changed by more than [`LENS_LOG_CHANGE_RAD`].
+pub(crate) fn lens_logged(logged: Option<LensWish>, wish: LensWish) -> bool {
+    let Some(logged) = logged else { return true };
+    let height = (wish.fov_y_rad - logged.fov_y_rad).abs();
+    let width = (fov_x_rad(wish) - fov_x_rad(logged)).abs();
+    height > LENS_LOG_CHANGE_RAD || width > LENS_LOG_CHANGE_RAD
+}
+
+/// The horizontal field of view in radians of `wish`.
+pub(crate) fn fov_x_rad(wish: LensWish) -> f32 {
+    2.0 * (wish.aspect * (wish.fov_y_rad / 2.0).tan()).atan()
 }
 
 /// The head pose in the viewer link's layout and the eye distance in meters that a read of `head`

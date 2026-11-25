@@ -11,14 +11,15 @@ use std::time::Duration;
 use diag::rate::RateLimit;
 use diag::warn_every;
 use gfx::region::{RegionDraw, RegionError};
+use ipc_layout::viewer_header::lens_wish::LensWish;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose};
 use ipc_layout::viewer_header::screen::ParallelShare;
 use ipc_layout::viewer_header::{AdapterLuid, TextureInfo};
 use tracing::info;
 use viewer_client::frame::PixelFormat;
 use viewer_client::header::{
-    HeaderReadError, Names, read_header, write_head_pose, write_horizon_wish, write_scale_wish,
-    write_screen, write_view_wish,
+    HeaderReadError, Names, read_header, write_head_pose, write_horizon_wish, write_lens_wish,
+    write_scale_wish, write_screen, write_view_wish,
 };
 use viewer_client::region::Region;
 use viewer_client::{Device, GpuError, HeaderView, SharedTexture};
@@ -192,17 +193,25 @@ impl Link {
         Ok(())
     }
 
-    /// Writes the view wish, the horizon wish and the scale wish of `wishes` into the viewer
-    /// header, and writes nothing while no core created the header.
+    /// Writes the view wish, the horizon wish and the scale wish of `wishes`, and `lens` when it
+    /// holds a lens wish, into the viewer header, and writes nothing while no core created the
+    /// header.
     ///
     /// # Errors
     ///
     /// Returns the [`HeaderReadError`] of a header that cannot be opened or holds another layout.
-    pub(crate) fn write_wishes(&mut self, wishes: Wishes) -> Result<(), HeaderReadError> {
+    pub(crate) fn write_wishes(
+        &mut self,
+        wishes: Wishes,
+        lens: Option<LensWish>,
+    ) -> Result<(), HeaderReadError> {
         let Some(view) = self.header_view()? else { return Ok(()) };
         write_view_wish(view, wishes.view)?;
         write_horizon_wish(view, wishes.horizon)?;
         write_scale_wish(view, wishes.scale)?;
+        if let Some(lens) = lens {
+            write_lens_wish(view, lens)?;
+        }
         Ok(())
     }
 

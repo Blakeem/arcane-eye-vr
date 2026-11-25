@@ -71,8 +71,13 @@ pub(super) fn log_depth(depth: DepthReport, cursor: CursorReport) {
 /// Logs the `vr view` line: the view kind decided at the newest Present call, `world` or `screen`,
 /// where the head pose in use at that call came from, its sequence number, its turn to the right
 /// and upward in degrees, the eye distance in meters, the horizon in use and where it comes from,
-/// `wish` for the viewing side's horizon wish or `flag` for the dev flag `vr.horizon`.
+/// `wish` for the viewing side's horizon wish or `flag` for the dev flag `vr.horizon`, and the
+/// vertical field of view in degrees and the aspect of the lens that call chose for the next frame's
+/// proxies, 0 for the game's lens, and where it comes from, `wish`, `flag` or `game`. A proxy whose
+/// head controller's projection is not a centered perspective projection keeps the game's lens,
+/// which the eye camera logs once.
 pub(super) fn log_vr(report: VrReport) {
+    let (lens_fov_y_deg, lens_aspect) = report.lens.line_values();
     tracing::info!(
         target: TARGET,
         view = report.view.as_str(),
@@ -83,6 +88,9 @@ pub(super) fn log_vr(report: VrReport) {
         eye_m = ?report.eye_m,
         horizon = report.horizon.as_str(),
         horizon_from = report.horizon_from.as_str(),
+        lens_fov_y_deg = ?lens_fov_y_deg,
+        lens_aspect = ?lens_aspect,
+        lens_from = report.lens.source(),
         "vr view"
     );
 }

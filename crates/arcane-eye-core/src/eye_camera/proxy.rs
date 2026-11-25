@@ -2,13 +2,15 @@
 //! world position, its layout in the shared pages, and the writes that fill one.
 //!
 //! A proxy holds the controller's bytes with its own vtable pointer and the eye's view matrix and
-//! inverse in place of the head's. After them come the eye's world position that slot 9 returns, the
-//! head's world position and the proxy's eye for the camera line, and the proxy's copy of the
-//! controller's vtable.
+//! inverse in place of the head's, and the lens in use, when the frame has one, at the scale
+//! elements of the projection and its inverse. The controller's field of view and aspect fields
+//! keep the head's values, which the game's model detail reads. After the controller's bytes come
+//! the eye's world position that slot 9 returns, the head's world position and the proxy's eye for
+//! the camera line, and the proxy's copy of the controller's vtable.
 
 use game_bindings::offsets::{
-    CONTROLLER_INVERSE_VIEW, CONTROLLER_SIZE, CONTROLLER_VIEW, CONTROLLER_VTABLE_SLOTS,
-    CONTROLLER_WORLD_TRANSLATE_SLOT,
+    CONTROLLER_INVERSE_PROJECTION, CONTROLLER_INVERSE_VIEW, CONTROLLER_PROJECTION, CONTROLLER_SIZE,
+    CONTROLLER_VIEW, CONTROLLER_VTABLE_SLOTS, CONTROLLER_WORLD_TRANSLATE_SLOT,
 };
 use game_bindings::render_view::ControllerCopy;
 use game_mem::{
@@ -16,6 +18,7 @@ use game_mem::{
 };
 use stereo_core::eye::Eye;
 use stereo_core::eye_camera::EyeCamera;
+use stereo_core::lens::{self, LensScales};
 
 /// The eye's world position in a proxy, three `f32` and one of padding.
 const PROXY_TRANSLATE: usize = CONTROLLER_SIZE;
@@ -28,6 +31,12 @@ const PROXY_EYE: usize = PROXY_HEAD + 3 * size_of::<f32>();
 
 /// The proxy's own copy of the controller's vtable.
 const PROXY_VTABLE: usize = PROXY_EYE + size_of::<u32>();
+
+/// The byte offsets of [`lens::SCALE_ELEMENTS`] in a matrix of 16 `f32`.
+const SCALE_OFFSETS: [usize; 2] = {
+    let [x_scale, y_scale] = lens::SCALE_ELEMENTS;
+    [x_scale * size_of::<f32>(), y_scale * size_of::<f32>()]
+};
 
 /// The bytes of one proxy.
 pub(super) const PROXY_SIZE: usize = PROXY_VTABLE + CONTROLLER_VTABLE_SLOTS * size_of::<usize>();
@@ -53,6 +62,9 @@ pub(super) struct ProxyParts<'parts> {
     pub(super) eye: Eye,
     pub(super) camera: &'parts EyeCamera,
     pub(super) head_position: [f32; 3],
+    /// The lens's values at [`lens::SCALE_ELEMENTS`] of the projection and its inverse, or `None`
+    /// to keep the head controller's lens.
+    pub(super) lens: Option<LensScales>,
 }
 
 /// The proxy's slot 9, in place of `GetWorldTranslate`: the address of the eye's world position in
@@ -101,8 +113,8 @@ pub(super) fn ring(start: usize) -> [usize; RING_LEN] {
     core::array::from_fn(|index| index.wrapping_mul(PROXY_SIZE).wrapping_add(start))
 }
 
-/// Fills the proxy at the start of `proxy` from `parts`, the vtable pointer, view matrices and slot 9
-/// last over the copied bytes.
+/// Fills the proxy at the start of `proxy` from `parts`, the vtable pointer, view matrices, lens and
+/// slot 9 last over the copied bytes.
 ///
 /// # Errors
 ///
@@ -114,9 +126,21 @@ pub(super) fn write(proxy: WriteDest<'_>, parts: &ProxyParts<'_>) -> Result<(), 
     try_write(proxy, vtable.start().get())?;
     try_write_slice(proxy.offset(CONTROLLER_VIEW)?, &parts.camera.view)?;
     try_write_slice(proxy.offset(CONTROLLER_INVERSE_VIEW)?, &parts.camera.inverse)?;
+    if let Some(scales) = parts.lens {
+        write_scales(proxy.offset(CONTROLLER_PROJECTION)?, scales.projection)?;
+        write_scales(proxy.offset(CONTROLLER_INVERSE_PROJECTION)?, scales.inverse)?;
+    }
     try_write_slice(proxy.offset(PROXY_TRANSLATE)?, &parts.camera.position)?;
     try_write_slice(proxy.offset(PROXY_HEAD)?, &parts.head_position)?;
     try_write(proxy.offset(PROXY_EYE)?, eye_code(parts.eye))?;
     try_write_slice(vtable, parts.vtable)?;
     try_write(vtable.offset(CONTROLLER_WORLD_TRANSLATE_SLOT)?, world_translate_fn().get())
+}
+
+/// Writes `scales` at [`lens::SCALE_ELEMENTS`] of the matrix that starts at `matrix`.
+fn write_scales(matrix: WriteDest<'_>, scales: [f32; 2]) -> Result<(), WriteError> {
+    for (offset, scale) in SCALE_OFFSETS.into_iter().zip(scales) {
+        try_write(matrix.offset(offset)?, scale)?;
+    }
+    Ok(())
 }

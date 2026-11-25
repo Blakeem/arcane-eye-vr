@@ -1,6 +1,6 @@
 //! The head of one frame: the pose of the VIEW reference space in the LOCAL space and the position
-//! of each eye view the runtime locates, the VIEW space's one location per frame, and the pure
-//! decision of when a read gives them.
+//! and the field of view of each eye view the runtime locates, the VIEW space's one location per
+//! frame, and the pure decision of when a read gives them.
 //!
 //! The VIEW space's origin is the middle of the two eyes and its orientation is the head's, also on
 //! a headset whose two eye views are turned outward.
@@ -8,7 +8,8 @@
 use std::cell::Cell;
 
 use openxr::{
-    D3D11, Posef, ReferenceSpaceType, Space, SpaceLocation, Time, Vector3f, View, ViewStateFlags,
+    D3D11, Fovf, Posef, ReferenceSpaceType, Space, SpaceLocation, Time, Vector3f, View,
+    ViewStateFlags,
 };
 use stereo_core::eye::PerEye;
 
@@ -70,6 +71,8 @@ pub struct Head {
     pub pose: Posef,
     /// The position of each eye view.
     pub eyes: PerEye<Vector3f>,
+    /// The field of view of each eye view, as angles in radians from the view's -Z axis.
+    pub fovs: PerEye<Fovf>,
 }
 
 /// The head of one read: `view`, the location of the VIEW space, and `flags` and `views`, the
@@ -84,7 +87,8 @@ pub(crate) fn located(view: SpaceLocation, flags: ViewStateFlags, views: &[View]
     let [left, right] = views else {
         return None;
     };
-    Some(Head { pose, eyes: PerEye { left: left.pose.position, right: right.pose.position } })
+    let eyes = PerEye { left: left.pose.position, right: right.pose.position };
+    Some(Head { pose, eyes, fovs: PerEye { left: left.fov, right: right.fov } })
 }
 
 #[cfg(test)]
@@ -93,7 +97,7 @@ mod tests {
     use std::f32::consts::FRAC_1_SQRT_2;
 
     use openxr::{
-        Posef, Quaternionf, SpaceLocation, SpaceLocationFlags, Time, Vector3f, View,
+        Fovf, Posef, Quaternionf, SpaceLocation, SpaceLocationFlags, Time, Vector3f, View,
         ViewStateFlags, sys,
     };
     use stereo_core::eye::PerEye;
@@ -110,9 +114,15 @@ mod tests {
         SpaceLocation { location_flags, pose: HEAD }
     }
 
+    /// An eye view at `x` whose field of view reaches 0.9 radians up, down and outward and 0.8
+    /// radians inward, so the two eyes' fields of view differ.
     fn eye_view(x: f32) -> View {
         let position = Vector3f { x, y: 1.6, z: -0.2 };
-        View { pose: Posef { orientation: Quaternionf::IDENTITY, position }, ..View::default() }
+        let (outward, inward) = (0.9, 0.8);
+        let (angle_left, angle_right) =
+            if x < 0.1 { (-outward, inward) } else { (-inward, outward) };
+        let fov = Fovf { angle_left, angle_right, angle_up: 0.9, angle_down: -0.9 };
+        View { pose: Posef { orientation: Quaternionf::IDENTITY, position }, fov }
     }
 
     fn tracked() -> SpaceLocation {
@@ -124,14 +134,18 @@ mod tests {
     }
 
     #[test]
-    fn a_tracked_head_and_two_placed_views_give_the_head_pose_and_each_eye_s_position() {
+    fn a_tracked_head_and_two_placed_views_give_the_head_pose_and_each_eye_s_position_and_lens() {
         let views = [eye_view(0.068), eye_view(0.132)];
         let head = located(tracked(), views_valid(), &views).expect("a head");
         let eyes = PerEye {
             left: Vector3f { x: 0.068, y: 1.6, z: -0.2 },
             right: Vector3f { x: 0.132, y: 1.6, z: -0.2 },
         };
-        assert_eq!(head, Head { pose: HEAD, eyes });
+        let fovs = PerEye {
+            left: Fovf { angle_left: -0.9, angle_right: 0.8, angle_up: 0.9, angle_down: -0.9 },
+            right: Fovf { angle_left: -0.8, angle_right: 0.9, angle_up: 0.9, angle_down: -0.9 },
+        };
+        assert_eq!(head, Head { pose: HEAD, eyes, fovs });
     }
 
     #[test]

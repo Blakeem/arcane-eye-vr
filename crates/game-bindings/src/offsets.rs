@@ -55,6 +55,14 @@ pub const CONTROLLER_VIEW: usize = 0x90;
 /// The inverse of the view matrix in a camera controller, 16 `f32` in column-major order.
 pub const CONTROLLER_INVERSE_VIEW: usize = 0xD0;
 
+/// The camera's projection in a camera controller, 16 `f32` in column-major order, which the
+/// view's `PerCamera` block follows. Measured with a probe build of the launch mode `vr`.
+pub const CONTROLLER_PROJECTION: usize = 0x110;
+
+/// The inverse of the projection in a camera controller, 16 `f32` in column-major order, which
+/// `ScreenToWorldRay` reads (disassembly at RVA 0x4085EDC).
+pub const CONTROLLER_INVERSE_PROJECTION: usize = 0x150;
+
 /// The number of camera controller vtable slots a copy of the vtable holds, as bg3-vr's proxy copies.
 pub const CONTROLLER_VTABLE_SLOTS: usize = 96;
 
@@ -289,6 +297,9 @@ pub const SHADOW_CACHE_RECORDS_SIZE: usize = 0x230;
 /// The on byte of a shadow stage's distant shadow cache.
 pub const SHADOW_CACHE_ON: usize = 0x241B;
 
-const _: () = assert!(CONTROLLER_INVERSE_VIEW + 16 * size_of::<f32>() <= CONTROLLER_SIZE);
+const _: () = assert!(CONTROLLER_INVERSE_VIEW + 16 * size_of::<f32>() <= CONTROLLER_PROJECTION);
+const _: () =
+    assert!(CONTROLLER_PROJECTION + 16 * size_of::<f32>() <= CONTROLLER_INVERSE_PROJECTION);
+const _: () = assert!(CONTROLLER_INVERSE_PROJECTION + 16 * size_of::<f32>() <= CONTROLLER_SIZE);
 const _: () =
     assert!(CONTROLLER_WORLD_TRANSLATE_SLOT < CONTROLLER_VTABLE_SLOTS * size_of::<usize>());

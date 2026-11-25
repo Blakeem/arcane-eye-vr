@@ -14,7 +14,7 @@
 //! lighting and decals all use the eye. The engine's frame sync points each `ReadState` back at the
 //! head controller at each frame's end. The frame's [`Placement`] places the eye: on the head
 //! controller's right axis, or in a world frame of the launch mode `vr` by the head pose on top of
-//! the head controller's camera.
+//! the head controller's camera with the frame's lens in use.
 //!
 //! Each of the two views has its own ring of proxies in pages that the core context holds for the
 //! process life, so a proxy that a render worker thread still reads stays mapped. A frame ends at the
@@ -42,7 +42,7 @@ use stereo_core::eye::Eye;
 use tracing::{Level, info, warn};
 
 use self::lane::Lane;
-pub(crate) use self::placement::{Placement, ProxyFill};
+pub(crate) use self::placement::{LensWrite, Placement, ProxyFill};
 use self::proxy::{PAGES_SIZE, RING_SIZE};
 pub(crate) use self::target::Target;
 use self::target::target;
@@ -114,13 +114,13 @@ enum Role {
 }
 
 /// What the handler did with a view.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Outcome {
     /// The eye camera proxies no view in this role in this frame, so the view renders as the game set
     /// it.
     Unchanged,
-    /// The view renders from `proxy` at `eye` for this frame.
-    Proxied { eye: Eye, proxy: GameAddr, history: History },
+    /// The view renders from `proxy` at `eye` for this frame, with the lens that `lens` names.
+    Proxied { eye: Eye, proxy: GameAddr, history: History, lens: LensWrite },
 }
 
 /// Whether the engine keeps a proxied view's frame history.
@@ -245,6 +245,7 @@ fn role(target: Target, layout: Layout, view: RenderView) -> Option<Role> {
 #[derive(Debug, Default)]
 struct EyeLogs {
     first_proxy: Once,
+    uncentered: Once,
     fault: RateLimit,
 }
 
@@ -312,7 +313,7 @@ impl EyeState {
     /// frame's main view or eye view. A failed read or write logs a rate-limited warning.
     pub(crate) fn on_view_begin(&mut self, view: RenderView, writes: WriteDest<'_>) {
         match self.proxy_view(view, writes) {
-            Ok(Outcome::Proxied { eye, proxy, history }) => {
+            Ok(Outcome::Proxied { eye, proxy, history, lens }) => {
                 once!(
                     self.logs.first_proxy,
                     Level::INFO,
@@ -322,6 +323,15 @@ impl EyeState {
                     history = ?history,
                     "eye camera renders a view from an eye"
                 );
+                if lens == LensWrite::Uncentered {
+                    once!(
+                        self.logs.uncentered,
+                        Level::WARN,
+                        view = format_args!("{:#x}", view.address().get()),
+                        "the game camera's projection is not a centered perspective projection, so \
+                         the eye camera keeps the game's lens in place of the lens in use"
+                    );
+                }
             }
             Ok(Outcome::Unchanged) => {}
             Err(fault) => {

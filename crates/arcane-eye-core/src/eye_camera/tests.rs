@@ -1,7 +1,9 @@
 //! The eye camera's proxy of the main view against views, controllers and vtables built in test
-//! memory. The submodules hold the stereo pair and the install.
+//! memory. The submodules hold the stereo pair, the install, the head pose placement of the launch
+//! mode `vr` and the lens in use.
 
 mod install;
+mod lens;
 mod pair;
 mod vr;
 

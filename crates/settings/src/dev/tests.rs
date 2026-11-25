@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use super::lens::{LensAspect, LensFovYDeg};
 use super::{
     DevFlags, ForwardWaitMs, Horizon, MainViewEye, SecondView, StereoFlags, TestHead, TestYawDeg,
     UiScalePercent, ViewerFlags, ViewerSource, VrFlags, parse,
@@ -113,18 +114,22 @@ fn the_vr_flags_default_to_a_level_horizon_and_no_test_head_turned_20_degrees() 
     assert_eq!(vr.test_head, TestHead::Off);
     assert_eq!(vr.test_yaw_deg, TestYawDeg::try_from(20.0).expect("in range"));
     assert_eq!(vr.ui_scale_percent.percent(), 100);
+    assert_eq!((vr.lens_fov_y_deg, vr.lens_fov_y_deg.degrees()), (LensFovYDeg::OFF, 0.0));
+    assert_eq!(vr.lens_aspect.aspect(), 1.0);
     assert_eq!(parse("[vr]\n"), Ok(DevFlags::default()));
 }
 
 #[test]
 fn each_vr_flag_parses_from_the_value_it_logs_under() {
     let text = "[vr]\nhorizon = \"camera\"\ntest_head = \"sweep\"\ntest_yaw_deg = -45\n\
-                ui_scale_percent = 70\n";
+                ui_scale_percent = 70\nlens_fov_y_deg = 100\nlens_aspect = 0.9\n";
     let vr = VrFlags {
         horizon: Horizon::Camera,
         test_head: TestHead::Sweep,
         test_yaw_deg: TestYawDeg::try_from(-45.0).expect("in range"),
         ui_scale_percent: UiScalePercent::try_from(70).expect("in range"),
+        lens_fov_y_deg: LensFovYDeg::try_from(100.0).expect("in range"),
+        lens_aspect: LensAspect::try_from(0.9).expect("in range"),
     };
     assert_eq!(parse(text), Ok(DevFlags { vr, ..DevFlags::default() }));
     for test_head in [TestHead::Off, TestHead::Yaw, TestHead::Sweep] {
@@ -159,6 +164,39 @@ fn an_interface_scale_parses_from_40_to_100_percent_and_rejects_the_file_outside
     assert_eq!(scale(101), Err(rejection(past, 2, 20)));
     let share = UiScalePercent::try_from(70).map(UiScalePercent::share);
     assert!(share.is_ok_and(|share| (share - 0.7).abs() < 1e-6), "{share:?}");
+}
+
+#[test]
+fn a_lens_height_parses_as_0_or_from_30_to_120_degrees_and_rejects_the_file_otherwise() {
+    let fov = |value: &str| parse(&format!("[vr]\nlens_fov_y_deg = {value}\n"));
+    for degrees in [0.0, 30.0, 100.0, 120.0] {
+        let parsed = fov(&format!("{degrees:?}")).map(|flags| flags.vr.lens_fov_y_deg.degrees());
+        assert_eq!(parsed, Ok(degrees));
+    }
+    let below = "lens_fov_y_deg must be 0 for off or from 30 to 120 degrees, got 29";
+    assert_eq!(fov("29"), Err(rejection(below, 2, 18)));
+    let past = "lens_fov_y_deg must be 0 for off or from 30 to 120 degrees, got 121";
+    assert_eq!(fov("121"), Err(rejection(past, 2, 18)));
+    let negative = "lens_fov_y_deg must be 0 for off or from 30 to 120 degrees, got -10";
+    assert_eq!(fov("-10"), Err(rejection(negative, 2, 18)));
+    assert_eq!(LensFovYDeg::OFF.radians(), None, "off gives no lens");
+    let radians = LensFovYDeg::try_from(90.0).map(LensFovYDeg::radians);
+    let quarter_turn = radians.ok().flatten();
+    let quarter = std::f32::consts::FRAC_PI_2;
+    assert!(quarter_turn.is_some_and(|rad| (rad - quarter).abs() < 1e-6), "{quarter_turn:?}");
+}
+
+#[test]
+fn a_lens_aspect_parses_from_half_to_2_and_rejects_the_file_outside() {
+    let aspect = |value: &str| parse(&format!("[vr]\nlens_aspect = {value}\n"));
+    for value in [0.5, 1.0, 2.0] {
+        let parsed = aspect(&format!("{value:?}")).map(|flags| flags.vr.lens_aspect.aspect());
+        assert_eq!(parsed, Ok(value));
+    }
+    let below = "lens_aspect must be from 0.5 to 2, got 0.4";
+    assert_eq!(aspect("0.4"), Err(rejection(below, 2, 15)));
+    let past = "lens_aspect must be from 0.5 to 2, got 2.1";
+    assert_eq!(aspect("2.1"), Err(rejection(past, 2, 15)));
 }
 
 fn forward_wait(value: &str) -> Result<DevFlags, Rejection> {

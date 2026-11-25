@@ -1,5 +1,6 @@
 //! The viewer link from the core's publisher to the reading side: the frame tag, the depth map,
-//! the head pose, the screen's parallel share, the view wish, the horizon wish and the scale wish.
+//! the head pose, the screen's parallel share, the view wish, the horizon wish, the scale wish and
+//! the lens wish.
 
 use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
@@ -10,6 +11,7 @@ use gfx::publish::{Outcome, Present, Publisher, ViewNames, Wishes};
 use ipc_layout::viewer_header::STALE_AFTER;
 use ipc_layout::viewer_header::depth_map::{Grid, INTERFACE, InterfaceArea, SCENE};
 use ipc_layout::viewer_header::horizon_wish::HorizonWish;
+use ipc_layout::viewer_header::lens_wish::LensWish;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose, HeadSample};
 use ipc_layout::viewer_header::scale_wish::ScaleWish;
 use ipc_layout::viewer_header::screen::ParallelShare;
@@ -17,8 +19,8 @@ use ipc_layout::viewer_header::view_wish::ViewWish;
 use viewer_client::depth_map::DepthMapReader;
 use viewer_client::frame::{FrameReader, ReadError};
 use viewer_client::header::{
-    Names, read_header, write_head_pose, write_horizon_wish, write_scale_wish, write_screen,
-    write_view_wish,
+    Names, read_header, write_head_pose, write_horizon_wish, write_lens_wish, write_scale_wish,
+    write_screen, write_view_wish,
 };
 use viewer_client::region::Region;
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
@@ -244,7 +246,7 @@ fn scale(percent: u32) -> ScaleWish {
 }
 
 #[test]
-fn a_horizon_and_a_scale_wish_the_reading_side_wrote_are_read_by_the_publisher_while_it_beats() {
+fn the_horizon_scale_and_lens_wishes_the_reading_side_wrote_are_read_while_it_beats() {
     let names = test_view_names("link-horizon-wish");
     let mut publisher = Publisher::create(&names).expect("create the header");
     let mut viewer = TestViewer::open(&names);
@@ -256,10 +258,13 @@ fn a_horizon_and_a_scale_wish_the_reading_side_wrote_are_read_by_the_publisher_w
     assert_eq!(write_horizon_wish(view, HorizonWish::Camera), Ok(()));
     assert_eq!(write_view_wish(view, ViewWish::Screen), Ok(()));
     assert_eq!(write_scale_wish(view, scale(70)), Ok(()));
+    let lens = LensWish { fov_y_rad: 1.745_329_3, aspect: 1.0 };
+    assert_eq!(write_lens_wish(view, lens), Ok(()));
     let all = Wishes {
         view: ViewWish::Screen,
         horizon: Some(HorizonWish::Camera),
         scale: Some(scale(70)),
+        lens: Some(lens),
     };
     assert_eq!(publisher.wishes(now), all, "every wish of one read");
     assert_eq!(write_horizon_wish(view, HorizonWish::Level), Ok(()));
@@ -270,6 +275,7 @@ fn a_horizon_and_a_scale_wish_the_reading_side_wrote_are_read_by_the_publisher_w
     let after_stop = publisher.wishes(stalled);
     assert_eq!(after_stop.horizon, None, "the stopped viewer's horizon wish is gone");
     assert_eq!(after_stop.scale, None, "the stopped viewer's scale wish is gone");
+    assert_eq!(after_stop.lens, None, "the stopped viewer's lens wish is gone");
 }
 
 #[test]

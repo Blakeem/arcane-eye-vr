@@ -149,13 +149,15 @@ fn a_changed_vr_table_logs_its_own_line_in_the_mode_vr_only() {
     let dir = test_dir("reload-dev-vr");
     let root = dir.path();
     let published = Published::new(Settings::default());
-    fs::write(root.join("dev.toml"), "[vr]\ntest_head = \"sweep\"\n").expect("write");
+    let vr_table = "[vr]\ntest_head = \"sweep\"\nlens_fov_y_deg = 100\n";
+    fs::write(root.join("dev.toml"), vr_table).expect("write");
     let reloaded = "\"settings reloaded\" ipd_mm=65.0 depth_offset_percent=1.5";
     let desktop = apply_logged(root, &published, "reload-dev-vr-log-1");
     assert_eq!(desktop, [reloaded], "the mode desktop-stereo never reads the [vr] table");
     let vr = apply_logged_in(Mode::Vr, root, &published, "reload-dev-vr-log-2");
     let vr_changed = "\"dev file changed, and its vr flags apply at the next start\" \
-                      horizon=level test_head=sweep test_yaw_deg=20.0 ui_scale_percent=100";
+                      horizon=level test_head=sweep test_yaw_deg=20.0 ui_scale_percent=100 \
+                      lens_fov_y_deg=100.0 lens_aspect=1.0";
     assert_eq!(vr, [reloaded, vr_changed]);
     fs::write(root.join("dev.toml"), "[stereo]\nsecond_view = false\n").expect("write");
     let stereo = apply_logged_in(Mode::Vr, root, &published, "reload-dev-vr-log-3");

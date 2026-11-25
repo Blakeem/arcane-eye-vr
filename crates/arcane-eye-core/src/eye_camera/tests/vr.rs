@@ -36,6 +36,7 @@ fn turned_right() -> Placement {
         sequence: 8,
         offsets_m: PerEye { left: -HALF_EYE_M, right: HALF_EYE_M },
         horizon: Horizon::Camera,
+        lens: None,
     }
 }
 

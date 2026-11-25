@@ -20,8 +20,8 @@ use stereo_core::head::HeadPose;
 
 use super::head::{PoseSource, choose, next_test_sequence};
 use super::{
-    GameRead, HorizonFrom, PresentCall, Rays, TestClock, ViewKind, VrReport, VrView, depth_offset,
-    tag,
+    GameRead, HorizonFrom, LensInUse, PresentCall, Rays, TestClock, ViewKind, VrReport, VrView,
+    depth_offset, tag,
 };
 use crate::eye_camera::{Placement, ProxyFill};
 use crate::logged;
@@ -126,7 +126,7 @@ fn header(sequence: u32, eye_distance_m: f32) -> HeadSample {
 /// The placement of each eye `half_m` meters to the side of the head frame of `pose`.
 fn pose_at(pose: HeadPose, sequence: u32, half_m: f32) -> Placement {
     let offsets_m = PerEye { left: -half_m, right: half_m };
-    Placement::Pose { pose, sequence, offsets_m, horizon: Horizon::Level }
+    Placement::Pose { pose, sequence, offsets_m, horizon: Horizon::Level, lens: None }
 }
 
 #[test]
@@ -267,6 +267,7 @@ const fn no_pose_report(view: ViewKind) -> VrReport {
         eye_m: 0.065,
         horizon: Horizon::Level,
         horizon_from: HorizonFrom::Flag,
+        lens: LensInUse::Game,
     }
 }
 
@@ -280,6 +281,7 @@ fn in_the_mode_vr_a_world_kind_takes_the_horizon_wish_over_the_dev_flag_and_the_
         sequence: 0,
         offsets_m: PerEye { left: -0.0325, right: 0.0325 },
         horizon,
+        lens: None,
     };
     let in_use = |of: &VrView| of.report().map(|report| (report.horizon, report.horizon_from));
     let wished = place_wished(&mut view, || None, present, Some(HorizonWish::Level));

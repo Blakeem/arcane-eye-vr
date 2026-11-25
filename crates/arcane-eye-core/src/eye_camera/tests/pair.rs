@@ -48,7 +48,7 @@ fn pair_state(views: &Views) -> EyeState {
 /// `history`.
 fn proxied_at(outcome: Result<Outcome, EyeFault>, eye: Eye, history: History) -> GameAddr {
     match outcome {
-        Ok(Outcome::Proxied { eye: got_eye, proxy, history: got })
+        Ok(Outcome::Proxied { eye: got_eye, proxy, history: got, .. })
             if got_eye == eye && got == history =>
         {
             proxy

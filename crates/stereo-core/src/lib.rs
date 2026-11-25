@@ -6,3 +6,4 @@ pub mod corner_rays;
 pub mod eye;
 pub mod eye_camera;
 pub mod head;
+pub mod lens;

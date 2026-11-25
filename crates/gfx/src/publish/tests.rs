@@ -6,13 +6,15 @@ use super::{
     Step, Wishes, after_acquire, after_read,
 };
 use ipc_layout::viewer_header::horizon_wish::HorizonWish;
+use ipc_layout::viewer_header::lens_wish::LensWish;
 use ipc_layout::viewer_header::pose::{HeadPose, HeadSample, HeadSlot};
 use ipc_layout::viewer_header::scale_wish::ScaleWish;
 use ipc_layout::viewer_header::screen::{ParallelShare, ScreenSlot};
 use ipc_layout::viewer_header::view_wish::ViewWish;
 use ipc_layout::viewer_header::{
-    Acquire, HEAD_SEQUENCE_OFFSET, HORIZON_WISH_OFFSET, PARALLEL_SHARE_OFFSET, SCALE_WISH_OFFSET,
-    SCREEN_SEQUENCE_OFFSET, TextureInfo, VIEW_WISH_OFFSET, ViewerHeader, WORD_SIZE,
+    Acquire, HEAD_SEQUENCE_OFFSET, HORIZON_WISH_OFFSET, LENS_ASPECT_OFFSET, LENS_FOV_Y_OFFSET,
+    PARALLEL_SHARE_OFFSET, SCALE_WISH_OFFSET, SCREEN_SEQUENCE_OFFSET, TextureInfo,
+    VIEW_WISH_OFFSET, ViewerHeader, WORD_SIZE,
 };
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::E_FAIL;
@@ -142,10 +144,10 @@ fn a_write_counts_unless_the_slot_held_its_number_while_no_viewer_ran() {
     assert_eq!(screen.next(slot(4, 0.0065), 4), Some(share(0.0065)), "its write ended");
 }
 
-/// What a read gives with no write: the view wish `view`, the horizon wish `horizon` and no
-/// scale wish.
+/// What a read gives with no write: the view wish `view`, the horizon wish `horizon`, no scale
+/// wish and no lens wish.
 const fn use_only(view: ViewWish, horizon: Option<HorizonWish>) -> AfterRead {
-    AfterRead { wishes: Wishes { view, horizon, scale: None }, resets: [None, None, None] }
+    AfterRead { wishes: Wishes { view, horizon, scale: None, lens: None }, resets: [None; 4] }
 }
 
 /// The view wish word 0 and the wish words 0, which a header the core made holds.
@@ -158,7 +160,7 @@ fn a_running_viewer_gives_its_view_wish_and_a_screen_a_stopped_viewer_left_reset
     assert_eq!(after_read(Some((wish(1), true))), screen);
     assert_eq!(after_read(Some((wish(0), true))), UNWRITTEN);
     assert_eq!(after_read(Some((wish(7), true))), UNWRITTEN, "a word other than 1");
-    let reset = AfterRead { resets: [Some((124, 0)), None, None], ..UNWRITTEN };
+    let reset = AfterRead { resets: [Some((124, 0)), None, None, None], ..UNWRITTEN };
     assert_eq!(after_read(Some((wish(1), false))), reset, "a stopped viewer's Screen");
     assert_eq!(after_read(Some((wish(0), false))), UNWRITTEN, "World needs no write");
     assert_eq!(after_read(Some((wish(7), false))), UNWRITTEN, "a word that reads as World");
@@ -174,7 +176,7 @@ fn a_running_viewer_gives_its_horizon_wish_and_a_stopped_viewer_left_resets_to_n
     assert_eq!(after_read(Some((wish(2), true))), camera, "the word 2");
     assert_eq!(after_read(Some((wish(0), true))), UNWRITTEN, "the word 0");
     assert_eq!(after_read(Some((wish(7), true))), UNWRITTEN, "a word that holds no wish");
-    let reset = AfterRead { resets: [None, Some((136, 0)), None], ..UNWRITTEN };
+    let reset = AfterRead { resets: [None, Some((136, 0)), None, None], ..UNWRITTEN };
     for word in [1, 2] {
         assert_eq!(after_read(Some((wish(word), false))), reset, "a stopped viewer's {word}");
     }
@@ -195,20 +197,40 @@ fn a_running_viewer_gives_its_scale_wish_and_a_stopped_viewer_left_resets_to_no_
         assert_eq!(after_read(Some((wish(word), true))), UNWRITTEN, "the word {word}");
         assert_eq!(after_read(Some((wish(word), false))), UNWRITTEN, "no wish needs no write");
     }
-    let reset = AfterRead { resets: [None, None, Some((140, 0))], ..UNWRITTEN };
+    let reset = AfterRead { resets: [None, None, Some((140, 0)), None], ..UNWRITTEN };
     assert_eq!(after_read(Some((wish(100), false))), reset, "a stopped viewer's 100");
+}
+
+/// The words of a lens wish of `fov_y_rad` with the aspect `aspect`.
+fn lens_words(fov_y_rad: f32, aspect: f32) -> [(usize, u32); 2] {
+    [(LENS_FOV_Y_OFFSET, fov_y_rad.to_bits()), (LENS_ASPECT_OFFSET, aspect.to_bits())]
+}
+
+#[test]
+fn a_running_viewer_gives_its_lens_wish_and_a_stopped_viewer_left_resets_its_field_of_view() {
+    let wished = header(lens_words(1.745_329_3, 1.0));
+    let lens = Some(LensWish { fov_y_rad: 1.745_329_3, aspect: 1.0 });
+    let running = AfterRead { wishes: Wishes { lens, ..UNWRITTEN.wishes }, ..UNWRITTEN };
+    assert_eq!(after_read(Some((wished, true))), running, "the lens 100 degrees high");
+    let reset = AfterRead { resets: [None, None, None, Some((144, 0))], ..UNWRITTEN };
+    assert_eq!(after_read(Some((wished, false))), reset, "a stopped viewer's lens");
+    let unwished = header(lens_words(0.0, 1.0));
+    assert_eq!(after_read(Some((unwished, true))), UNWRITTEN, "a field of view of 0");
+    assert_eq!(after_read(Some((unwished, false))), UNWRITTEN, "no wish needs no write");
 }
 
 #[test]
 fn every_wish_comes_from_one_read_and_a_stopped_viewer_left_resets_each() {
-    let all = header([(VIEW_WISH_OFFSET, 1), (HORIZON_WISH_OFFSET, 1), (SCALE_WISH_OFFSET, 70)]);
+    let wish_words = [(VIEW_WISH_OFFSET, 1), (HORIZON_WISH_OFFSET, 1), (SCALE_WISH_OFFSET, 70)];
+    let all = header(wish_words.into_iter().chain(lens_words(1.6, 0.9)));
     let wishes = Wishes {
         view: ViewWish::Screen,
         horizon: Some(HorizonWish::Level),
         scale: ScaleWish::from_percent(70),
+        lens: Some(LensWish { fov_y_rad: 1.6, aspect: 0.9 }),
     };
-    let running = AfterRead { wishes, resets: [None, None, None] };
+    let running = AfterRead { wishes, resets: [None; 4] };
     assert_eq!(after_read(Some((all, true))), running);
-    let resets = [Some((124, 0)), Some((136, 0)), Some((140, 0))];
+    let resets = [Some((124, 0)), Some((136, 0)), Some((140, 0)), Some((144, 0))];
     assert_eq!(after_read(Some((all, false))), AfterRead { resets, ..UNWRITTEN });
 }

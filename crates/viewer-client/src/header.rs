@@ -1,14 +1,16 @@
 //! The names of the viewer link, the header read that every reader of the link shares, the head
-//! pose write, the screen write, the view wish write, the horizon wish write and the scale wish
-//! write.
+//! pose write, the screen write, the view wish write, the horizon wish write, the scale wish write
+//! and the lens wish write.
 
 use ipc_layout::viewer_header::horizon_wish::HorizonWish;
+use ipc_layout::viewer_header::lens_wish::LensWish;
 use ipc_layout::viewer_header::pose::HeadPose;
 use ipc_layout::viewer_header::scale_wish::ScaleWish;
 use ipc_layout::viewer_header::screen::ParallelShare;
 use ipc_layout::viewer_header::view_wish::ViewWish;
 use ipc_layout::viewer_header::{
-    self, HORIZON_WISH_OFFSET, HeaderError, SCALE_WISH_OFFSET, VIEW_WISH_OFFSET, ViewerHeader,
+    self, HORIZON_WISH_OFFSET, HeaderError, LENS_ASPECT_OFFSET, LENS_FOV_Y_OFFSET,
+    SCALE_WISH_OFFSET, VIEW_WISH_OFFSET, ViewerHeader,
 };
 use windows::core::HSTRING;
 
@@ -136,5 +138,21 @@ pub fn write_horizon_wish(view: &HeaderView, wish: HorizonWish) -> Result<(), He
 pub fn write_scale_wish(view: &HeaderView, wish: ScaleWish) -> Result<(), HeaderError> {
     ViewerHeader::decode(&view.read_words())?;
     view.write_words([(SCALE_WISH_OFFSET, wish.to_word())]);
+    Ok(())
+}
+
+/// Writes `wish` as the lens wish into the header of `view`: the aspect, then the field of view.
+/// The core reads both words in one header read and checks the lens's bounds, so a read between
+/// the two writes gives one frame a new aspect with the earlier field of view, and the write takes
+/// no sequence number.
+///
+/// # Errors
+///
+/// Returns [`HeaderError`] when the header holds another magic value or layout version, which may
+/// hold other fields at the lens wish's offsets. The header is then left as it is.
+pub fn write_lens_wish(view: &HeaderView, wish: LensWish) -> Result<(), HeaderError> {
+    ViewerHeader::decode(&view.read_words())?;
+    let [fov_y, aspect] = wish.to_words();
+    view.write_words([(LENS_ASPECT_OFFSET, aspect), (LENS_FOV_Y_OFFSET, fov_y)]);
     Ok(())
 }

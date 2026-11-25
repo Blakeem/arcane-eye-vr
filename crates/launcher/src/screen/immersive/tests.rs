@@ -1,7 +1,8 @@
-//! The immersive mode's head pose write, its wishes write and its choice for a frame's tag,
-//! against a header mapping in the core's place.
+//! The immersive mode's head pose write, its wishes write with the lens wish and its choice for a
+//! frame's tag, against a header mapping in the core's place.
 
 use ipc_layout::viewer_header::horizon_wish::HorizonWish;
+use ipc_layout::viewer_header::lens_wish::LensWish;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose};
 use ipc_layout::viewer_header::scale_wish::ScaleWish;
 use ipc_layout::viewer_header::view_wish::ViewWish;
@@ -18,7 +19,7 @@ use xr::error::{XrError, XrStep};
 use xr::head::Head;
 
 use super::{Choice, Immersive};
-use crate::screen::geometry::test_support::vector;
+use crate::screen::geometry::test_support::{headset_fovs, vector};
 use crate::screen::menu::Wishes;
 use crate::screen::picture::Link;
 
@@ -47,7 +48,8 @@ fn head_sequence(mapping: &CoreMapping) -> u32 {
 /// A head at (0, 1.6, 0) looking ahead, with its eye views 0.064 meters apart.
 fn head() -> Head {
     let pose = Posef { orientation: Quaternionf::IDENTITY, position: vector(0.0, 1.6, 0.0) };
-    Head { pose, eyes: PerEye { left: vector(-0.032, 1.6, 0.0), right: vector(0.032, 1.6, 0.0) } }
+    let eyes = PerEye { left: vector(-0.032, 1.6, 0.0), right: vector(0.032, 1.6, 0.0) };
+    Head { pose, eyes, fovs: headset_fovs() }
 }
 
 fn tag(head_sequence: u32) -> FrameTag {
@@ -132,7 +134,7 @@ fn a_header_of_another_layout_takes_no_wish() {
     let (mapping, mut link) = header("immersive-wish-other-layout");
     mapping.write_word(LAYOUT_VERSION_OFFSET, 1).expect("write the layout version");
     let wished = Wishes { view: ViewWish::Screen, horizon: HorizonWish::Level, scale: scale(50) };
-    let refused = link.write_wishes(wished);
+    let refused = link.write_wishes(wished, Some(LensWish { fov_y_rad: 1.6, aspect: 1.0 }));
     let expected = HeaderError::LayoutVersion { found: 1 };
     assert!(
         matches!(refused, Err(HeaderReadError::Layout(found)) if found == expected),
@@ -141,6 +143,31 @@ fn a_header_of_another_layout_takes_no_wish() {
     Immersive::new().write_wishes(wished, &mut link);
     mapping.write_word(LAYOUT_VERSION_OFFSET, LAYOUT_VERSION).expect("write the layout version");
     assert_eq!(wishes(&mapping), (ViewWish::World, None, None), "nothing was written");
+}
+
+/// The lens wish in the header of `mapping`.
+fn lens(mapping: &CoreMapping) -> Option<LensWish> {
+    let mut core_view = None;
+    let (_, read) = read_header(&mut core_view, &mapping.name).expect("the core's header");
+    read.lens_wish()
+}
+
+#[test]
+fn the_wishes_write_carries_the_lens_wish_of_the_newest_head_read_that_gave_one() {
+    let (mapping, mut link) = header("immersive-lens");
+    let mut immersive = Immersive::new();
+    immersive.write_wishes(Wishes::default(), &mut link);
+    assert_eq!(lens(&mapping), None, "no head read gave a lens wish yet");
+    immersive.write_head(Ok(Some(head())), &mut link).expect("no loss");
+    immersive.write_wishes(Wishes::default(), &mut link);
+    // Each eye view reaches 0.8 radians to each side, so the lens is 1.6 radians high and square.
+    let headset = LensWish { fov_y_rad: 1.6, aspect: 1.0 };
+    let written = lens(&mapping).expect("the headset's lens wish");
+    let near = (written.fov_y_rad - 1.6).abs() < 1e-6 && (written.aspect - 1.0).abs() < 1e-6;
+    assert!(near, "{written:?}, not {headset:?}");
+    immersive.write_head(Ok(None), &mut link).expect("no loss");
+    immersive.write_wishes(Wishes::default(), &mut link);
+    assert_eq!(lens(&mapping), Some(written), "a frame with no head read keeps the last wish");
 }
 
 #[test]

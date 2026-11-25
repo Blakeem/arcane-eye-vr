@@ -4,11 +4,11 @@
 //! copies the back buffer into the shared texture while a viewer runs, or the game source's texture
 //! when the frame handler holds one and it yields a texture, with the frame's tag. The texture
 //! reference it takes drops before the frame handler returns. Once the header exists, the link reads
-//! the head pose, the screen's parallel share, the view wish, the horizon wish and the scale wish
-//! the viewing side wrote into it while the viewing side's heartbeat runs. While it runs, the link
-//! also gives the frame handler the depth map's section, which it makes at the first such frame,
-//! for each frame's depth map. The UI layer writes that map, or the frame handler writes a map of
-//! no cell in a core with no UI layer.
+//! the head pose, the screen's parallel share, the view wish, the horizon wish, the scale wish and
+//! the lens wish the viewing side wrote into it while the viewing side's heartbeat runs. While it
+//! runs, the link also gives the frame handler the depth map's section, which it makes at the
+//! first such frame, for each frame's depth map. The UI layer writes that map, or the frame
+//! handler writes a map of no cell in a core with no UI layer.
 
 use std::time::{Duration, Instant};
 
@@ -123,10 +123,10 @@ impl ViewerLink {
         }
     }
 
-    /// The view wish, the horizon wish and the scale wish the viewing side wrote last into the
-    /// header, read at `now` by [`Publisher::wishes`], which gives [`Wishes::default`] after the
-    /// viewing side stopped beating. It is also the default before the header exists and after its
-    /// creation failed.
+    /// The view wish, the horizon wish, the scale wish and the lens wish the viewing side wrote
+    /// last into the header, read at `now` by [`Publisher::wishes`], which gives
+    /// [`Wishes::default`] after the viewing side stopped beating. It is also the default before
+    /// the header exists and after its creation failed.
     pub(crate) fn wishes(&mut self, now: Instant) -> Wishes {
         match &mut self.link {
             Link::Ready(publisher) => publisher.wishes(now),

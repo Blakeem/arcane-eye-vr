@@ -31,7 +31,9 @@ use crate::ui_layer::depth_offset::{DepthOffset, OffsetFrom};
 use crate::ui_layer::test_support::idle_layer;
 use crate::view_camera::FrameCameras;
 use crate::viewer::ViewerLink;
-use crate::vr_view::{GameRead, HorizonFrom, PoseSource, Rays, ViewKind, VrReport, VrView};
+use crate::vr_view::{
+    GameRead, HorizonFrom, LensInUse, PoseSource, Rays, ViewKind, VrReport, VrView,
+};
 
 /// The main view camera of the tagged frames.
 const CAMERA: Camera = Camera {
@@ -230,6 +232,7 @@ fn the_head_pose_the_viewer_wrote_places_the_next_frames_eyes() {
         sequence: 2,
         offsets_m: PerEye { left: -0.032, right: 0.032 },
         horizon: Horizon::Level,
+        lens: None,
     };
     assert_eq!(placement, expected);
 }
@@ -298,6 +301,7 @@ const fn line_report(horizon: Horizon, horizon_from: HorizonFrom) -> VrReport {
         eye_m: 0.064,
         horizon,
         horizon_from,
+        lens: LensInUse::Game,
     }
 }
 
@@ -310,8 +314,9 @@ fn the_vr_view_line_holds_the_view_kind_pose_source_sequence_turn_eye_distance_a
     let [wished, flagged] = lines.as_slice() else { panic!("two vr view lines: {lines:#?}") };
     let fields = " arcane_eye_core::frame msg=\"vr view\" view=world pose=header head_sequence=8 \
                   yaw_deg=20.0 pitch_deg=-5.5 eye_m=0.064 horizon=";
-    assert!(wished.ends_with(&format!("{fields}camera horizon_from=wish")), "{wished}");
-    assert!(flagged.ends_with(&format!("{fields}level horizon_from=flag")), "{flagged}");
+    let lens = " lens_fov_y_deg=0.0 lens_aspect=0.0 lens_from=game";
+    assert!(wished.ends_with(&format!("{fields}camera horizon_from=wish{lens}")), "{wished}");
+    assert!(flagged.ends_with(&format!("{fields}level horizon_from=flag{lens}")), "{flagged}");
 }
 
 #[test]
@@ -330,7 +335,8 @@ fn a_perf_window_logs_one_vr_view_line_before_the_summary_only_in_the_mode_vr() 
         assert_eq!(summaries(&lines).len(), 1, "{mode:?}");
         if let [line] = vr.as_slice() {
             let fields = " msg=\"vr view\" view=world pose=none head_sequence=0 yaw_deg=0.0 \
-                          pitch_deg=0.0 eye_m=0.065 horizon=level horizon_from=flag";
+                          pitch_deg=0.0 eye_m=0.065 horizon=level horizon_from=flag \
+                          lens_fov_y_deg=0.0 lens_aspect=0.0 lens_from=game";
             assert!(line.ends_with(fields), "{line}");
             let position = |text: &str| lines.iter().position(|entry| entry.contains(text));
             assert!(position("\"vr view\"") < position("\"perf summary\""), "{lines:#?}");

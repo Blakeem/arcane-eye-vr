@@ -4,6 +4,7 @@ mod area;
 mod camera;
 mod depth;
 mod failed;
+mod lens;
 mod map;
 mod source;
 mod vr;

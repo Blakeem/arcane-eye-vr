@@ -25,7 +25,7 @@ pub struct Flag {
 }
 
 /// Every dev flag.
-pub const FLAGS: [Flag; 8] = [
+pub const FLAGS: [Flag; 10] = [
     Flag {
         name: "stereo.main_view_eye",
         question: "Which eye position does the game's single render view use, for trials that run \
@@ -81,6 +81,21 @@ pub const FLAGS: [Flag; 8] = [
         added: Version { major: 0, minor: 0, patch: 1 },
         expires: Version { major: 0, minor: 3, patch: 0 },
     },
+    Flag {
+        name: "vr.lens_fov_y_deg",
+        question: "How high in degrees is the lens a world frame renders with while the viewing \
+                   side writes no lens wish, for trials that run with no headset? 0 keeps the \
+                   game's lens.",
+        added: Version { major: 0, minor: 0, patch: 1 },
+        expires: Version { major: 0, minor: 3, patch: 0 },
+    },
+    Flag {
+        name: "vr.lens_aspect",
+        question: "What aspect has the lens of `vr.lens_fov_y_deg`, the tangent of half its width \
+                   over the tangent of half its height?",
+        added: Version { major: 0, minor: 0, patch: 1 },
+        expires: Version { major: 0, minor: 3, patch: 0 },
+    },
 ];
 
 #[cfg(test)]
@@ -132,6 +147,8 @@ mod tests {
             ("vr.test_head", added, expires),
             ("vr.test_yaw_deg", added, expires),
             ("vr.ui_scale_percent", added, expires),
+            ("vr.lens_fov_y_deg", added, expires),
+            ("vr.lens_aspect", added, expires),
         ];
         assert_eq!(vr, expected);
     }

@@ -2,12 +2,15 @@
 //!
 //! The file holds overrides only, since each default lives in the `Default` impl of its type. Each
 //! flag has an entry in `flags.rs`. An unknown key rejects the file, so a removed or expired flag is
-//! noticed.
+//! noticed. The lens flags' types are in [`lens`].
+
+pub mod lens;
 
 use std::time::Duration;
 
 use serde::Deserialize;
 
+use self::lens::{LensAspect, LensFovYDeg};
 use crate::rejection::Rejection;
 
 /// The flags of the dev file.
@@ -200,6 +203,10 @@ pub struct VrFlags {
     /// The dev flag `vr.ui_scale_percent`. Its entry in [`crate::flags::FLAGS`] states its
     /// question.
     pub ui_scale_percent: UiScalePercent,
+    /// The dev flag `vr.lens_fov_y_deg`. Its entry in [`crate::flags::FLAGS`] states its question.
+    pub lens_fov_y_deg: LensFovYDeg,
+    /// The dev flag `vr.lens_aspect`. Its entry in [`crate::flags::FLAGS`] states its question.
+    pub lens_aspect: LensAspect,
 }
 
 /// The scale of the game's interface in a world frame in percent, from [`UiScalePercent::MIN`] to

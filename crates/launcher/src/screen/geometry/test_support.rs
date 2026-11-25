@@ -28,6 +28,12 @@ pub(crate) fn ray_to(target: Vector3f) -> Ray {
     Ray { origin: vector(0.0, 0.0, 0.0), direction }
 }
 
+/// The field of view of each eye of a head read: 0.8 radians up, down and to each side.
+pub(crate) const fn headset_fovs() -> PerEye<Fovf> {
+    let fov = Fovf { angle_left: -0.8, angle_right: 0.8, angle_up: 0.8, angle_down: -0.8 };
+    PerEye { left: fov, right: fov }
+}
+
 /// Two eye views with the identity orientation 0.064 m apart around the LOCAL origin, each with
 /// the field of view of a lens [`LENS_HEIGHT_RAD`] high with the aspect 16 / 9.
 pub(crate) fn lens_views() -> PerEye<EyeView> {

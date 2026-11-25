@@ -12,7 +12,7 @@ use xr::input::HandInput;
 
 use super::{Action, Run, Sight, Surface, aiming, centered, closed, screen};
 use crate::screen::depth::{Depth, DepthView, Fallback, FrameDepth};
-use crate::screen::geometry::test_support::lens_views;
+use crate::screen::geometry::test_support::{headset_fovs, lens_views};
 use crate::screen::geometry::{self, Ray, Shares};
 use crate::screen::launcher::Target;
 use crate::screen::layer::Layer;
@@ -92,7 +92,7 @@ fn a_ray_on_the_screen_that_meets_nothing_of_the_picture_releases_the_held_left_
 fn only_the_game_s_picture_is_traced_and_its_layer_names_the_picture() {
     let cells = scene();
     let map = depth(&cells).map;
-    let head = Head { pose: Posef::IDENTITY, eyes: depth(&cells).eyes };
+    let head = Head { pose: Posef::IDENTITY, eyes: depth(&cells).eyes, fovs: headset_fovs() };
     let read = FrameDepth { map: Ok(map), head: Some(head) };
     let on_screen = surface(&Target::<()>::Game(Layer::Screen(screen())), read);
     let screen_surface = Surface::Screen(screen(), Some(depth(&cells)));
