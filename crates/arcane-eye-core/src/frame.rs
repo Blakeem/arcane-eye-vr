@@ -104,7 +104,7 @@ impl FrameState {
     /// Hands the eye cameras the placement of the next frame's proxies at the Present call of `now`,
     /// for the player's `stereo` settings in effect, while the view camera leaves the corner rays as
     /// `rays` says and the game's newest reads are `game`. The view kind is decided first, with the
-    /// view wish of the viewer link's one read of both wishes, so the UI layer hands over the eye
+    /// view wish of the viewer link's one read of every wish, so the UI layer hands over the eye
     /// scale that kind's placement applies, the full eye distance with no layer.
     pub(crate) fn hand_placement(
         &mut self,
@@ -117,7 +117,7 @@ impl FrameState {
         let kind = self.vr.decide(rays, game, wishes.view);
         let eye_scale =
             self.ui_layer.as_mut().map_or(EyeScale::FULL, |layer| layer.hand_eye_scale(kind));
-        let call = PresentCall { stereo, eye_scale, rays, kind, horizon: wishes.horizon, now };
+        let call = PresentCall { stereo, eye_scale, rays, kind, wishes, now };
         self.vr.placement(|| self.viewer.head_pose(now), call)
     }
 }
@@ -338,11 +338,10 @@ fn draw_and_map(
         }
         return;
     };
-    let screen = viewer.parallel_share(now);
     let kind = input.fill.kind;
-    let offset = vr_view::depth_offset(kind, input.stereo, screen);
-    let eye_m = vr.depth_eye_m(kind, input.stereo);
-    let depth = DepthInput { offset, eye_m, camera: input.camera, now, kind };
+    let offset = vr_view::depth_offset(kind, input.stereo, viewer.parallel_share(now));
+    let (eye_m, scale) = (vr.depth_eye_m(kind, input.stereo), vr.menu_scale(kind));
+    let depth = DepthInput { offset, eye_m, camera: input.camera, now, kind, scale };
     layer.on_frame(input.health, input.next, &depth, target);
     layer.publish_map(input.health, target, &depth, viewer.map_sink(now));
 }

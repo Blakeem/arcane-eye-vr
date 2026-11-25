@@ -9,7 +9,7 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 
 use super::{BYTES_PER_PIXEL, Gpu, desc, row_len, warp};
-use crate::layer::{Area, LayerDraw, LayerStep, Placement, Rect};
+use crate::layer::{Area, LayerDraw, LayerStep, Placement, Rect, layer_aspect};
 use crate::raw::texture_desc;
 
 const BLUE: [u8; 4] = [0, 0, 255, 255];
@@ -334,4 +334,17 @@ fn the_draw_belongs_to_the_device_that_created_it() {
 
     assert!(draw.belongs_to(&gpu.device));
     assert!(!draw.belongs_to(&other.device));
+}
+
+#[test]
+fn a_layers_aspect_is_its_width_over_its_height() {
+    let gpu = warp();
+
+    let near = |width, height, expected: f32| {
+        let aspect = layer_aspect(&filled(&gpu, width, height, [0; 4]));
+        assert!(aspect.is_some_and(|aspect| (aspect - expected).abs() < 1e-6), "{aspect:?}");
+    };
+
+    near(64, 32, 2.0);
+    near(16, 9, 16.0 / 9.0);
 }

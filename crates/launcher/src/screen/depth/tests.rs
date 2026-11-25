@@ -3,7 +3,9 @@
 
 use std::time::{Duration, Instant};
 
-use ipc_layout::viewer_header::depth_map::{Cell, Grid, INTERFACE, SCENE, SEQUENCE_OFFSET};
+use ipc_layout::viewer_header::depth_map::{
+    COVERED_SCENE, Cell, Grid, INTERFACE, InterfaceArea, SCENE, SEQUENCE_OFFSET,
+};
 use openxr::{Posef, Vector3f};
 use stereo_core::eye::PerEye;
 use viewer_client::fixture::{CoreMapping, test_name};
@@ -24,7 +26,7 @@ const CELLS: [Cell; 6] = [
 ];
 
 fn view(cells: &[Cell]) -> DepthView<'_> {
-    DepthView { grid: grid(3, 2), depth_offset: 0.015, cells }
+    DepthView { grid: grid(3, 2), depth_offset: 0.015, cells, area: InterfaceArea::FULL }
 }
 
 fn head(left_x: f32) -> Head {
@@ -55,6 +57,17 @@ fn a_place_gives_the_cell_that_holds_it_and_the_last_cell_at_the_far_edge() {
     assert_eq!(at(0.5, 1.01), None, "below the half");
     assert_eq!(at(f32::NAN, 0.5), None, "a place that is not a number");
     assert_eq!(view(&CELLS[..4]).at(Shares { x: 0.5, y: 0.9 }), None, "a cell past the slice");
+}
+
+#[test]
+fn a_cells_kind_is_the_kind_whose_value_lies_nearest_and_the_scene_for_no_number() {
+    let kind = |value| view(&[[0.0, value]; 6]).at(Shares { x: 0.0, y: 0.0 }).map(|cell| cell.kind);
+    assert_eq!(kind(SCENE), Some(Kind::Scene));
+    assert_eq!(kind(INTERFACE), Some(Kind::Interface));
+    assert_eq!(kind(COVERED_SCENE), Some(Kind::CoveredScene));
+    assert_eq!(kind(1.9), Some(Kind::CoveredScene));
+    assert_eq!(kind(0.4), Some(Kind::Scene));
+    assert_eq!(kind(f32::NAN), Some(Kind::Scene));
 }
 
 #[test]

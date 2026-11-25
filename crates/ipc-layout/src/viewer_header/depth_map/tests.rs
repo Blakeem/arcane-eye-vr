@@ -1,9 +1,10 @@
 //! The depth map section's byte layout, grid and sequence rule.
 
 use super::{
-    CELLS_OFFSET, COLUMNS_OFFSET, DEPTH_OFFSET_OFFSET, Grid, LAYOUT_VERSION, LAYOUT_VERSION_OFFSET,
+    AREA_HEIGHT_OFFSET, AREA_WIDTH_OFFSET, CELLS_OFFSET, COLUMNS_OFFSET, COVERED_SCENE,
+    DEPTH_OFFSET_OFFSET, Grid, INTERFACE, InterfaceArea, LAYOUT_VERSION, LAYOUT_VERSION_OFFSET,
     LayoutError, MAGIC, MAGIC_OFFSET, MapHeader, MapInfo, PRESENT_OFFSET, RESERVED_OFFSET,
-    ROWS_OFFSET, SEQUENCE_OFFSET, SIZE, write_sequences,
+    ROWS_OFFSET, SCENE, SEQUENCE_OFFSET, SIZE, write_sequences,
 };
 
 /// A present number whose four bytes differ, so a swapped byte order shows.
@@ -14,7 +15,7 @@ fn grid(columns: u32, rows: u32) -> Grid {
 }
 
 #[test]
-fn the_eight_header_words_lie_one_after_the_other_and_the_cells_follow_them() {
+fn the_ten_header_words_lie_one_after_the_other_and_the_cells_follow_them() {
     let offsets = [
         MAGIC_OFFSET,
         LAYOUT_VERSION_OFFSET,
@@ -23,21 +24,26 @@ fn the_eight_header_words_lie_one_after_the_other_and_the_cells_follow_them() {
         ROWS_OFFSET,
         DEPTH_OFFSET_OFFSET,
         PRESENT_OFFSET,
+        AREA_WIDTH_OFFSET,
+        AREA_HEIGHT_OFFSET,
         RESERVED_OFFSET,
     ];
 
-    assert_eq!(offsets, [0, 4, 8, 12, 16, 20, 24, 28]);
-    assert_eq!(CELLS_OFFSET, 32);
-    assert_eq!(SIZE, 32 + 524_288, "256 by 256 cells of two four-byte floats");
+    assert_eq!(offsets, [0, 4, 8, 12, 16, 20, 24, 28, 32, 36]);
+    assert_eq!(CELLS_OFFSET, 40);
+    assert_eq!(SIZE, 40 + 524_288, "256 by 256 cells of two four-byte floats");
+    assert_eq!(LAYOUT_VERSION, 2);
+    let kinds = [SCENE, INTERFACE, COVERED_SCENE].map(f32::to_bits);
+    assert_eq!(kinds, [0.0_f32, 1.0, 2.0].map(f32::to_bits));
 }
 
 #[test]
-fn the_cell_at_column_3_of_row_2_of_160_columns_lies_at_byte_32_plus_8_times_323() {
+fn the_cell_at_column_3_of_row_2_of_160_columns_lies_at_byte_40_plus_8_times_323() {
     let map = grid(160, 100);
 
-    assert_eq!(map.cell_offset(3, 2), Some(32 + 8 * 323));
-    assert_eq!(map.cell_offset(0, 0), Some(32));
-    assert_eq!(map.cell_offset(159, 99), Some(32 + 8 * 15_999), "the last cell in use");
+    assert_eq!(map.cell_offset(3, 2), Some(40 + 8 * 323));
+    assert_eq!(map.cell_offset(0, 0), Some(40));
+    assert_eq!(map.cell_offset(159, 99), Some(40 + 8 * 15_999), "the last cell in use");
     assert_eq!(map.cell_offset(160, 0), None, "a column past the grid");
     assert_eq!(map.cell_offset(0, 100), None, "a row past the grid");
 }
@@ -70,12 +76,14 @@ fn a_grid_past_256_on_either_side_does_not_exist() {
 }
 
 #[test]
-fn the_header_words_of_a_map_hold_its_grid_depth_offset_and_present_number() {
-    let info = MapInfo { grid: grid(160, 100), depth_offset: 0.015, present: PRESENT };
+fn the_header_words_of_a_map_hold_its_grid_depth_offset_present_number_and_area() {
+    let area = InterfaceArea { width: 0.5, height: 0.25 };
+    let info = MapInfo { grid: grid(160, 100), depth_offset: 0.015, present: PRESENT, area };
 
     let words = info.words(6);
 
-    let expected = [MAGIC, LAYOUT_VERSION, 6, 160, 100, 0.015_f32.to_bits(), PRESENT, 0];
+    let (offset, width, height) = (0.015_f32.to_bits(), 0.5_f32.to_bits(), 0.25_f32.to_bits());
+    let expected = [MAGIC, LAYOUT_VERSION, 6, 160, 100, offset, PRESENT, width, height, 0];
     assert_eq!(words, expected);
     assert_eq!(MAGIC.to_le_bytes(), *b"B3SD");
     assert_eq!(MapHeader::decode(words), Ok(MapHeader { sequence: 6, info }));
@@ -91,7 +99,7 @@ fn a_header_of_another_magic_value_layout_version_or_a_grid_past_256_is_refused(
     };
 
     assert_eq!(with(0, 0), Err(LayoutError::Magic { found: 0 }), "a section no core wrote");
-    assert_eq!(with(1, 2), Err(LayoutError::LayoutVersion { found: 2 }));
+    assert_eq!(with(1, 1), Err(LayoutError::LayoutVersion { found: 1 }));
     assert_eq!(with(3, 257), Err(LayoutError::Grid { columns: 257, rows: 0 }));
 }
 
@@ -114,4 +122,24 @@ fn a_read_counts_only_between_two_equal_even_sequence_numbers_above_0() {
     assert!(!read(3, 3), "a write runs");
     assert!(!read(2, 3), "a write started during the read");
     assert!(!read(2, 4), "a write ran during the read");
+}
+
+#[test]
+fn an_empty_map_holds_the_entire_half_as_its_area() {
+    let words = MapInfo::empty(1).words(2);
+
+    assert_eq!(words[7..9], [1.0_f32.to_bits(), 1.0_f32.to_bits()]);
+    assert_eq!(MapInfo::empty(1).area, InterfaceArea::FULL);
+}
+
+#[test]
+fn an_area_place_moves_a_game_place_toward_the_middle_and_the_game_place_moves_it_back() {
+    let area = InterfaceArea { width: 0.5, height: 0.25 };
+
+    assert_eq!(area.area_place([0.0, 0.0]), [0.25, 0.375]);
+    assert_eq!(area.area_place([1.0, 0.5]), [0.75, 0.5]);
+    assert_eq!(area.game_place([0.25, 0.375]), [0.0, 0.0]);
+    assert_eq!(area.game_place([0.625, 0.5625]), [0.75, 0.75]);
+    assert_eq!(InterfaceArea::FULL.area_place([0.3, 0.7]), [0.3, 0.7]);
+    assert_eq!(InterfaceArea::FULL.game_place([0.3, 0.7]), [0.3, 0.7]);
 }

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use diag::health::{Feature, Health};
 use game_bindings::camera::Camera;
 use game_bindings::game_client::StateId;
+use gfx::publish::Wishes;
 use ipc_layout::launch_token::Mode;
 use ipc_layout::viewer_header::horizon_wish::HorizonWish;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose as XrPose, HeadSample};
@@ -111,8 +112,8 @@ fn place_wished(
     let Call { game, ipd_mm, eye_scale, rays } = call;
     let kind = view.decide(rays, game, ViewWish::World);
     let now = Instant::now();
-    let stereo = stereo(ipd_mm);
-    view.placement(header, PresentCall { stereo, eye_scale, rays, kind, horizon, now })
+    let (stereo, wishes) = (stereo(ipd_mm), Wishes { horizon, ..Wishes::default() });
+    view.placement(header, PresentCall { stereo, eye_scale, rays, kind, wishes, now })
 }
 
 /// A header pose of the sequence number `sequence`, turned 20 degrees right, with the eye

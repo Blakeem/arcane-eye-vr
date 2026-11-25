@@ -3,11 +3,12 @@
 //! The core creates the mapping [`MAPPING_NAME`] and writes every field but the viewer's. The viewer
 //! writes only the heartbeat, at [`HEARTBEAT_OFFSET`], the head pose, from [`HEAD_SEQUENCE_OFFSET`]
 //! up to [`FRAME_HEAD_SEQUENCE_OFFSET`], the view wish, at [`VIEW_WISH_OFFSET`], the screen slot,
-//! at [`SCREEN_SEQUENCE_OFFSET`] and [`PARALLEL_SHARE_OFFSET`], and the horizon wish, at
-//! [`HORIZON_WISH_OFFSET`]. The three exceptions are the screen slot's sequence number, which the
-//! core sets to 0 once when it creates or opens the mapping, the view wish, which the core sets to
-//! [`ViewWish::World`] when it finds the heartbeat stopped, and the horizon wish, which the core
-//! sets to no wish when it finds the heartbeat stopped. Every field is one 32-bit little-endian
+//! at [`SCREEN_SEQUENCE_OFFSET`] and [`PARALLEL_SHARE_OFFSET`], the horizon wish, at
+//! [`HORIZON_WISH_OFFSET`], and the scale wish, at [`SCALE_WISH_OFFSET`]. The four exceptions are
+//! the screen slot's sequence number, which the core sets to 0 once when it creates or opens the
+//! mapping, the view wish, which the core sets to [`ViewWish::World`] when it finds the heartbeat
+//! stopped, and the horizon wish and the scale wish, which the core sets to no wish when it finds
+//! the heartbeat stopped. Every field is one 32-bit little-endian
 //! word, so each process writes a field with one aligned store, which the other process never
 //! reads torn. The depth map, a section of its own beside the header, is in [`depth_map`].
 
@@ -15,6 +16,7 @@ pub mod depth_map;
 pub mod horizon_wish;
 mod keyed_mutex;
 pub mod pose;
+pub mod scale_wish;
 pub mod screen;
 mod texture;
 pub mod view_wish;
@@ -25,6 +27,7 @@ use core::time::Duration;
 
 use horizon_wish::{HorizonWish, NO_WISH_WORD};
 use pose::{FRAME_TAG_WORDS, FrameTag, HEAD_SLOT_WORDS, HeadSlot};
+use scale_wish::ScaleWish;
 use screen::{SCREEN_SLOT_WORDS, ScreenSlot};
 use view_wish::ViewWish;
 
@@ -46,7 +49,7 @@ pub const TEXTURE_NAME: &str = r"Local\arcane-eye-vr-view-texture";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"B3SV");
 
 /// The layout version this crate reads and writes. Any change to the layout increments it.
-pub const LAYOUT_VERSION: u32 = 6;
+pub const LAYOUT_VERSION: u32 = 7;
 
 /// The size of the header, and of its mapping, in bytes.
 pub const SIZE: usize = 192;
@@ -117,14 +120,18 @@ pub const PARALLEL_SHARE_OFFSET: usize = offset_of!(ViewerHeader, screen.paralle
 /// that the viewer writes.
 pub const HORIZON_WISH_OFFSET: usize = offset_of!(ViewerHeader, horizon_wish);
 
+/// The byte offset of the scale wish, the word of [`ScaleWish::to_word`] or
+/// [`scale_wish::NO_WISH_WORD`] that the viewer writes.
+pub const SCALE_WISH_OFFSET: usize = offset_of!(ViewerHeader, scale_wish);
+
 /// The byte offsets of the words the viewer writes for a head pose.
 const HEAD_WORDS: Range<usize> = HEAD_SEQUENCE_OFFSET..FRAME_HEAD_SEQUENCE_OFFSET;
 
 /// The byte offsets of the words the viewer writes for the screen.
 const SCREEN_WORDS: Range<usize> = SCREEN_SEQUENCE_OFFSET..HORIZON_WISH_OFFSET;
 
-/// The reserved words after the horizon wish, up to [`SIZE`].
-const RESERVED_END_WORDS: usize = 13;
+/// The reserved words after the scale wish, up to [`SIZE`].
+const RESERVED_END_WORDS: usize = 12;
 
 /// The viewer header's fields, in layout order.
 #[repr(C)]
@@ -142,6 +149,7 @@ pub struct ViewerHeader {
     view_wish: u32,
     screen: ScreenSlot,
     horizon_wish: u32,
+    scale_wish: u32,
     reserved_end: [u32; RESERVED_END_WORDS],
 }
 
@@ -166,7 +174,8 @@ const _: () = assert!(VIEW_WISH_OFFSET == 124);
 const _: () = assert!(SCREEN_SEQUENCE_OFFSET == 128);
 const _: () = assert!(PARALLEL_SHARE_OFFSET == 132);
 const _: () = assert!(HORIZON_WISH_OFFSET == 136);
-const _: () = assert!(offset_of!(ViewerHeader, reserved_end) == 140);
+const _: () = assert!(SCALE_WISH_OFFSET == 140);
+const _: () = assert!(offset_of!(ViewerHeader, reserved_end) == 144);
 const _: () = assert!(size_of::<HeadSlot>() == HEAD_SLOT_WORDS * WORD_SIZE);
 const _: () = assert!(size_of::<FrameTag>() == FRAME_TAG_WORDS * WORD_SIZE);
 const _: () = assert!(size_of::<ScreenSlot>() == SCREEN_SLOT_WORDS * WORD_SIZE);
@@ -174,7 +183,7 @@ const _: () = assert!(size_of::<ScreenSlot>() == SCREEN_SLOT_WORDS * WORD_SIZE);
 impl ViewerHeader {
     /// A header as the core writes it, with the heartbeat and the sequence numbers of the head pose
     /// and the screen slot at 0, which means no pose and no screen, the view wish
-    /// [`ViewWish::World`], no horizon wish and the frame tag [`FrameTag::NONE`].
+    /// [`ViewWish::World`], no horizon wish, no scale wish and the frame tag [`FrameTag::NONE`].
     pub const fn new(texture: TextureInfo, generation: u32, frame: u32, present: u32) -> Self {
         Self {
             magic: MAGIC,
@@ -189,6 +198,7 @@ impl ViewerHeader {
             view_wish: ViewWish::World.to_word(),
             screen: ScreenSlot::EMPTY,
             horizon_wish: NO_WISH_WORD,
+            scale_wish: scale_wish::NO_WISH_WORD,
             reserved_end: [0; RESERVED_END_WORDS],
         }
     }
@@ -231,7 +241,7 @@ impl ViewerHeader {
             .chain(self.frame_tag.to_words())
             .chain([self.view_wish])
             .chain(self.screen.to_words())
-            .chain([self.horizon_wish])
+            .chain([self.horizon_wish, self.scale_wish])
             .chain(self.reserved_end);
         let mut words = [0; WORDS];
         for (word, field) in words.iter_mut().zip(fields.into_iter().chain(tail)) {
@@ -280,7 +290,8 @@ impl ViewerHeader {
         let adapter_luid = AdapterLuid { low: luid_low, high: luid_high.cast_signed() };
         let texture = TextureInfo { adapter_luid, width, height, format, eyes: [left, right] };
         let [h0, h1, h2, h3, h4, h5, h6, h7, h8, after_head @ ..] = tail;
-        let [t0, t1, t2, view_wish, s0, s1, horizon_wish, reserved_end @ ..] = after_head;
+        let [t0, t1, t2, view_wish, s0, s1, horizon_wish, scale_wish, reserved_end @ ..] =
+            after_head;
         let head = HeadSlot::from_words([h0, h1, h2, h3, h4, h5, h6, h7, h8]);
         let frame_tag = FrameTag::from_words([t0, t1, t2]);
         let screen = ScreenSlot::from_words([s0, s1]);
@@ -297,6 +308,7 @@ impl ViewerHeader {
             view_wish,
             screen,
             horizon_wish,
+            scale_wish,
             reserved_end,
         })
     }
@@ -307,12 +319,12 @@ impl ViewerHeader {
     }
 
     /// Each word the core writes, as its byte offset and value, in ascending offset order. The
-    /// heartbeat, the head pose, the view wish, the screen slot and the horizon wish are left out,
-    /// since the viewer writes them. The texture fields come before the generation, so a viewer
-    /// that reads the generation before the texture fields reads that generation's texture or a
-    /// later one. The adapter LUID comes before the width, so a viewer that reads a nonzero width
-    /// before the LUID reads the LUID of that texture or a later one. A later texture comes with a
-    /// new generation on the next read.
+    /// heartbeat, the head pose, the view wish, the screen slot, the horizon wish and the scale
+    /// wish are left out, since the viewer writes them. The texture fields come before the
+    /// generation, so a viewer that reads the generation before the texture fields reads that
+    /// generation's texture or a later one. The adapter LUID comes before the width, so a viewer
+    /// that reads a nonzero width before the LUID reads the LUID of that texture or a later one. A
+    /// later texture comes with a new generation on the next read.
     pub fn core_words(&self) -> impl Iterator<Item = (usize, u32)> {
         self.words().filter(|(offset, _word)| {
             *offset != HEARTBEAT_OFFSET
@@ -320,6 +332,7 @@ impl ViewerHeader {
                 && *offset != VIEW_WISH_OFFSET
                 && !SCREEN_WORDS.contains(offset)
                 && *offset != HORIZON_WISH_OFFSET
+                && *offset != SCALE_WISH_OFFSET
         })
     }
 
@@ -365,6 +378,11 @@ impl ViewerHeader {
     /// The horizon wish, which the viewer writes, or `None` for a word that holds no wish.
     pub const fn horizon_wish(&self) -> Option<HorizonWish> {
         HorizonWish::from_word(self.horizon_wish)
+    }
+
+    /// The scale wish, which the viewer writes, or `None` for a word that holds no wish.
+    pub fn scale_wish(&self) -> Option<ScaleWish> {
+        ScaleWish::from_word(self.scale_wish)
     }
 }
 

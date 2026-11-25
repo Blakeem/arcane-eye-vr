@@ -1,6 +1,7 @@
 //! The depth map: a section of its own beside the viewer header, into which the core writes, with
 //! a published frame, the uncrossed disparity of what each cell of the left half shows and whether
-//! that is the interface or the scene.
+//! that is the interface, the scene or a covered scene, and the interface area the frame drew the
+//! interface into.
 //!
 //! The section starts with [`HEADER_WORDS`] little-endian words at the `*_OFFSET` constants, then
 //! [`MAX_CELLS`] cells of two `f32` each, of which the first columns times rows are in use, row by
@@ -19,10 +20,10 @@ pub const MAPPING_NAME: &str = r"Local\arcane-eye-vr-view-depth";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"B3SD");
 
 /// The layout version this crate reads and writes. Any change to the layout increments it.
-pub const LAYOUT_VERSION: u32 = 1;
+pub const LAYOUT_VERSION: u32 = 2;
 
 /// The words before the first cell.
-pub const HEADER_WORDS: usize = 8;
+pub const HEADER_WORDS: usize = 10;
 
 pub const MAGIC_OFFSET: usize = 0;
 pub const LAYOUT_VERSION_OFFSET: usize = 4;
@@ -34,7 +35,13 @@ pub const DEPTH_OFFSET_OFFSET: usize = 20;
 /// The byte offset of the present number of the frame the map belongs to, the viewer header's
 /// present number of that frame.
 pub const PRESENT_OFFSET: usize = 24;
-pub const RESERVED_OFFSET: usize = 28;
+/// The byte offset of the interface area's width as a share of a half's width, the bits of an
+/// `f32`.
+pub const AREA_WIDTH_OFFSET: usize = 28;
+/// The byte offset of the interface area's height as a share of a half's height, the bits of an
+/// `f32`.
+pub const AREA_HEIGHT_OFFSET: usize = 32;
+pub const RESERVED_OFFSET: usize = 36;
 
 /// The byte offset of the first cell.
 pub const CELLS_OFFSET: usize = HEADER_WORDS * WORD_SIZE;
@@ -61,10 +68,15 @@ pub const INTERFACE: f32 = 1.0;
 /// A cell's kind value for the scene.
 pub const SCENE: f32 = 0.0;
 
+/// A cell's kind value for a covered scene: a scene whose place holds a covering interface texel
+/// that the frame drew elsewhere, so the game gives a click there to that interface element.
+pub const COVERED_SCENE: f32 = 2.0;
+
 const _: () = assert!(MAX_CELLS == MAX_SIDE as usize * MAX_SIDE as usize);
 const _: () = assert!(RESERVED_OFFSET + WORD_SIZE == CELLS_OFFSET);
 
-/// One cell: the uncrossed disparity as a share, then [`INTERFACE`] or [`SCENE`].
+/// One cell: the uncrossed disparity as a share, then [`INTERFACE`], [`SCENE`] or
+/// [`COVERED_SCENE`].
 pub type Cell = [f32; 2];
 
 /// The columns and rows of a map, each at most [`MAX_SIDE`].
@@ -123,6 +135,36 @@ impl Grid {
     }
 }
 
+/// The interface area: the rectangle of each half that a frame drew the interface texture into,
+/// centered in the half, `width` of the half's width wide and `height` of its height high.
+///
+/// A place is a pair of shares of a half's width and height from its top left. The game place of
+/// an interface texel is its place in the interface texture, where the game reads the mouse. The
+/// area place of a game place is where the frame shows that texel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InterfaceArea {
+    pub width: f32,
+    pub height: f32,
+}
+
+impl InterfaceArea {
+    /// The entire half, where every area place is its game place.
+    pub const FULL: Self = Self { width: 1.0, height: 1.0 };
+
+    /// The area place `0.5 + (g - 0.5) * share` of the game place `game`, x then y.
+    pub fn area_place(self, game: [f32; 2]) -> [f32; 2] {
+        let [x, y] = game;
+        [0.5 + (x - 0.5) * self.width, 0.5 + (y - 0.5) * self.height]
+    }
+
+    /// The game place `0.5 + (a - 0.5) / share` of the area place `area`, x then y. A share of 0
+    /// gives a place that is not finite.
+    pub fn game_place(self, area: [f32; 2]) -> [f32; 2] {
+        let [x, y] = area;
+        [0.5 + (x - 0.5) / self.width, 0.5 + (y - 0.5) / self.height]
+    }
+}
+
 /// What a map holds besides its cells and its sequence number.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MapInfo {
@@ -132,12 +174,16 @@ pub struct MapInfo {
     pub depth_offset: f32,
     /// The present number of the frame the map belongs to.
     pub present: u32,
+    /// The interface area the frame drew the interface into, [`InterfaceArea::FULL`] for a frame
+    /// that drew none.
+    pub area: InterfaceArea,
 }
 
 impl MapInfo {
-    /// The map of no cell and no depth offset of the frame of `present`.
+    /// The map of no cell, no depth offset and the entire half as its area of the frame of
+    /// `present`.
     pub const fn empty(present: u32) -> Self {
-        Self { grid: Grid::EMPTY, depth_offset: 0.0, present }
+        Self { grid: Grid::EMPTY, depth_offset: 0.0, present, area: InterfaceArea::FULL }
     }
 
     /// The header words of the map under the sequence number `sequence`, in layout order.
@@ -150,6 +196,8 @@ impl MapInfo {
             u32::from(self.grid.rows),
             self.depth_offset.to_bits(),
             self.present,
+            self.area.width.to_bits(),
+            self.area.height.to_bits(),
             0,
         ]
     }
@@ -176,7 +224,18 @@ impl MapHeader {
     /// Returns [`LayoutError`] for another magic value or layout version, as a section holds before
     /// the core first wrote it, or for a grid past [`MAX_SIDE`].
     pub fn decode(words: [u32; HEADER_WORDS]) -> Result<Self, LayoutError> {
-        let [magic, version, sequence, columns, rows, depth_offset, present, _reserved] = words;
+        let [
+            magic,
+            version,
+            sequence,
+            columns,
+            rows,
+            depth_offset,
+            present,
+            width,
+            height,
+            _reserved,
+        ] = words;
         if magic != MAGIC {
             return Err(LayoutError::Magic { found: magic });
         }
@@ -184,7 +243,8 @@ impl MapHeader {
             return Err(LayoutError::LayoutVersion { found: version });
         }
         let grid = Grid::new(columns, rows).ok_or(LayoutError::Grid { columns, rows })?;
-        let info = MapInfo { grid, depth_offset: f32::from_bits(depth_offset), present };
+        let area = InterfaceArea { width: f32::from_bits(width), height: f32::from_bits(height) };
+        let info = MapInfo { grid, depth_offset: f32::from_bits(depth_offset), present, area };
         Ok(Self { sequence, info })
     }
 

@@ -1,5 +1,5 @@
 //! The viewer link from the core's publisher to the reading side: the frame tag, the depth map,
-//! the head pose, the screen's parallel share, the view wish and the horizon wish.
+//! the head pose, the screen's parallel share, the view wish, the horizon wish and the scale wish.
 
 use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
@@ -8,15 +8,17 @@ use game_bindings::state::arm_alloc_guard;
 use gfx::depth_map::{MapScene, MapStart, MapUi};
 use gfx::publish::{Outcome, Present, Publisher, ViewNames, Wishes};
 use ipc_layout::viewer_header::STALE_AFTER;
-use ipc_layout::viewer_header::depth_map::{Grid, INTERFACE, SCENE};
+use ipc_layout::viewer_header::depth_map::{Grid, INTERFACE, InterfaceArea, SCENE};
 use ipc_layout::viewer_header::horizon_wish::HorizonWish;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose, HeadSample};
+use ipc_layout::viewer_header::scale_wish::ScaleWish;
 use ipc_layout::viewer_header::screen::ParallelShare;
 use ipc_layout::viewer_header::view_wish::ViewWish;
 use viewer_client::depth_map::DepthMapReader;
 use viewer_client::frame::{FrameReader, ReadError};
 use viewer_client::header::{
-    Names, read_header, write_head_pose, write_horizon_wish, write_screen, write_view_wish,
+    Names, read_header, write_head_pose, write_horizon_wish, write_scale_wish, write_screen,
+    write_view_wish,
 };
 use viewer_client::region::Region;
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
@@ -72,8 +74,13 @@ fn a_published_tag_is_read_with_the_frame_it_belongs_to() {
     assert_eq!(untagged.tag.head_sequence, 0, "the frame of the tag none");
 }
 
+/// An interface area of the entire width and half the height, which keeps the 2 by 1 cells of
+/// [`map_of`] and holds a share other than 1 in the map's header.
+const HALF_HEIGHT: InterfaceArea = InterfaceArea { width: 1.0, height: 0.5 };
+
 /// The start of a map of the frame of `present` with a UI 32 by 16 texels whose left 16 columns
-/// cover, drawn with the UI disparity 0.02, over a wall at 4 m of the far plane 100 m.
+/// cover, drawn with the UI disparity 0.02 into an area of half the height, over a wall at 4 m of
+/// the far plane 100 m.
 fn map_of<'frame>(
     ui: &'frame ID3D11Texture2D,
     distances: &'frame ID3D11Texture2D,
@@ -83,7 +90,7 @@ fn map_of<'frame>(
     MapStart {
         grid: Grid::covering(32, 16),
         present,
-        ui: Some(MapUi { layer: ui, disparity: 0.02 }),
+        ui: Some(MapUi { layer: ui, disparity: 0.02, area: HALF_HEIGHT }),
         scene: MapScene::Rendered { distances, crossed, offset: 0.015 },
     }
 }
@@ -123,6 +130,7 @@ fn a_depth_map_the_core_wrote_is_read_by_the_reading_side_with_its_frames_presen
     let (info, cells) = read;
     assert_eq!((info.grid.columns(), info.grid.rows()), (2, 1));
     assert!((info.depth_offset - 0.015).abs() < f32::EPSILON);
+    assert_eq!(info.area, HALF_HEIGHT, "the layout version 2 header's interface area");
     assert!(published.contains(&info.present), "{} of the frames {published:?}", info.present);
     let [[ui_disparity, ui_kind], [scene_disparity, scene_kind]] = cells.as_slice() else {
         panic!("two cells: {cells:?}")
@@ -231,8 +239,12 @@ fn a_view_wish_the_reading_side_wrote_is_read_by_the_publisher_while_it_beats() 
     assert_eq!(publisher.wishes(stalled).view, ViewWish::World, "the heartbeat stopped");
 }
 
+fn scale(percent: u32) -> ScaleWish {
+    ScaleWish::from_percent(percent).expect("a scale in range")
+}
+
 #[test]
-fn a_horizon_wish_the_reading_side_wrote_is_read_by_the_publisher_while_it_beats() {
+fn a_horizon_and_a_scale_wish_the_reading_side_wrote_are_read_by_the_publisher_while_it_beats() {
     let names = test_view_names("link-horizon-wish");
     let mut publisher = Publisher::create(&names).expect("create the header");
     let mut viewer = TestViewer::open(&names);
@@ -243,14 +255,21 @@ fn a_horizon_wish_the_reading_side_wrote_is_read_by_the_publisher_while_it_beats
     assert_eq!(publisher.wishes(now), Wishes::default(), "no wish written yet");
     assert_eq!(write_horizon_wish(view, HorizonWish::Camera), Ok(()));
     assert_eq!(write_view_wish(view, ViewWish::Screen), Ok(()));
-    let both = Wishes { view: ViewWish::Screen, horizon: Some(HorizonWish::Camera) };
-    assert_eq!(publisher.wishes(now), both, "both wishes of one read");
+    assert_eq!(write_scale_wish(view, scale(70)), Ok(()));
+    let all = Wishes {
+        view: ViewWish::Screen,
+        horizon: Some(HorizonWish::Camera),
+        scale: Some(scale(70)),
+    };
+    assert_eq!(publisher.wishes(now), all, "every wish of one read");
     assert_eq!(write_horizon_wish(view, HorizonWish::Level), Ok(()));
     assert_eq!(publisher.wishes(now).horizon, Some(HorizonWish::Level));
     let stalled = now.checked_add(STALE_AFTER + Duration::from_millis(1)).expect("a test time");
     assert_eq!(publisher.wishes(stalled), Wishes::default(), "the heartbeat stopped");
     viewer.beat();
-    assert_eq!(publisher.wishes(stalled).horizon, None, "the stopped viewer's wish is gone");
+    let after_stop = publisher.wishes(stalled);
+    assert_eq!(after_stop.horizon, None, "the stopped viewer's horizon wish is gone");
+    assert_eq!(after_stop.scale, None, "the stopped viewer's scale wish is gone");
 }
 
 #[test]

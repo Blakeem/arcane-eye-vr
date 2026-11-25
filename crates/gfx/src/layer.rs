@@ -42,6 +42,15 @@ pub struct Placement {
     pub clip: Rect,
 }
 
+/// The width over the height of `layer`, or `None` for a texture of no texel or a side past a
+/// rectangle's 16-bit fields.
+pub fn layer_aspect(layer: &ID3D11Texture2D) -> Option<f32> {
+    let desc = texture_desc(layer);
+    let width = u16::try_from(desc.Width).ok().filter(|width| *width != 0)?;
+    let height = u16::try_from(desc.Height).ok().filter(|height| *height != 0)?;
+    Some(f32::from(width) / f32::from(height))
+}
+
 /// The layer draw step that failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerStep {

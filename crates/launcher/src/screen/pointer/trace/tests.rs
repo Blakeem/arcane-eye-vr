@@ -2,12 +2,14 @@
 //! at 2.5 m, the eyes 0.065 m apart at the LOCAL origin and depth maps of 160 by 90 cells. The
 //! trace into the projection picture takes the eye views of `lens_views`.
 
-use ipc_layout::viewer_header::depth_map::{Cell, Grid, INTERFACE, SCENE};
+use ipc_layout::viewer_header::depth_map::{
+    COVERED_SCENE, Cell, Grid, INTERFACE, InterfaceArea, SCENE,
+};
 use openxr::{Extent2Df, Posef, Quaternionf, Vector3f};
 use stereo_core::eye::PerEye;
 use xr::quad::ScreenQuad;
 
-use super::{Meeting, far_point, mouse_place, trace, trace_projection};
+use super::{Drawn, Meeting, far_point, mouse_place, trace, trace_projection};
 use crate::screen::depth::{CellDepth, Depth, DepthView, Kind};
 use crate::screen::geometry::test_support::{lens_views, vector};
 use crate::screen::geometry::{Ray, Shares, length, normalized, sub};
@@ -40,7 +42,7 @@ fn uniform(cell: Cell) -> Vec<Cell> {
 
 fn depth(cells: &[Cell], depth_offset: f32) -> Depth<'_> {
     let grid = Grid::new(u32::from(COLUMNS), u32::from(ROWS)).expect("a grid");
-    Depth { eyes: eyes(), map: DepthView { grid, depth_offset, cells } }
+    Depth { eyes: eyes(), map: DepthView { grid, depth_offset, cells, area: InterfaceArea::FULL } }
 }
 
 fn ray(from: Vector3f, toward: Vector3f) -> Ray {
@@ -145,24 +147,54 @@ fn a_meeting_point_whose_mouse_place_lies_left_of_the_window_meets_nothing() {
     assert_eq!(trace(edge, depth(&cells, 0.0), quad()), None);
 }
 
+/// A frame that moved the right half's scene by `depth_offset` and drew the interface into the
+/// entire half.
+const fn full(depth_offset: f32) -> Drawn {
+    Drawn { depth_offset, area: InterfaceArea::FULL }
+}
+
+fn assert_place(found: Option<Shares>, x: f32, y: f32) {
+    let found = found.expect("a place");
+    assert!((found.x - x).abs() < 1e-6 && (found.y - y).abs() < 1e-6, "{found:?}, not {x}, {y}");
+}
+
 #[test]
 fn the_mouse_place_lies_midway_between_the_halves_less_half_the_scene_s_depth_offset() {
     let interface = CellDepth { disparity: -0.02, kind: Kind::Interface };
     let scene = CellDepth { disparity: 0.01, kind: Kind::Scene };
     let left = Shares { x: 0.4, y: 0.3 };
-    let on_interface = mouse_place(left, interface, 0.02).expect("a place");
-    let (x, y) = (on_interface.x, on_interface.y);
-    assert!((x - 0.39).abs() < 1e-6 && (y - 0.3).abs() < 1e-6, "{on_interface:?}");
-    let on_scene = mouse_place(left, scene, 0.02).expect("a place");
-    assert!((on_scene.x - 0.395).abs() < 1e-6, "{on_scene:?}");
-    assert_eq!(mouse_place(Shares { x: 0.005, y: 0.3 }, interface, 0.0), None, "left of 0");
-    assert_eq!(mouse_place(Shares { x: 0.999, y: 0.3 }, scene, 0.0), None, "right of 1");
+    assert_place(mouse_place(left, interface, full(0.02)), 0.39, 0.3);
+    assert_place(mouse_place(left, scene, full(0.02)), 0.395, 0.3);
+    assert_eq!(mouse_place(Shares { x: 0.005, y: 0.3 }, interface, full(0.0)), None, "left of 0");
+    assert_eq!(mouse_place(Shares { x: 0.999, y: 0.3 }, scene, full(0.0)), None, "right of 1");
+}
+
+#[test]
+fn an_interface_place_in_a_shrunk_area_takes_the_game_place_of_its_texel() {
+    let interface = CellDepth { disparity: -0.02, kind: Kind::Interface };
+    let scene = CellDepth { disparity: 0.01, kind: Kind::Scene };
+    let shrunk = Drawn { depth_offset: 0.0, area: InterfaceArea { width: 0.5, height: 0.25 } };
+    let left = Shares { x: 0.4, y: 0.45 };
+
+    // The place of the area 0.39, 0.45 is the game place 0.5 - 0.11 / 0.5 and 0.5 - 0.05 / 0.25.
+    assert_place(mouse_place(left, interface, shrunk), 0.28, 0.3);
+    assert_place(mouse_place(left, scene, shrunk), 0.405, 0.45);
+    let past = Shares { x: 0.4, y: 0.3 };
+    assert_eq!(mouse_place(past, interface, shrunk), None, "a game place above the window");
+}
+
+#[test]
+fn a_covered_scene_gives_no_mouse_place_and_a_ray_that_meets_it_meets_nothing() {
+    let covered = CellDepth { disparity: 0.01, kind: Kind::CoveredScene };
+    assert_eq!(mouse_place(Shares { x: 0.4, y: 0.3 }, covered, full(0.0)), None);
+    let cells = uniform([0.01, COVERED_SCENE]);
+    assert_eq!(trace(worked_ray(), depth(&cells, PARALLEL), quad()), None);
 }
 
 /// The map of a world frame, whose depth offset is 0, with `cells`.
 fn world(cells: &[Cell]) -> DepthView<'_> {
     let grid = Grid::new(u32::from(COLUMNS), u32::from(ROWS)).expect("a grid");
-    DepthView { grid, depth_offset: 0.0, cells }
+    DepthView { grid, depth_offset: 0.0, cells, area: InterfaceArea::FULL }
 }
 
 /// The ray from below and right of the eyes toward the point 5 m ahead of them.

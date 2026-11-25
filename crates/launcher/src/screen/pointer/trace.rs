@@ -10,8 +10,10 @@
 //! that place. A ray whose walk ends at a counting point with no meeting meets the picture at that
 //! end, since the far scene's disparity is one that a point on the ray only approaches. Without a
 //! depth map, the projection picture takes the walk's end with the mouse place midway between its
-//! two places.
+//! two places. A ray that meets a covered scene meets nothing, since the game would give its click
+//! to an interface element the picture shows elsewhere.
 
+use ipc_layout::viewer_header::depth_map::InterfaceArea;
 use openxr::Vector3f;
 use stereo_core::eye::PerEye;
 use xr::projection::EyeView;
@@ -87,8 +89,8 @@ impl Probe {
 }
 
 /// Where `ray` meets the picture that `depth` gives the screen quad `quad`, or `None` when no
-/// walked point meets it and the walk ends off the picture, or when the mouse place of the meeting
-/// point lies off the client area.
+/// walked point meets it and the walk ends off the picture, when the meeting point shows a covered
+/// scene, or when the mouse place of the meeting point lies off the client area.
 pub(crate) fn trace(ray: Ray, depth: Depth<'_>, quad: ScreenQuad) -> Option<Meeting> {
     walk_to(ray, depth.map, Viewpoints::Screen { quad, eyes: depth.eyes })
 }
@@ -114,17 +116,30 @@ pub(crate) fn far_point(ray: Ray, views: PerEye<EyeView>) -> Option<Meeting> {
     mouse.inside().then_some(Meeting { point, mouse })
 }
 
+/// What the frame of a depth map shows besides its cells: the depth offset by which the core moved
+/// the right half's scene, and the interface area it drew the interface into.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Drawn {
+    pub(crate) depth_offset: f32,
+    pub(crate) area: InterfaceArea,
+}
+
 /// The game's mouse place of a thing at the place `left` of the left half in the map's cell `cell`
-/// with the depth offset `depth_offset`, or `None` off the client area. The mouse position is a
-/// place of the head camera's picture, midway between the thing's places in the two halves. The
-/// core moved the right half's scene, and not its interface, right by the depth offset.
-pub(crate) fn mouse_place(left: Shares, cell: CellDepth, depth_offset: f32) -> Option<Shares> {
+/// of a frame that `drawn` says how it drew, or `None` off the client area and for a covered
+/// scene. The mouse position is a place of the head camera's picture, midway between the thing's
+/// places in the two halves. The core moved the right half's scene, and not its interface, right
+/// by the depth offset. An interface place is the area place of the interface texel there, whose
+/// game place the mouse takes.
+pub(crate) fn mouse_place(left: Shares, cell: CellDepth, drawn: Drawn) -> Option<Shares> {
     let middle = left.x + cell.disparity / 2.0;
-    let x = match cell.kind {
-        Kind::Interface => middle,
-        Kind::Scene => middle - depth_offset / 2.0,
+    let mouse = match cell.kind {
+        Kind::Interface => {
+            let [x, y] = drawn.area.game_place([middle, left.y]);
+            Shares { x, y }
+        }
+        Kind::Scene => Shares { x: middle - drawn.depth_offset / 2.0, y: left.y },
+        Kind::CoveredScene => return None,
     };
-    let mouse = Shares { x, y: left.y };
     mouse.inside().then_some(mouse)
 }
 
@@ -139,13 +154,13 @@ fn walk_to(ray: Ray, map: DepthView<'_>, viewpoints: Viewpoints) -> Option<Meeti
         let probed = probe_at(distance);
         if let Some(found) = probed.filter(|probed| probed.meets()) {
             let (meeting_m, found) = refine(before, distance, found, &probe_at);
-            return meeting(ray.at(meeting_m), found, map.depth_offset);
+            return meeting(ray.at(meeting_m), found, drawn_of(map));
         }
         before = Some(distance);
         end = probed.map(|probed| (distance, probed));
     }
     let (end_m, end_probe) = end?;
-    meeting(ray.at(end_m), end_probe, map.depth_offset)
+    meeting(ray.at(end_m), end_probe, drawn_of(map))
 }
 
 /// The distances of the walked points from [`START_M`] to [`END_M`].
@@ -188,9 +203,13 @@ fn refine(
     (long, found)
 }
 
-fn meeting(point: Vector3f, probe: Probe, depth_offset: f32) -> Option<Meeting> {
-    let mouse = mouse_place(probe.left, probe.cell, depth_offset)?;
+fn meeting(point: Vector3f, probe: Probe, drawn: Drawn) -> Option<Meeting> {
+    let mouse = mouse_place(probe.left, probe.cell, drawn)?;
     Some(Meeting { point, mouse })
+}
+
+const fn drawn_of(map: DepthView<'_>) -> Drawn {
+    Drawn { depth_offset: map.depth_offset, area: map.area }
 }
 
 #[cfg(test)]

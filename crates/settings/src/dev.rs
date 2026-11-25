@@ -197,7 +197,65 @@ pub struct VrFlags {
     pub test_head: TestHead,
     /// The dev flag `vr.test_yaw_deg`. Its entry in [`crate::flags::FLAGS`] states its question.
     pub test_yaw_deg: TestYawDeg,
+    /// The dev flag `vr.ui_scale_percent`. Its entry in [`crate::flags::FLAGS`] states its
+    /// question.
+    pub ui_scale_percent: UiScalePercent,
 }
+
+/// The scale of the game's interface in a world frame in percent, from [`UiScalePercent::MIN`] to
+/// [`UiScalePercent::MAX`] inclusive, which the core takes while the viewing side writes no scale
+/// wish.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[cfg_attr(test, derive(serde::Serialize))]
+#[serde(try_from = "i64")]
+#[cfg_attr(test, serde(into = "i64"))]
+pub struct UiScalePercent(u8);
+
+impl UiScalePercent {
+    pub const MIN: u8 = 40;
+    pub const MAX: u8 = 100;
+
+    pub const fn percent(self) -> u8 {
+        self.0
+    }
+
+    /// The scale as a share, from 0.4 to 1.
+    pub fn share(self) -> f32 {
+        f32::from(self.0) / 100.0
+    }
+}
+
+impl Default for UiScalePercent {
+    fn default() -> Self {
+        Self(Self::MAX)
+    }
+}
+
+impl TryFrom<i64> for UiScalePercent {
+    type Error = UiScaleRangeError;
+
+    fn try_from(percent: i64) -> Result<Self, UiScaleRangeError> {
+        match u8::try_from(percent) {
+            Ok(percent) if (Self::MIN..=Self::MAX).contains(&percent) => Ok(Self(percent)),
+            _ => Err(UiScaleRangeError(percent)),
+        }
+    }
+}
+
+impl From<UiScalePercent> for i64 {
+    fn from(scale: UiScalePercent) -> Self {
+        Self::from(scale.percent())
+    }
+}
+
+/// An interface scale outside the range of [`UiScalePercent`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "ui_scale_percent must be from {min} to {max} percent, got {0}",
+    min = UiScalePercent::MIN,
+    max = UiScalePercent::MAX
+)]
+pub struct UiScaleRangeError(pub i64);
 
 /// The camera frame a head pose applies in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]

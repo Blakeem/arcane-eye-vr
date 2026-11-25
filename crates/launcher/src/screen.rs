@@ -4,7 +4,7 @@
 //!
 //! `picture.rs` reads the newest published frame from the viewer link, and `eyes.rs` draws its
 //! halves into the swapchains of the `xr` crate's session. `immersive.rs` writes the head pose and
-//! the menu's two wishes into the viewer link and chooses between the projection layer and the
+//! the menu's three wishes into the viewer link and chooses between the projection layer and the
 //! screen quad for each frame, and `layer.rs` builds that layer. `immersive/decide.rs` places each
 //! eye's view. In both views, `share.rs` writes the screen quad's parallel share into the viewer
 //! link in each frame that shows the game's frame on it, so the stereo depth follows the screen's
@@ -14,7 +14,8 @@
 //! `menu.rs` shows the menu that sets the screen's distance and width, and in the immersive mode
 //! the view wish, whose value Screen makes the core render every frame for the screen quad, and the
 //! horizon wish, whose value Level keeps the world view level and Camera tilts it with the game
-//! camera's pitch.
+//! camera's pitch, and the scale wish, at which the core draws the game's interface in the world
+//! view.
 //! `pointer.rs` sends the game the mouse input of the controller that points at the game's picture
 //! and the camera key input of both controllers' sticks, and `geometry.rs` holds the vector
 //! math of the quads, the rays and the eye views. The menu and the pointer work in every frame.
@@ -278,12 +279,12 @@ impl Screen {
     /// Waits for the session's next frame, reads the controllers, writes the head pose in the view
     /// [`View::Immersive`], draws the newest published frame into the swapchains once the start is
     /// done and the runtime shows the frame, chooses its layer, updates the menu, writes the menu's
-    /// two wishes in the view [`View::Immersive`], writes the screen quad's parallel share while the
-    /// quad shows a game frame, reads the depth map, shows the newest copy of the launcher window
-    /// during the start wait, sends the pointer's input to the game or the launcher window, draws
-    /// the menu's quads, the laser and the controller models, and ends the frame with the frame's
-    /// layer, then the controller models' layer, then the launcher's picture or else the status
-    /// panel until a game frame showed, then the menu's panels.
+    /// three wishes in the view [`View::Immersive`], writes the screen quad's parallel share while
+    /// the quad shows a game frame, reads the depth map, shows the newest copy of the launcher
+    /// window during the start wait, sends the pointer's input to the game or the launcher window,
+    /// draws the menu's quads, the laser and the controller models, and ends the frame with the
+    /// frame's layer, then the controller models' layer, then the launcher's picture or else the
+    /// status panel until a game frame showed, then the menu's panels.
     fn frame(&mut self) -> Result<(), FrameError> {
         let timing = self.session.wait_frame()?;
         let controls = self.controllers.read(&self.session, timing)?;

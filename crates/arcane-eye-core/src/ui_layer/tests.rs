@@ -1,6 +1,7 @@
 //! The UI layer's frames against a WARP swapchain and a pipeline, a composite stage and a texture
 //! table in test memory.
 
+mod area;
 mod cursor;
 mod cursor_depth;
 mod decide;
@@ -11,37 +12,26 @@ mod pair;
 mod ui_depth;
 
 use diag::health::{Feature, FeatureState, Health};
-use game_bindings::offsets::{
-    COMPOSITE_STAGE_UI_ENABLED, PIPELINE_SPECIAL_VIEW, VIEW_STAGE_ARRAY, VIEW_STAGE_COUNT,
-};
+use game_bindings::offsets::{COMPOSITE_STAGE_UI_ENABLED, PIPELINE_SPECIAL_VIEW};
 use game_bindings::render_view::RenderView;
 use game_bindings::state::arm_alloc_guard;
-use game_bindings::texture_table::TextureKey;
 use game_mem::GameAddr;
-use settings::dev::{DevFlags, ForwardWaitMs, MainViewEye, SecondView, StereoFlags};
+use settings::dev::{DevFlags, MainViewEye, SecondView, StereoFlags};
 use settings::player::DepthOffsetPercent;
-use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
-use windows::core::Interface as _;
 
 use super::depth_offset::DepthOffset;
-use super::test_support::no_camera;
+use super::test_support::{GREEN, Game, RED, composite_stage, no_camera};
 use super::ui_depth::DepthInput;
 use super::{Target, UiLayer, install};
 use crate::config::Config;
 use crate::eye_view::Layout;
-use crate::game_source::test_support::{Block, World};
+use crate::game_source::test_support::Block;
 use crate::install::GameCode;
 use crate::logged;
 use crate::raw;
-use crate::raw::test_pixels::{Pixel, back_buffer_pixels, texture_of};
+use crate::raw::test_pixels::{Pixel, back_buffer_pixels};
 use crate::raw::test_support::TestSwapchain;
-
-/// The vtable address the test's composite stage holds. No read goes there.
-const VTABLE: usize = 0x7FF6_58C7_00C0;
-
-const RED: Pixel = [255, 0, 0, 255];
-const GREEN: Pixel = [0, 255, 0, 255];
 
 /// The back buffer's size in the frame tests.
 const WIDTH: u32 = 64;
@@ -51,65 +41,6 @@ const SIDE_BY_SIDE: Layout = Layout::SideBySide {
     main: RenderView::new(GameAddr::new(0x1000)),
     eye: RenderView::new(GameAddr::new(0x2000)),
 };
-
-/// A pipeline whose special view holds one stage, the composite stage, with its UI enable byte at 1,
-/// and whose texture table names a UI texture.
-struct Game {
-    world: World,
-    _special: Block,
-    array: Block,
-    stage: Block,
-    /// The UI texture, which the game holds while its table names it.
-    _texture: Option<ID3D11Texture2D>,
-}
-
-impl Game {
-    /// A game whose UI texture has a red left half and a green right half.
-    fn new(test: &TestSwapchain) -> Self {
-        let half = [[RED; 4], [GREEN; 4]].concat();
-        Self::showing(test, 8, &[half.as_slice(), half.as_slice()].concat())
-    }
-
-    /// A game whose UI texture is `width` pixels wide and holds `pixels` in row order.
-    fn showing(test: &TestSwapchain, width: u32, pixels: &[Pixel]) -> Self {
-        let texture = texture_of(test, width, pixels);
-        let game = Self::with_ui_texture(texture.as_raw().expose_provenance());
-        Self { _texture: Some(texture), ..game }
-    }
-
-    /// A game whose UI key names the object at `texture`.
-    fn with_ui_texture(texture: usize) -> Self {
-        Self::with_world(World::with_key(TextureKey::UI, texture))
-    }
-
-    /// A game whose pipeline and texture table are `world`'s.
-    fn with_world(world: World) -> Self {
-        let (special, array) = (Block::new(0x40), Block::new(8));
-        let stage = composite_stage(1);
-        world.pipeline.set(PIPELINE_SPECIAL_VIEW, special.address().get());
-        special.set(VIEW_STAGE_ARRAY, array.address().get());
-        special.set(VIEW_STAGE_COUNT, 1_u32);
-        array.set(0, stage.address().get());
-        Self { world, _special: special, array, stage, _texture: None }
-    }
-
-    fn layer(&self) -> UiLayer {
-        let forward_wait = ForwardWaitMs::default().duration();
-        UiLayer::new(self.world.global.address(), GameAddr::new(VTABLE), forward_wait)
-    }
-
-    fn ui_enabled(&self) -> u8 {
-        self.stage.get(COMPOSITE_STAGE_UI_ENABLED)
-    }
-}
-
-/// A composite stage whose UI enable byte is `enabled`.
-fn composite_stage(enabled: u8) -> Block {
-    let stage = Block::new(COMPOSITE_STAGE_UI_ENABLED.checked_add(8).expect("a test size"));
-    stage.set(0, VTABLE);
-    stage.set(COMPOSITE_STAGE_UI_ENABLED, enabled);
-    stage
-}
 
 fn running() -> Health {
     let health = Health::new();

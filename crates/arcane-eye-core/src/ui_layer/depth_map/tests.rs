@@ -5,12 +5,12 @@ use std::time::{Duration, Instant};
 
 use game_bindings::state::arm_alloc_guard;
 use gfx::depth_map::{MapScene, MapSection, MapStart};
-use ipc_layout::viewer_header::depth_map::{Grid, SCENE};
+use ipc_layout::viewer_header::depth_map::{Grid, InterfaceArea, SCENE};
 use viewer_client::depth_map::DepthMapReader;
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
 
-use super::{DepthMap, Inputs, MapSink, map_start};
+use super::{DepthMap, Inputs, MapSink, UiPlace, map_start};
 use crate::logged;
 use crate::raw::test_pixels::{distances_of, flush, texture_of};
 use crate::raw::test_support::TestSwapchain;
@@ -127,8 +127,10 @@ fn the_start_of_a_frame_with_no_ui_covers_the_frame_and_one_with_a_ui_covers_the
     let no_ui = Inputs { ui: None, scene: None };
     let with_ui = Inputs { ui: Some(texture_of(&test, 48, &[[0; 4]; 48 * 32])), scene: None };
 
-    let flat = map_start(&no_ui, 13, size, OFFSET, 9);
-    let drawn = map_start(&with_ui, 13, size, OFFSET, 9);
+    let place = UiPlace { columns: 13, area: InterfaceArea { width: 0.7, height: 0.7 } };
+
+    let flat = map_start(&no_ui, place, size, OFFSET, 9);
+    let drawn = map_start(&with_ui, place, size, OFFSET, 9);
 
     assert_eq!((flat.grid.columns(), flat.grid.rows(), flat.present), (160, 100, 9));
     assert!(flat.scene.offset().abs() < f32::EPSILON, "a pair made from a flat picture");
@@ -136,6 +138,7 @@ fn the_start_of_a_frame_with_no_ui_covers_the_frame_and_one_with_a_ui_covers_the
     assert_eq!((drawn.grid.columns(), drawn.grid.rows()), (3, 2), "the UI's 48 by 32 texels");
     let disparity = drawn.ui.map(|ui| ui.disparity).expect("the drawn UI");
     assert!((disparity - 0.020_312_5).abs() < 1e-7, "13 columns in each half of 1280: {disparity}");
+    assert_eq!(drawn.ui.map(|ui| ui.area), Some(place.area), "the drawn UI's area");
 }
 
 #[test]

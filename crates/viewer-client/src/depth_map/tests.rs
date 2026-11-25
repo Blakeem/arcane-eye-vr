@@ -3,8 +3,8 @@
 use std::thread;
 
 use ipc_layout::viewer_header::depth_map::{
-    CELL_SIZE, CELLS_OFFSET, Cell, Grid, INTERFACE, LayoutError, MAGIC, MapInfo, SCENE,
-    SEQUENCE_OFFSET, SIZE,
+    CELL_SIZE, CELLS_OFFSET, Cell, Grid, INTERFACE, InterfaceArea, LayoutError, MAGIC, MapInfo,
+    SCENE, SEQUENCE_OFFSET, SIZE,
 };
 
 use super::{DepthMap, DepthMapReadError, DepthMapReader};
@@ -24,7 +24,7 @@ fn write(core: &CoreMapping, sequence: u32, info: MapInfo, cells: &[Cell]) {
 
 fn info(columns: u32, rows: u32, present: u32) -> MapInfo {
     let grid = Grid::new(columns, rows).expect("a grid");
-    MapInfo { grid, depth_offset: 0.015, present }
+    MapInfo { grid, depth_offset: 0.015, present, area: InterfaceArea { width: 0.7, height: 0.7 } }
 }
 
 const FIRST: [Cell; 6] = [
@@ -150,7 +150,7 @@ fn a_missing_section_and_a_section_of_another_layout_are_errors() {
     let no_section = missing.read().map(|map| map.is_some());
     let no_magic = unwritten.read().map(|map| map.is_some());
     core.write_word(0, MAGIC).expect("the magic value");
-    core.write_word(4, 2).expect("another layout version");
+    core.write_word(4, 1).expect("another layout version");
     let other_version = unwritten.read().map(|map| map.is_some());
 
     assert!(matches!(no_section, Err(DepthMapReadError::Missing)), "{no_section:?}");
@@ -161,7 +161,7 @@ fn a_missing_section_and_a_section_of_another_layout_are_errors() {
     assert!(
         matches!(
             other_version,
-            Err(DepthMapReadError::Layout(LayoutError::LayoutVersion { found: 2 }))
+            Err(DepthMapReadError::Layout(LayoutError::LayoutVersion { found: 1 }))
         ),
         "{other_version:?}"
     );

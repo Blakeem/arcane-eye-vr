@@ -25,7 +25,7 @@ pub struct Flag {
 }
 
 /// Every dev flag.
-pub const FLAGS: [Flag; 7] = [
+pub const FLAGS: [Flag; 8] = [
     Flag {
         name: "stereo.main_view_eye",
         question: "Which eye position does the game's single render view use, for trials that run \
@@ -71,6 +71,13 @@ pub const FLAGS: [Flag; 7] = [
     Flag {
         name: "vr.test_yaw_deg",
         question: "How far to the right in degrees does the test head pose turn?",
+        added: Version { major: 0, minor: 0, patch: 1 },
+        expires: Version { major: 0, minor: 3, patch: 0 },
+    },
+    Flag {
+        name: "vr.ui_scale_percent",
+        question: "At what scale in percent does a world frame draw the game's interface while the \
+                   viewing side writes no scale wish, for trials that run with no headset?",
         added: Version { major: 0, minor: 0, patch: 1 },
         expires: Version { major: 0, minor: 3, patch: 0 },
     },
@@ -124,6 +131,7 @@ mod tests {
             ("vr.horizon", added, expires),
             ("vr.test_head", added, expires),
             ("vr.test_yaw_deg", added, expires),
+            ("vr.ui_scale_percent", added, expires),
         ];
         assert_eq!(vr, expected);
     }

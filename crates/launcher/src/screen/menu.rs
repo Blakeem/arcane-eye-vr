@@ -1,10 +1,10 @@
 //! The screen menu: a panel fixed to one controller whose buttons set the screen's distance and
-//! width, and in the view Immersive the view wish and the horizon wish, and the laser of the other
-//! controller that points at them. The wishes are not saved, so each start begins with the view
-//! wish `World` and the horizon wish `Camera`. The caller replaces the laser of [`Shown`] with the
-//! laser of the game's pointer while that pointer's ray meets the game's picture on the screen quad
-//! or in the projection picture, or the launcher's picture. The menu works in every frame of both
-//! views.
+//! width, and in the view Immersive the view wish, the horizon wish and the scale wish, and the
+//! laser of the other controller that points at them. The wishes are not saved, so each start
+//! begins with the view wish `World`, the horizon wish `Camera` and the scale wish 70 percent.
+//! The caller replaces the laser of [`Shown`] with the laser of the game's pointer while that
+//! pointer's ray meets the game's picture on the screen quad or in the projection picture, or the
+//! launcher's picture. The menu works in every frame of both views.
 //!
 //! `model.rs` decides what the menu does in each frame, `rows.rs` holds its rows and their steps,
 //! `place.rs` places its two quads and `save.rs` decides when the player file is written. This
@@ -92,7 +92,7 @@ pub(crate) struct ScreenMenu {
 impl ScreenMenu {
     /// A closed menu of the session's view `view` over `screen`, the values that the player file in
     /// the root folder `root` gave at the start, or the defaults when `file` says it gave none. The
-    /// menu of the view `Immersive` has the row View and the row Horizon, which start at
+    /// menu of the view `Immersive` has the rows View, Horizon and Menu scale, which start at
     /// [`Wishes::default`].
     pub(crate) fn new(screen: ScreenSettings, view: View, file: PlayerFile, root: &Path) -> Self {
         let drawing = match Painter::new() {
@@ -116,7 +116,8 @@ impl ScreenMenu {
         self.model.screen()
     }
 
-    /// The wishes the rows View and Horizon show, or `None` for a menu with neither row.
+    /// The wishes the rows View, Horizon and Menu scale show, or `None` for a menu with none of
+    /// them.
     pub(crate) const fn wishes(&self) -> Option<Wishes> {
         self.model.values().wishes
     }
@@ -235,6 +236,7 @@ fn log(event: Event) {
         }
         Event::Viewed(wish) => info!(view = wish.as_str(), "screen menu view"),
         Event::Horizon(wish) => info!(horizon = wish.as_str(), "screen menu horizon"),
+        Event::Scaled(wish) => info!(scale_percent = wish.percent(), "screen menu scale"),
     }
 }
 

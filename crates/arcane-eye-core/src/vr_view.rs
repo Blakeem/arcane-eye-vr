@@ -1,7 +1,8 @@
 //! The launch mode `vr` at the Present call site: the view kind and the head pose that place the
 //! eyes of the next proxies, and of each presented frame by its own view kind the depth offset, the
-//! eye distance the UI depth computes with and the published frame's tag, and the `vr view` line. In
-//! the mode `desktop-stereo` every frame is a screen frame, and the line is not logged.
+//! eye distance the UI depth computes with, the menu scale the UI layer draws the interface at and
+//! the published frame's tag, and the `vr view` line. In the mode `desktop-stereo` every frame is a
+//! screen frame, and the line is not logged.
 //!
 //! ```text
 //! PRESENT CALL SITE in the mode vr
@@ -16,17 +17,22 @@
 //!                computes with
 //!   [horizon]    the viewing side's horizon wish while its heartbeat runs and the word holds a
 //!                wish, else `vr.horizon`, in `horizon`
+//!   [scale]      the viewing side's scale wish of the same read, kept for the frame's draw
 //!   [placement]  for a world kind the pose in the anchor of the horizon in use, and for a screen
 //!                kind the head controller's right axis at the UI layer's eye scale in use, for the
 //!                next frame's proxies
 //!   [frame]      the presented frame follows the view kind its main view proxy was filled with: a
 //!                world frame has no depth offset and a tag with the pose's sequence number and the
-//!                main view camera's lens, and a screen frame the values of the mode desktop-stereo
+//!                main view camera's lens, and a screen frame the values of the mode
+//!                desktop-stereo. A world frame draws the interface at the kept scale wish
+//!                while it holds one, else at `vr.ui_scale_percent`, and a screen frame at 1,
+//!                in `scale`
 //! ```
 
 mod head;
 mod horizon;
 mod kind;
+mod scale;
 
 use std::time::Instant;
 
@@ -34,9 +40,10 @@ use diag::health::{Feature, Health};
 use diag::once;
 use diag::rate::Once;
 use game_bindings::camera::Camera;
+use gfx::publish::Wishes;
 use ipc_layout::launch_token::Mode;
-use ipc_layout::viewer_header::horizon_wish::HorizonWish;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadSample};
+use ipc_layout::viewer_header::scale_wish::ScaleWish;
 use ipc_layout::viewer_header::screen::ParallelShare;
 use ipc_layout::viewer_header::view_wish::ViewWish;
 use settings::dev::{Horizon, TestHead, VrFlags};
@@ -81,9 +88,8 @@ pub(crate) struct PresentCall {
     pub(crate) rays: Rays,
     /// The view kind [`VrView::decide`] gave at the call.
     pub(crate) kind: ViewKind,
-    /// The viewing side's horizon wish, read with the view wish that decided `kind`, or `None`
-    /// for no wish.
-    pub(crate) horizon: Option<HorizonWish>,
+    /// The viewing side's wishes of the read whose view wish decided `kind`.
+    pub(crate) wishes: Wishes,
     /// The time of the call.
     pub(crate) now: Instant,
 }
@@ -142,6 +148,9 @@ pub(crate) struct VrView {
     /// The horizon in use at the newest Present call in the mode `vr`, the dev flag's before the
     /// first one.
     horizon: HorizonInUse,
+    /// The viewing side's scale wish at the newest Present call in the mode `vr`, `None` for no
+    /// wish and before the first one.
+    scale_wish: Option<ScaleWish>,
     /// The warning that the eyes do not turn while the view camera does not rewrite the rays.
     unturned: Once,
 }
@@ -162,6 +171,7 @@ impl VrView {
             decided: ViewKind::Screen,
             newest: None,
             horizon: HorizonInUse::of(None, flags.horizon),
+            scale_wish: None,
             unturned: Once::default(),
         }
     }
@@ -183,18 +193,20 @@ impl VrView {
     /// of the call's stereo settings times its eye scale. In the mode `vr` the head pose in use
     /// places the eyes of a world kind at the eye scale 1 in the anchor of the horizon in use, and
     /// `header` reads the viewer link header's pose only while the test pose is off. While the
-    /// call's rays are the game's, the mode `vr` uses no head pose and logs that once.
+    /// call's rays are the game's, the mode `vr` uses no head pose and logs that once. The mode
+    /// `vr` keeps the call's scale wish for [`Self::menu_scale`].
     pub(crate) fn placement(
         &mut self,
         header: impl FnOnce() -> Option<HeadSample>,
         call: PresentCall,
     ) -> Placement {
-        let PresentCall { stereo, eye_scale, rays, kind, horizon, now } = call;
+        let PresentCall { stereo, eye_scale, rays, kind, wishes, now } = call;
         let screen = Placement::head(stereo, eye_scale);
         if self.mode == Mode::DesktopStereo {
             return screen;
         }
-        self.horizon = HorizonInUse::of(horizon, self.flags.horizon);
+        self.horizon = HorizonInUse::of(wishes.horizon, self.flags.horizon);
+        self.scale_wish = wishes.scale;
         let ipd_m = stereo.ipd_mm.meters();
         if rays == Rays::GameBuilt {
             once!(
@@ -224,6 +236,12 @@ impl VrView {
             (ViewKind::World, Some(head)) => head.eye_m,
             (ViewKind::Screen, _) | (ViewKind::World, None) => stereo.ipd_mm.meters(),
         }
+    }
+
+    /// The menu scale in use of a frame of the view kind `kind`, from the scale wish kept at the
+    /// newest Present call and the dev flag `vr.ui_scale_percent`.
+    pub(crate) fn menu_scale(&self, kind: ViewKind) -> f32 {
+        scale::menu_scale(kind, self.scale_wish, self.flags.ui_scale_percent)
     }
 
     /// The `vr view` line's values, or `None` in the mode `desktop-stereo` and before the first

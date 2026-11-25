@@ -19,10 +19,12 @@
 //!   [pair]              a flat frame's entire picture into each half of the back buffer
 //!   [move]              a side by side frame's right half moved right by the depth offset in
 //!                       use, black in the columns it uncovers, in a frame that holds no UI yet
-//!   [draw]              the UI key's texture over each half of the back buffer, moved by those
-//!                       columns
+//!   [draw]              the UI key's texture into the interface area of each half of the back
+//!                       buffer, the entire half outside a world frame, moved by those columns, in
+//!                       `area`
 //!   [cursor]            the game's cursor over each half of the back buffer, in each frame whose
-//!                       pointer is in the game window's client area, moved by the cursor's columns
+//!                       pointer is in the game window's client area, over the UI in the interface
+//!                       area, moved by the cursor's columns
 //!   [counter]           the Windows cursor hidden under a drawn cursor as decided, and shown in a
 //!                       frame with no drawn cursor, in `cursor`
 //!   [write]             0 while the feature runs, the game's value when it stops, in `stage`
@@ -41,10 +43,12 @@
 //! shows the cursor over the game window again. The feature stops the same way while the stereo
 //! pair is flat after a failure of another feature of the pair (see [`pair`](crate::pair)).
 
+mod area;
 pub(crate) mod cursor;
 mod decide;
 pub(crate) mod depth_map;
 pub(crate) mod depth_offset;
+mod install;
 mod stage;
 mod target;
 pub(crate) mod ui_depth;
@@ -55,25 +59,24 @@ use std::time::Duration;
 use diag::health::{Feature, Health};
 use diag::rate::RateLimit;
 use diag::warn_every;
-use game_bindings::signatures::{G_PIPELINE, VT_COMPOSITE_STAGE};
 use game_bindings::texture_table::TextureKey;
 use game_mem::GameAddr;
-use gfx::layer::LayerDraw;
-use settings::dev::SecondView;
+use gfx::layer::{LayerDraw, layer_aspect};
+use ipc_layout::viewer_header::depth_map::InterfaceArea;
 use stereo_core::eye::EyeScale;
-use tracing::{info, warn};
+use tracing::warn;
 
+use self::area::{drawn, interface_area};
 use self::cursor::counter::Marked;
 use self::cursor::{Aim, Canvas, Cursor};
-use self::decide::{Draw, Picture, Step, Write, crossed, depth_shift, drawn_offset, halves, step};
+use self::decide::{Draw, Picture, Step, Write, depth_shift, drawn_offset, halves, step};
 use self::depth_map::{DepthMap, Drawn, FrameTextures, MapFrame, MapSink, MapSources};
+pub(crate) use self::install::install;
 use self::stage::EnableByte;
 pub(crate) use self::target::{DrawFault, Target};
 use self::ui_depth::{Columns, CursorReport, DepthInput, DepthReport, DrawnUi, UiDepth};
-use crate::config::Config;
 use crate::eye_view::Layout;
 use crate::game_source::GameSource;
-use crate::install::{GameCode, LocateError};
 use crate::pair::PairState;
 use crate::present;
 use crate::raw::{self, BackBuffer};
@@ -81,15 +84,6 @@ use crate::vr_view::ViewKind;
 
 /// The shortest time between two warnings of one call site.
 pub(crate) const LOG_PERIOD: Duration = Duration::from_secs(10);
-
-/// Why the UI layer is not installed.
-#[derive(Debug, thiserror::Error)]
-enum UiLayerError {
-    #[error("the Present call-site hook, which runs the UI layer each frame, is not running")]
-    NoFrameEnd,
-    #[error(transparent)]
-    Locate(#[from] LocateError),
-}
 
 /// The feature's render thread state, held in the frame state.
 pub(crate) struct UiLayer {
@@ -103,41 +97,13 @@ pub(crate) struct UiLayer {
     depth: UiDepth,
     /// The draw of this frame that ran to its end, or `None` for none.
     drawn: Option<Drawn>,
+    /// The interface area this frame's draw put the UI texture into, the entire half for none.
+    area: InterfaceArea,
     /// The textures this frame's draw read, until its depth map takes them.
     textures: FrameTextures,
     map: DepthMap,
     stage_log: RateLimit,
     cursor_log: RateLimit,
-}
-
-/// Resolves the pipeline global and the composite stage's vtable in `code`, the game exe's code, when
-/// `config` turns `second_view` on and the Present call-site hook is running, and reports the outcome
-/// in the health registry and the log. A failure leaves the feature off and the game unchanged.
-pub(crate) fn install(health: &Health, code: &GameCode, config: Config) -> Option<UiLayer> {
-    if config.dev.stereo.second_view == SecondView::Off {
-        info!(second_view = false, "ui layer not installed");
-        return None;
-    }
-    match locate(health, code, config) {
-        Ok(layer) => {
-            health.install_ok(Feature::UiLayer);
-            info!(vtable = format_args!("{:#x}", layer.byte.vtable().get()), "ui layer installed");
-            Some(layer)
-        }
-        Err(error) => {
-            health.install_failed(Feature::UiLayer);
-            warn!(error = %error, "ui layer not installed");
-            None
-        }
-    }
-}
-
-fn locate(health: &Health, code: &GameCode, config: Config) -> Result<UiLayer, UiLayerError> {
-    if !health.is_running(Feature::PresentHook) {
-        return Err(UiLayerError::NoFrameEnd);
-    }
-    let forward_wait = config.dev.ui.forward_wait_ms.duration();
-    Ok(UiLayer::new(code.locate(&G_PIPELINE)?, code.locate(&VT_COMPOSITE_STAGE)?, forward_wait))
 }
 
 impl UiLayer {
@@ -152,6 +118,7 @@ impl UiLayer {
             cursor: Cursor::default(),
             depth: UiDepth::new(pipeline, forward_wait),
             drawn: None,
+            area: InterfaceArea::FULL,
             textures: FrameTextures::default(),
             map: DepthMap::new(),
             stage_log: RateLimit::default(),
@@ -174,6 +141,7 @@ impl UiLayer {
         let layout = mem::replace(&mut self.next, next);
         self.depth.keep_offset(input.offset);
         self.drawn = None;
+        self.area = InterfaceArea::FULL;
         self.textures = FrameTextures::default();
         if PairState::of(health).is_flat() {
             self.release();
@@ -208,7 +176,7 @@ impl UiLayer {
     }
 
     pub(crate) fn depth_report(&self) -> DepthReport {
-        self.depth.report()
+        self.depth.report(self.area)
     }
 
     pub(crate) fn cursor_report(&self) -> CursorReport {
@@ -245,7 +213,7 @@ impl UiLayer {
         }
         let aim = self.cursor.aim(target.window);
         self.draw(step, aim, target, input)?;
-        self.drawn = Some(Drawn { draw: step.draw, seen });
+        self.drawn = Some(Drawn { draw: step.draw, seen, area: self.area });
         if let (Write::Clear, Some(read)) = (step.write, read) {
             self.byte.clear(read);
         }
@@ -285,11 +253,12 @@ impl UiLayer {
     }
 
     /// Runs `draw` on the back buffer: the pair or the move first, then the UI key's texture of this
-    /// frame into each half, then the cursor of `aim` into each half, each moved by its columns the
-    /// UI depth gives a side by side frame. The UI texture is read before the pair and the
-    /// move, so a failed read leaves the frame as the game drew it. A fault of the cursor's read,
-    /// conversion or placed draw skips only the cursor. Keeps the UI texture and the distance
-    /// texture the frame read for its depth map. Returns whether the cursor was drawn.
+    /// frame into the frame's interface area of each half, then the cursor of `aim` into each half,
+    /// each moved by its columns the UI depth gives a side by side frame. The UI texture is read
+    /// before the pair and the move, so a failed read leaves the frame as the game drew it. A fault
+    /// of the cursor's read, conversion or placed draw skips only the cursor. Keeps the UI texture,
+    /// the distance texture the frame read for its depth map and the frame's interface area.
+    /// Returns whether the cursor was drawn.
     fn draw_halves(
         &mut self,
         draw: Draw,
@@ -301,6 +270,10 @@ impl UiLayer {
         let BackBuffer { width, height, .. } = target.size;
         let rects = halves(width, height).ok_or(DrawFault::Size { width, height })?;
         let ui = if draw.draws_ui() { Some(self.source.texture()?) } else { None };
+        let frame_aspect = input.camera.map(|camera| camera.aspect);
+        let area_of =
+            |texture| interface_area(input.kind, input.scale, frame_aspect, layer_aspect(texture));
+        let area = ui.as_ref().map_or(InterfaceArea::FULL, area_of);
         let layer = if let Some(layer) = self.layer.take().filter(|layer| layer.belongs_to(device))
         {
             layer
@@ -333,12 +306,13 @@ impl UiLayer {
             layer.draw_black(context, &back_buffer, &[shift.uncovered])?;
         }
         if let Some(ui) = &ui {
-            layer.draw_placed(context, &back_buffer, ui, &crossed(&rects, columns.ui))?;
+            layer.draw_placed(context, &back_buffer, ui, &drawn(&rects, area, columns.ui))?;
         }
-        self.textures.ui = ui;
+        (self.textures.ui, self.area) = (ui, area);
         let Some(aim) = aim else { return Ok(Marked::Nothing) };
-        let moves = columns.cursor;
-        let canvas = Canvas { context, back_buffer: &back_buffer, halves: &rects, moves };
+        let (moves, over) = (columns.cursor, columns.over);
+        let canvas =
+            Canvas { context, back_buffer: &back_buffer, halves: &rects, moves, area, over };
         Ok(self.cursor.draw(layer, &canvas, aim))
     }
 

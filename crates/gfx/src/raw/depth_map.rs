@@ -2,6 +2,7 @@
 //! of one texel per cell. The target, the staging textures and the views are the shared ones of
 //! `row`.
 
+use ipc_layout::viewer_header::depth_map::InterfaceArea;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_CONSTANT_BUFFER, D3D11_BUFFER_DESC, D3D11_USAGE_DEFAULT, ID3D11Buffer, ID3D11Device,
     ID3D11DeviceContext, ID3D11PixelShader, ID3D11ShaderResourceView, ID3D11VertexShader,
@@ -16,7 +17,7 @@ const VERTEX_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/depth_map
 const PIXEL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/depth_map.ps.dxbc"));
 
 /// The constant buffer's values in the layout of the `Map` cbuffer in `shaders/depth_map.slang`,
-/// two 16-byte registers.
+/// three 16-byte registers.
 #[repr(C)]
 struct Constants {
     ui_disparity: f32,
@@ -26,12 +27,14 @@ struct Constants {
     scene_rendered: u32,
     columns: u32,
     rows: u32,
-    /// The rest of the second register.
-    padding: u32,
+    area_width: f32,
+    area_height: f32,
+    /// The rest of the third register.
+    padding: [u32; 3],
 }
 
 /// The constant buffer's size, a multiple of 16 as a constant buffer needs.
-const CONSTANTS_SIZE: u32 = 32;
+const CONSTANTS_SIZE: u32 = 48;
 const _: () = assert!(size_of::<Constants>() == CONSTANTS_SIZE as usize);
 
 impl Constants {
@@ -40,6 +43,7 @@ impl Constants {
             MapScene::Rendered { crossed, .. } => (1, crossed),
             MapScene::Flat => (0, 0.0),
         };
+        let area = start.ui.map_or(InterfaceArea::FULL, |ui| ui.area);
         Self {
             ui_disparity: start.ui.map_or(0.0, |ui| ui.disparity),
             crossed,
@@ -48,7 +52,9 @@ impl Constants {
             scene_rendered,
             columns: start.grid.columns().into(),
             rows: start.grid.rows().into(),
-            padding: 0,
+            area_width: area.width,
+            area_height: area.height,
+            padding: [0; 3],
         }
     }
 }
@@ -103,7 +109,7 @@ impl Pipeline {
     ) {
         let constants = Constants::of(start);
         // SAFETY: the buffer is a default-usage constant buffer of this context's device, the
-        // source holds the buffer's entire 32 bytes and lives for the call, and a constant buffer
+        // source holds the buffer's entire 48 bytes and lives for the call, and a constant buffer
         // takes no destination box.
         unsafe {
             context.UpdateSubresource(

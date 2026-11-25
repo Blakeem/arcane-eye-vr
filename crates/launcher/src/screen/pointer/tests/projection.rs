@@ -2,7 +2,7 @@
 //! the picture, its far point without a depth map, its buttons, wheel and camera keys, and the
 //! releases at a change between the screen quad and the projection picture.
 
-use ipc_layout::viewer_header::depth_map::{Cell, Grid, SCENE};
+use ipc_layout::viewer_header::depth_map::{Cell, Grid, InterfaceArea, SCENE};
 use launch::camera_key::{CameraKey, PanKey, TurnKey};
 use launch::mouse::Button;
 use openxr::Vector2f;
@@ -23,7 +23,8 @@ fn scene() -> Vec<Cell> {
 /// the menu closed.
 fn projection(cells: Option<&[Cell]>) -> Sight<'_> {
     let grid = Grid::new(160, 90).expect("a grid");
-    let map = cells.map(|cells| DepthView { grid, depth_offset: 0.0, cells });
+    let area = InterfaceArea::FULL;
+    let map = cells.map(|cells| DepthView { grid, depth_offset: 0.0, cells, area });
     Sight { surface: Some(Surface::Projection(lens_views(), map)), ..closed() }
 }
 

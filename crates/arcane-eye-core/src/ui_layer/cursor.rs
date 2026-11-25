@@ -8,8 +8,9 @@
 //!   [aim]       the pointer in the window's client area and the calling thread's cursor
 //!   [image]     the cursor's bitmaps as pixels and a texture, made again only when its handle changes,
 //!               through row and pixel buffers reserved once for the largest cursor
-//!   [draw]      the texture with its hotspot at the pointer's place in each half, moved by the
-//!               cursor's columns of the UI depth, clipped to the half
+//!   [draw]      the texture with its hotspot at the pointer's place in each half, or over the UI
+//!               at that place in the frame's interface area, at the area's size, moved by the
+//!               cursor's columns of the UI depth, clipped to the half, in `place`
 //!   [counter]   one ShowCursor(FALSE) when a frame draws the cursor and hides the Windows cursor.
 //!               One ShowCursor(TRUE) when a frame shows it again, such as a frame with no drawn
 //!               cursor or a frame the frame handler skips, or after the feature stops
@@ -26,6 +27,7 @@ pub(crate) mod place;
 use diag::rate::{Once, RateLimit};
 use diag::{once, warn_every};
 use gfx::layer::{LayerDraw, LayerError, Rect};
+use ipc_layout::viewer_header::depth_map::InterfaceArea;
 use tracing::Level;
 use windows::Win32::Graphics::Direct3D11::{ID3D11DeviceContext, ID3D11Texture2D};
 
@@ -34,6 +36,7 @@ use self::image::{Buffers, ConvertError, Image};
 use self::place::{Spot, Sprite, place, spot};
 use super::LOG_PERIOD;
 use super::decide::{Moves, shifted};
+use super::ui_depth::Over;
 use crate::raw::cursor::{
     self as raw_cursor, CursorBitmaps, CursorHandle, ReadFault, ReleaseLogs, Window,
 };
@@ -46,7 +49,8 @@ pub(crate) struct Aim {
 }
 
 /// The frame the cursor is drawn into: the back buffer, its device's immediate context, the back
-/// buffer's halves and the columns the cursor moves in each half.
+/// buffer's halves, the columns the cursor moves in each half, the interface area the frame drew
+/// the UI into and what the cursor is over.
 #[derive(Clone, Copy)]
 pub(crate) struct Canvas<'frame> {
     pub(crate) context: &'frame ID3D11DeviceContext,
@@ -54,6 +58,9 @@ pub(crate) struct Canvas<'frame> {
     pub(crate) halves: &'frame [Rect; 2],
     /// The cursor's moves of the UI depth, [`Moves::ZERO`] in a frame with none.
     pub(crate) moves: Moves,
+    pub(crate) area: InterfaceArea,
+    /// What the newest pointer read's result is over, [`Over::NoResult`] in a frame with none.
+    pub(crate) over: Over,
 }
 
 /// Why a cursor is skipped until its handle changes.
@@ -118,7 +125,8 @@ impl Cursor {
     /// changes.
     pub(crate) fn draw(&mut self, layer: &LayerDraw, canvas: &Canvas<'_>, aim: Aim) -> Marked {
         let Some(drawn) = self.drawn(layer, aim.handle) else { return Marked::Nothing };
-        let placements = shifted(place(aim.spot, drawn.sprite, canvas.halves), canvas.moves);
+        let placed = place(aim.spot, drawn.sprite, canvas.halves, canvas.area, canvas.over);
+        let placements = shifted(placed, canvas.moves);
         let Canvas { context, back_buffer, .. } = *canvas;
         if let Err(error) = layer.draw_placed(context, back_buffer, &drawn.texture, &placements) {
             self.skip(aim.handle, error.into());

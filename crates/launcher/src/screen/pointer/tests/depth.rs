@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use ipc_layout::viewer_header::depth_map::{Cell, Grid, INTERFACE, SCENE};
+use ipc_layout::viewer_header::depth_map::{Cell, Grid, INTERFACE, InterfaceArea, SCENE};
 use launch::mouse::Button;
 use openxr::{Posef, Vector3f};
 use stereo_core::eye::PerEye;
@@ -33,7 +33,10 @@ fn depth(cells: &[Cell]) -> Depth<'_> {
     let grid = Grid::new(160, 90).expect("a grid");
     let eye = |x| Vector3f { x, y: 0.0, z: 0.0 };
     let eyes = PerEye { left: eye(-0.0325), right: eye(0.0325) };
-    Depth { eyes, map: DepthView { grid, depth_offset: PARALLEL, cells } }
+    Depth {
+        eyes,
+        map: DepthView { grid, depth_offset: PARALLEL, cells, area: InterfaceArea::FULL },
+    }
 }
 
 /// The screen with the depth of `cells` and the menu closed.

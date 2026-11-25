@@ -1,6 +1,7 @@
 //! The perf window's `ui depth` and `cursor depth` lines and their fields.
 
 use gfx::nearest::Nearest;
+use ipc_layout::viewer_header::depth_map::InterfaceArea;
 use ipc_layout::viewer_header::screen::ParallelShare;
 use settings::player::DepthOffsetPercent;
 use stereo_core::eye::EyeScale;
@@ -24,20 +25,22 @@ fn the_ui_depth_line_of_a_ui_that_hides_the_scene_holds_the_nearest_distance_min
         columns: 0,
         eye_scale: EyeScale::FULL,
         offset: DepthOffset::NONE,
+        area: InterfaceArea { width: 0.7, height: 0.39375 },
     };
 
     let lines = log_lines("ui-depth-hidden", || log_depth(report, NO_CURSOR_RESULT));
 
     let [line, _] = lines.as_slice() else { panic!("the two depth lines: {lines:#?}") };
     let fields = " arcane_eye_core::frame msg=\"ui depth\" nearest_m=-2.0 ui_columns=0 \
-                  eye_scale=1.0 offset=0.0 offset_from=none";
+                  eye_scale=1.0 offset=0.0 offset_from=none ui_w=0.7 ui_h=0.39375";
     assert!(line.ends_with(fields), "{line}");
 }
 
 #[test]
 fn the_cursor_depth_line_holds_what_the_pointer_is_over_and_the_cursors_moves() {
     let offset = DepthOffset::NONE;
-    let depth = DepthReport { nearest: None, columns: 0, eye_scale: EyeScale::FULL, offset };
+    let area = InterfaceArea::FULL;
+    let depth = DepthReport { nearest: None, columns: 0, eye_scale: EyeScale::FULL, offset, area };
     let over_scene = CursorReport { over: Over::Scene, moves: Moves { left: 53, right: -24 } };
     let over_ui = CursorReport { over: Over::Ui, moves: Moves { left: 37, right: -37 } };
 
@@ -65,12 +68,16 @@ fn ten_meter_screen() -> ParallelShare {
 #[test]
 fn the_ui_depth_line_holds_the_depth_offset_in_use_and_where_it_comes_from() {
     let offset = DepthOffset::in_use(DepthOffsetPercent::default(), Some(ten_meter_screen()));
-    let report = DepthReport { nearest: None, columns: 0, eye_scale: EyeScale::FULL, offset };
+    let area = InterfaceArea::FULL;
+    let report = DepthReport { nearest: None, columns: 0, eye_scale: EyeScale::FULL, offset, area };
 
     let lines = log_lines("ui-depth-offset", || log_depth(report, NO_CURSOR_RESULT));
 
     let [line, _] = lines.as_slice() else { panic!("the two depth lines: {lines:#?}") };
-    assert!(line.ends_with(" eye_scale=1.0 offset=0.0065 offset_from=screen"), "{line}");
+    assert!(
+        line.ends_with(" eye_scale=1.0 offset=0.0065 offset_from=screen ui_w=1.0 ui_h=1.0"),
+        "{line}"
+    );
 }
 
 #[test]
@@ -94,5 +101,8 @@ fn a_share_the_viewing_side_wrote_reaches_the_ui_depth_line_while_it_beats() {
 
     let depth: Vec<&String> = lines.iter().filter(|line| line.contains("\"ui depth\"")).collect();
     let [line] = depth.as_slice() else { panic!("one ui depth line: {lines:#?}") };
-    assert!(line.ends_with(" eye_scale=1.0 offset=0.0065 offset_from=screen"), "{line}");
+    assert!(
+        line.ends_with(" eye_scale=1.0 offset=0.0065 offset_from=screen ui_w=1.0 ui_h=1.0"),
+        "{line}"
+    );
 }

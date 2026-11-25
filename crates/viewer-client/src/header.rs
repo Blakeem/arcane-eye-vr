@@ -1,12 +1,14 @@
 //! The names of the viewer link, the header read that every reader of the link shares, the head
-//! pose write, the screen write, the view wish write and the horizon wish write.
+//! pose write, the screen write, the view wish write, the horizon wish write and the scale wish
+//! write.
 
 use ipc_layout::viewer_header::horizon_wish::HorizonWish;
 use ipc_layout::viewer_header::pose::HeadPose;
+use ipc_layout::viewer_header::scale_wish::ScaleWish;
 use ipc_layout::viewer_header::screen::ParallelShare;
 use ipc_layout::viewer_header::view_wish::ViewWish;
 use ipc_layout::viewer_header::{
-    self, HORIZON_WISH_OFFSET, HeaderError, VIEW_WISH_OFFSET, ViewerHeader,
+    self, HORIZON_WISH_OFFSET, HeaderError, SCALE_WISH_OFFSET, VIEW_WISH_OFFSET, ViewerHeader,
 };
 use windows::core::HSTRING;
 
@@ -121,5 +123,18 @@ pub fn write_view_wish(view: &HeaderView, wish: ViewWish) -> Result<(), HeaderEr
 pub fn write_horizon_wish(view: &HeaderView, wish: HorizonWish) -> Result<(), HeaderError> {
     ViewerHeader::decode(&view.read_words())?;
     view.write_words([(HORIZON_WISH_OFFSET, wish.to_word())]);
+    Ok(())
+}
+
+/// Writes `wish` as the scale wish into the header of `view`. The write follows the rule of
+/// [`write_view_wish`].
+///
+/// # Errors
+///
+/// Returns [`HeaderError`] when the header holds another magic value or layout version, which may
+/// hold another field at the scale wish's offset. The header is then left as it is.
+pub fn write_scale_wish(view: &HeaderView, wish: ScaleWish) -> Result<(), HeaderError> {
+    ViewerHeader::decode(&view.read_words())?;
+    view.write_words([(SCALE_WISH_OFFSET, wish.to_word())]);
     Ok(())
 }

@@ -7,10 +7,11 @@ use super::{
 };
 use ipc_layout::viewer_header::horizon_wish::HorizonWish;
 use ipc_layout::viewer_header::pose::{HeadPose, HeadSample, HeadSlot};
+use ipc_layout::viewer_header::scale_wish::ScaleWish;
 use ipc_layout::viewer_header::screen::{ParallelShare, ScreenSlot};
 use ipc_layout::viewer_header::view_wish::ViewWish;
 use ipc_layout::viewer_header::{
-    Acquire, HEAD_SEQUENCE_OFFSET, HORIZON_WISH_OFFSET, PARALLEL_SHARE_OFFSET,
+    Acquire, HEAD_SEQUENCE_OFFSET, HORIZON_WISH_OFFSET, PARALLEL_SHARE_OFFSET, SCALE_WISH_OFFSET,
     SCREEN_SEQUENCE_OFFSET, TextureInfo, VIEW_WISH_OFFSET, ViewerHeader, WORD_SIZE,
 };
 use std::time::{Duration, Instant};
@@ -141,12 +142,13 @@ fn a_write_counts_unless_the_slot_held_its_number_while_no_viewer_ran() {
     assert_eq!(screen.next(slot(4, 0.0065), 4), Some(share(0.0065)), "its write ended");
 }
 
-/// What a read gives with no write: the view wish `view` and the horizon wish `horizon`.
+/// What a read gives with no write: the view wish `view`, the horizon wish `horizon` and no
+/// scale wish.
 const fn use_only(view: ViewWish, horizon: Option<HorizonWish>) -> AfterRead {
-    AfterRead { wishes: Wishes { view, horizon }, resets: [None, None] }
+    AfterRead { wishes: Wishes { view, horizon, scale: None }, resets: [None, None, None] }
 }
 
-/// The view wish word 0 and the horizon wish word 0, which a header the core made holds.
+/// The view wish word 0 and the wish words 0, which a header the core made holds.
 const UNWRITTEN: AfterRead = use_only(ViewWish::World, None);
 
 #[test]
@@ -156,7 +158,7 @@ fn a_running_viewer_gives_its_view_wish_and_a_screen_a_stopped_viewer_left_reset
     assert_eq!(after_read(Some((wish(1), true))), screen);
     assert_eq!(after_read(Some((wish(0), true))), UNWRITTEN);
     assert_eq!(after_read(Some((wish(7), true))), UNWRITTEN, "a word other than 1");
-    let reset = AfterRead { resets: [Some((124, 0)), None], ..UNWRITTEN };
+    let reset = AfterRead { resets: [Some((124, 0)), None, None], ..UNWRITTEN };
     assert_eq!(after_read(Some((wish(1), false))), reset, "a stopped viewer's Screen");
     assert_eq!(after_read(Some((wish(0), false))), UNWRITTEN, "World needs no write");
     assert_eq!(after_read(Some((wish(7), false))), UNWRITTEN, "a word that reads as World");
@@ -172,7 +174,7 @@ fn a_running_viewer_gives_its_horizon_wish_and_a_stopped_viewer_left_resets_to_n
     assert_eq!(after_read(Some((wish(2), true))), camera, "the word 2");
     assert_eq!(after_read(Some((wish(0), true))), UNWRITTEN, "the word 0");
     assert_eq!(after_read(Some((wish(7), true))), UNWRITTEN, "a word that holds no wish");
-    let reset = AfterRead { resets: [None, Some((136, 0))], ..UNWRITTEN };
+    let reset = AfterRead { resets: [None, Some((136, 0)), None], ..UNWRITTEN };
     for word in [1, 2] {
         assert_eq!(after_read(Some((wish(word), false))), reset, "a stopped viewer's {word}");
     }
@@ -181,10 +183,32 @@ fn a_running_viewer_gives_its_horizon_wish_and_a_stopped_viewer_left_resets_to_n
 }
 
 #[test]
-fn both_wishes_come_from_one_read_and_a_stopped_viewer_left_resets_both() {
-    let both = header([(VIEW_WISH_OFFSET, 1), (HORIZON_WISH_OFFSET, 1)]);
-    let running = use_only(ViewWish::Screen, Some(HorizonWish::Level));
-    assert_eq!(after_read(Some((both, true))), running);
-    let reset = AfterRead { resets: [Some((124, 0)), Some((136, 0))], ..UNWRITTEN };
-    assert_eq!(after_read(Some((both, false))), reset);
+fn a_running_viewer_gives_its_scale_wish_and_a_stopped_viewer_left_resets_to_no_wish() {
+    let wish = |word| header([(SCALE_WISH_OFFSET, word)]);
+    let scale = |percent| {
+        let scale = ScaleWish::from_percent(percent);
+        AfterRead { wishes: Wishes { scale, ..UNWRITTEN.wishes }, ..UNWRITTEN }
+    };
+    assert_eq!(after_read(Some((wish(70), true))), scale(70), "the word 70");
+    assert_eq!(after_read(Some((wish(40), true))), scale(40), "the word 40");
+    for word in [0, 39, 101] {
+        assert_eq!(after_read(Some((wish(word), true))), UNWRITTEN, "the word {word}");
+        assert_eq!(after_read(Some((wish(word), false))), UNWRITTEN, "no wish needs no write");
+    }
+    let reset = AfterRead { resets: [None, None, Some((140, 0))], ..UNWRITTEN };
+    assert_eq!(after_read(Some((wish(100), false))), reset, "a stopped viewer's 100");
+}
+
+#[test]
+fn every_wish_comes_from_one_read_and_a_stopped_viewer_left_resets_each() {
+    let all = header([(VIEW_WISH_OFFSET, 1), (HORIZON_WISH_OFFSET, 1), (SCALE_WISH_OFFSET, 70)]);
+    let wishes = Wishes {
+        view: ViewWish::Screen,
+        horizon: Some(HorizonWish::Level),
+        scale: ScaleWish::from_percent(70),
+    };
+    let running = AfterRead { wishes, resets: [None, None, None] };
+    assert_eq!(after_read(Some((all, true))), running);
+    let resets = [Some((124, 0)), Some((136, 0)), Some((140, 0))];
+    assert_eq!(after_read(Some((all, false))), AfterRead { resets, ..UNWRITTEN });
 }

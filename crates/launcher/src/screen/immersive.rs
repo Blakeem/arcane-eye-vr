@@ -1,6 +1,6 @@
-//! The immersive mode of the headset session: the head pose and the menu's view wish and horizon
-//! wish written into the viewer link in each frame, and each published frame shown around the
-//! player at the head pose it was rendered with.
+//! The immersive mode of the headset session: the head pose and the menu's view wish, horizon
+//! wish and scale wish written into the viewer link in each frame, and each published frame shown
+//! around the player at the head pose it was rendered with.
 //!
 //! The core renders each frame's eyes from the newest head pose this module wrote and tags the
 //! frame with that pose's sequence number and its lens. `decide.rs` finds the tagged pose among the
@@ -123,12 +123,12 @@ impl Immersive {
         Ok(())
     }
 
-    /// Writes `wishes`, the view wish and the horizon wish of the menu, into the viewer header of
-    /// `link`. The write runs in each frame, so a header that an earlier session left holds this
-    /// session's wishes. A failed write warns at most once per [`FAILURE_PERIOD`], and the next
-    /// frame writes again.
+    /// Writes `wishes`, the view wish, the horizon wish and the scale wish of the menu, into the
+    /// viewer header of `link`. The write runs in each frame, so a header that an earlier session
+    /// left holds this session's wishes. A failed write warns at most once per [`FAILURE_PERIOD`],
+    /// and the next frame writes again.
     pub(crate) fn write_wishes(&mut self, wishes: Wishes, link: &mut Link) {
-        if let Err(error) = link.write_wishes(wishes.view, wishes.horizon) {
+        if let Err(error) = link.write_wishes(wishes) {
             warn_every!(
                 self.wish_failure,
                 FAILURE_PERIOD,

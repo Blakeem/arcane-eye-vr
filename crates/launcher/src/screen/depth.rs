@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 use diag::error_chain;
 use diag::rate::RateLimit;
 use diag::warn_every;
-use ipc_layout::viewer_header::depth_map::{Cell, Grid, INTERFACE, SCENE};
+use ipc_layout::viewer_header::depth_map::{
+    COVERED_SCENE, Cell, Grid, INTERFACE, InterfaceArea, SCENE,
+};
 use openxr::Vector3f;
 use stereo_core::eye::PerEye;
 use viewer_client::depth_map::{DepthMapReadError, DepthMapReader};
@@ -28,6 +30,9 @@ const FAILURE_PERIOD: Duration = Duration::from_secs(10);
 pub(crate) enum Kind {
     Interface,
     Scene,
+    /// A scene whose place holds an interface element the frame drew elsewhere, so the game
+    /// gives a click there to that element.
+    CoveredScene,
 }
 
 /// One cell of a depth map: the uncrossed disparity as a share of a half's width, and its kind.
@@ -37,7 +42,8 @@ pub(crate) struct CellDepth {
     pub(crate) kind: Kind,
 }
 
-/// The cells of a depth map and the depth offset in use.
+/// The cells of a depth map, the depth offset in use and the interface area the frame drew the
+/// interface into.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DepthView<'m> {
     pub(crate) grid: Grid,
@@ -45,6 +51,7 @@ pub(crate) struct DepthView<'m> {
     pub(crate) depth_offset: f32,
     /// The cells, row by row from the top left of the left half.
     pub(crate) cells: &'m [Cell],
+    pub(crate) area: InterfaceArea,
 }
 
 impl DepthView<'_> {
@@ -164,7 +171,8 @@ impl DepthWatch {
         self.newest = Some((sequence, changed));
         let info = map.info();
         usable(changed, now, info.grid)?;
-        Ok(DepthView { grid: info.grid, depth_offset: info.depth_offset, cells: map.cells() })
+        let (grid, depth_offset, area) = (info.grid, info.depth_offset, info.area);
+        Ok(DepthView { grid, depth_offset, cells: map.cells(), area })
     }
 }
 
@@ -188,9 +196,14 @@ fn part(share: f32, count: u16) -> Option<u16> {
     Some(low)
 }
 
-/// The kind of a cell's kind value: the kind whose value lies nearer.
+/// The kind of a cell's kind value: the kind whose value lies nearest, the first of this order for
+/// a tie, so the scene for a value that is not a number.
 fn kind_of(value: f32) -> Kind {
-    if (value - INTERFACE).abs() < (value - SCENE).abs() { Kind::Interface } else { Kind::Scene }
+    let kinds =
+        [(SCENE, Kind::Scene), (INTERFACE, Kind::Interface), (COVERED_SCENE, Kind::CoveredScene)];
+    let distance = |kind_value: f32| (value - kind_value).abs();
+    let nearest = kinds.into_iter().min_by(|a, b| distance(a.0).total_cmp(&distance(b.0)));
+    nearest.map_or(Kind::Scene, |(_, kind)| kind)
 }
 
 fn finite(v: Vector3f) -> bool {

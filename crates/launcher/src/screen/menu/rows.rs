@@ -1,9 +1,11 @@
 //! The rows of the screen menu: the screen's distance and its width, each with its value and a
 //! minus and a plus button that step it by [`STEP_M`] within the range of the player file, and in a
 //! menu with wishes the row View and the row Horizon below them, whose two buttons each switch the
-//! row's wish.
+//! row's wish, and the row Menu scale below those, whose buttons step the scale wish by
+//! [`STEP_PERCENT`] within the range of a scale wish.
 
 use ipc_layout::viewer_header::horizon_wish::HorizonWish;
+use ipc_layout::viewer_header::scale_wish::ScaleWish;
 use ipc_layout::viewer_header::view_wish::ViewWish;
 use overlay::menu::{Button, ButtonState, Menu, Row, TooManyRows};
 use settings::player::{ScreenDistanceM, ScreenSettings, ScreenWidthM};
@@ -15,13 +17,20 @@ const STEP_M: f32 = 0.1;
 /// range refuses, so a stepped value is rounded to the 2 decimal places the value text shows.
 const ROUNDING: f32 = 100.0;
 
+/// The change of one step of the row Menu scale, in percent.
+const STEP_PERCENT: u32 = 10;
+
+/// The scale wish of each start, in percent.
+const START_SCALE_PERCENT: u32 = 70;
+
 const TITLE: &str = "Screen";
 
 /// The values the menu shows and its buttons change.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Values {
     pub(crate) screen: ScreenSettings,
-    /// The wishes of the rows View and Horizon, or `None` for a menu with neither row.
+    /// The wishes of the rows View, Horizon and Menu scale, or `None` for a menu with none of
+    /// them.
     pub(crate) wishes: Option<Wishes>,
 }
 
@@ -32,13 +41,17 @@ pub(crate) struct Wishes {
     pub(crate) view: ViewWish,
     /// The horizon wish of the row Horizon.
     pub(crate) horizon: HorizonWish,
+    /// The scale wish of the row Menu scale.
+    pub(crate) scale: ScaleWish,
 }
 
 impl Default for Wishes {
-    /// The wishes of each start, which the menu does not save: the view wish `World` and the
-    /// horizon wish `Camera`.
+    /// The wishes of each start, which the menu does not save: the view wish `World`, the
+    /// horizon wish `Camera` and the scale wish 70 percent.
     fn default() -> Self {
-        Self { view: ViewWish::World, horizon: HorizonWish::Camera }
+        // 70 percent lies inside the range of a scale wish, so the fallback never takes effect.
+        let scale = ScaleWish::from_percent(START_SCALE_PERCENT).unwrap_or(ScaleWish::FULL);
+        Self { view: ViewWish::World, horizon: HorizonWish::Camera, scale }
     }
 }
 
@@ -61,15 +74,18 @@ pub(crate) enum Line {
     View(ViewWish),
     /// The row Horizon, which shows the horizon wish.
     Horizon(HorizonWish),
+    /// The row Menu scale, which shows the scale wish.
+    Scale(ScaleWish),
 }
 
 impl Line {
-    /// The rows of a menu over `values` from the top: the screen settings, then the row View and
-    /// the row Horizon while `values` holds wishes.
+    /// The rows of a menu over `values` from the top: the screen settings, then the rows View,
+    /// Horizon and Menu scale while `values` holds wishes.
     fn all(values: Values) -> impl Iterator<Item = Self> {
         let wishes = values.wishes.into_iter();
-        let wish_rows =
-            wishes.flat_map(|wish| [Self::View(wish.view), Self::Horizon(wish.horizon)]);
+        let wish_rows = wishes.flat_map(|wish| {
+            [Self::View(wish.view), Self::Horizon(wish.horizon), Self::Scale(wish.scale)]
+        });
         SETTING_ROWS.into_iter().map(Self::Setting).chain(wish_rows)
     }
 
@@ -141,8 +157,20 @@ pub(crate) const fn switched_horizon(wish: HorizonWish) -> HorizonWish {
     }
 }
 
-/// The menu that shows `values`, with a button of a screen setting disabled when its step would
-/// leave the range.
+/// The scale wish after one press of `button` of the row Menu scale that shows `wish`: minus down
+/// and plus up by [`STEP_PERCENT`]. Returns `None` when the step would leave the range of a scale
+/// wish.
+pub(crate) fn stepped_scale(wish: ScaleWish, button: Button) -> Option<ScaleWish> {
+    let percent = u32::from(wish.percent());
+    let next = match button {
+        Button::Minus => percent.checked_sub(STEP_PERCENT)?,
+        Button::Plus => percent.checked_add(STEP_PERCENT)?,
+    };
+    ScaleWish::from_percent(next)
+}
+
+/// The menu that shows `values`, with a button of a screen setting or of the row Menu scale
+/// disabled when its step would leave the range.
 ///
 /// # Errors
 ///
@@ -158,6 +186,12 @@ pub(crate) fn menu(values: Values) -> Result<Menu, TooManyRows> {
         },
         Line::View(wish) => switch_row("View", view_text(wish)),
         Line::Horizon(wish) => switch_row("Horizon", horizon_text(wish)),
+        Line::Scale(wish) => Row {
+            label: "Menu scale".to_owned(),
+            value: format!("{} %", wish.percent()),
+            minus: state(stepped_scale(wish, Button::Minus)),
+            plus: state(stepped_scale(wish, Button::Plus)),
+        },
     });
     Menu::new(TITLE.to_owned(), rows.collect())
 }
@@ -195,7 +229,7 @@ const fn horizon_text(wish: HorizonWish) -> &'static str {
     }
 }
 
-const fn state(step: Option<ScreenSettings>) -> ButtonState {
+const fn state<T: Copy>(step: Option<T>) -> ButtonState {
     match step {
         Some(_) => ButtonState::Enabled,
         None => ButtonState::Disabled,
@@ -205,10 +239,13 @@ const fn state(step: Option<ScreenSettings>) -> ButtonState {
 #[cfg(test)]
 mod tests {
     use ipc_layout::viewer_header::horizon_wish::HorizonWish;
+    use ipc_layout::viewer_header::scale_wish::ScaleWish;
     use ipc_layout::viewer_header::view_wish::ViewWish;
     use overlay::menu::{Button, ButtonState};
 
-    use super::{Line, Setting, Values, Wishes, menu, stepped, switched, switched_horizon};
+    use super::{
+        Line, Setting, Values, Wishes, menu, stepped, stepped_scale, switched, switched_horizon,
+    };
     use crate::screen::menu::tests::{screen, values};
 
     #[test]
@@ -220,18 +257,24 @@ mod tests {
         assert_eq!(rows, [("Distance", "2.5 m"), ("Size", "3.0 m")]);
     }
 
+    fn scale(percent: u32) -> ScaleWish {
+        ScaleWish::from_percent(percent).expect("a scale in range")
+    }
+
     #[test]
-    fn a_menu_with_wishes_shows_the_row_view_then_the_row_horizon_below_the_screen_rows() {
+    fn a_menu_with_wishes_shows_the_rows_view_horizon_and_menu_scale_below_the_screen_rows() {
         let cases = [
             (ViewWish::World, HorizonWish::Camera, "World", "Camera"),
             (ViewWish::Screen, HorizonWish::Level, "Screen", "Level"),
         ];
         for (view, horizon, view_shown, horizon_shown) in cases {
-            let wishes = Some(Wishes { view, horizon });
-            let shown = menu(Values { wishes, ..values(2.5, 3.0) }).expect("four rows");
-            let [_, _, view_row, horizon_row] = shown.rows() else {
-                panic!("four rows: {shown:?}")
+            let wishes = Some(Wishes { view, horizon, scale: scale(70) });
+            let shown = menu(Values { wishes, ..values(2.5, 3.0) }).expect("five rows");
+            let [_, _, view_row, horizon_row, scale_row] = shown.rows() else {
+                panic!("five rows: {shown:?}")
             };
+            let scale_texts = (scale_row.label.as_str(), scale_row.value.as_str());
+            assert_eq!(scale_texts, ("Menu scale", "70 %"));
             assert_eq!((view_row.label.as_str(), view_row.value.as_str()), ("View", view_shown));
             let horizon_texts = (horizon_row.label.as_str(), horizon_row.value.as_str());
             assert_eq!(horizon_texts, ("Horizon", horizon_shown));
@@ -280,9 +323,28 @@ mod tests {
     }
 
     #[test]
-    fn each_start_begins_with_the_view_wish_world_and_the_horizon_wish_camera() {
+    fn each_start_begins_with_the_view_wish_world_the_horizon_camera_and_the_scale_70() {
         let start = Wishes::default();
         assert_eq!((start.view, start.horizon), (ViewWish::World, HorizonWish::Camera));
+        assert_eq!(start.scale, scale(70));
+    }
+
+    #[test]
+    fn a_scale_step_moves_by_10_percent_within_40_to_100_and_its_buttons_end_at_the_range() {
+        assert_eq!(stepped_scale(scale(70), Button::Plus), Some(scale(80)));
+        assert_eq!(stepped_scale(scale(70), Button::Minus), Some(scale(60)));
+        assert_eq!(stepped_scale(scale(100), Button::Plus), None, "past 100");
+        assert_eq!(stepped_scale(scale(40), Button::Minus), None, "below 40");
+        for (percent, minus, plus) in [
+            (40, ButtonState::Disabled, ButtonState::Enabled),
+            (100, ButtonState::Enabled, ButtonState::Disabled),
+        ] {
+            let wishes = Some(Wishes { scale: scale(percent), ..Wishes::default() });
+            let shown = menu(Values { wishes, ..values(2.5, 3.0) }).expect("five rows");
+            let row = shown.rows().get(4).expect("the row Menu scale");
+            assert_eq!((row.minus, row.plus), (minus, plus), "{percent}");
+            assert_eq!(row.value, format!("{percent} %"));
+        }
     }
 
     #[test]
@@ -291,10 +353,12 @@ mod tests {
         assert_eq!(Line::of_row(0, no_view), Some(Line::Setting(Setting::Distance)));
         assert_eq!(Line::of_row(1, no_view), Some(Line::Setting(Setting::Size)));
         assert_eq!(Line::of_row(2, no_view), None);
-        let wishes = Some(Wishes { view: ViewWish::Screen, horizon: HorizonWish::Level });
+        let wishes =
+            Some(Wishes { view: ViewWish::Screen, horizon: HorizonWish::Level, scale: scale(50) });
         let view = Values { wishes, ..no_view };
         assert_eq!(Line::of_row(2, view), Some(Line::View(ViewWish::Screen)));
         assert_eq!(Line::of_row(3, view), Some(Line::Horizon(HorizonWish::Level)));
-        assert_eq!(Line::of_row(4, view), None);
+        assert_eq!(Line::of_row(4, view), Some(Line::Scale(scale(50))));
+        assert_eq!(Line::of_row(5, view), None);
     }
 }

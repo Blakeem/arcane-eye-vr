@@ -5,12 +5,12 @@
 //! every frame it handles, so the present number of each published frame shows the frames it did
 //! not publish. It writes each published frame's tag beside the present number.
 //! [`Publisher::head_pose`] reads the head pose, [`Publisher::parallel_share`] the screen's
-//! parallel share and [`Publisher::wishes`] the view wish and the horizon wish that the viewer
-//! writes, and [`Publisher::next_present`] gives the next frame's present number, while the same
-//! heartbeat rule finds the viewer running. With no viewer, each of these four calls and
-//! [`Publisher::on_frame`] costs one read of the header. The acquire step's decision is in
-//! `publish/acquire.rs`, the heartbeat's in `publish/heartbeat.rs`, the head pose's in
-//! `publish/head.rs`, the share's in `publish/screen.rs` and the wishes' in `publish/wish.rs`.
+//! parallel share and [`Publisher::wishes`] the view wish, the horizon wish and the scale wish
+//! that the viewer writes, and [`Publisher::next_present`] gives the next frame's present
+//! number, while the same heartbeat rule finds the viewer running. With no viewer, each of these
+//! four calls and [`Publisher::on_frame`] costs one read of the header. The acquire step's
+//! decision is in `publish/acquire.rs`, the heartbeat's in `publish/heartbeat.rs`, the head pose's
+//! in `publish/head.rs`, the share's in `publish/screen.rs` and the wishes' in `publish/wish.rs`.
 
 mod acquire;
 mod head;
@@ -289,9 +289,10 @@ impl Publisher {
         self.screen.after(&reads)
     }
 
-    /// The view wish and the horizon wish the viewer wrote last, both from one read at `now`, or
-    /// [`Wishes::default`] while no viewer runs or the header holds another layout. A read with no
-    /// viewer running sets a view wish `Screen` to `World` and a horizon wish to no wish.
+    /// The view wish, the horizon wish and the scale wish the viewer wrote last, all from one read
+    /// at `now`, or [`Wishes::default`] while no viewer runs or the header holds another layout. A
+    /// read with no viewer running sets a view wish `Screen` to `World` and a horizon wish and a
+    /// scale wish to no wish.
     pub fn wishes(&mut self, now: Instant) -> Wishes {
         let AfterRead { wishes, resets } = after_read(self.read_once(now));
         self.header.write_words(resets.into_iter().flatten());

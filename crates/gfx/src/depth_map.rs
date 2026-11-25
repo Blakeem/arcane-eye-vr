@@ -1,16 +1,19 @@
 //! The depth map: the uncrossed disparity of what each cell of a frame's left half shows and
-//! whether that is the interface or the scene, found on the GPU, handed to the CPU with no wait
-//! and written into the depth map section that a viewing program reads.
+//! whether that is the interface, the scene or a covered scene, found on the GPU, handed to the
+//! CPU with no wait and written into the depth map section that a viewing program reads.
 //!
 //! The layer spans an entire frame, and each half of the distance texture spans one eye's entire
 //! picture. A cell's place is its middle, as shares of the left half. A frame that draws the layer
-//! shows the interface at a place whose layer texel, the texel at the place's share minus half the
+//! draws it into its interface area, moved right by half the UI disparity. It shows the interface
+//! at a place whose layer texel, the texel at the game place of the place moved left by half the
 //! UI disparity, has an alpha above 0.25, with the negative of the UI disparity as its uncrossed
 //! disparity.
 //! Every other place shows the scene: in a frame the game rendered side by side, the depth offset
 //! minus the crossed disparity of the distance texture's value at that place of its left half, or
 //! the depth offset for a value that is 0, negative or not finite. In a pair made from a flat
-//! picture the scene's disparity is 0.
+//! picture the scene's disparity is 0. In a frame whose interface area is not the entire half, a
+//! scene place whose own layer texel has an alpha above 0.25 is a covered scene, since the game
+//! gives a click there to that interface element, which the frame drew elsewhere.
 //!
 //! A started map draws one texel per cell into a target texture and copies it into a staging
 //! texture of its own, which a later frame maps with no wait, in the crate's `readback` module.
@@ -19,8 +22,8 @@
 
 use ipc_layout::viewer_header::WORD_SIZE;
 use ipc_layout::viewer_header::depth_map::{
-    Grid, LAYOUT_VERSION, LAYOUT_VERSION_OFFSET, MAGIC, MAGIC_OFFSET, MapInfo, SEQUENCE_OFFSET,
-    SIZE, write_sequences,
+    Grid, InterfaceArea, LAYOUT_VERSION, LAYOUT_VERSION_OFFSET, MAGIC, MAGIC_OFFSET, MapInfo,
+    SEQUENCE_OFFSET, SIZE, write_sequences,
 };
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D};
 use windows::core::HRESULT;
@@ -32,7 +35,7 @@ use crate::raw::texture_desc;
 use crate::readback::Readback;
 
 /// The section's size as `CreateFileMappingW` takes it.
-const SECTION_SIZE: u32 = 524_320;
+const SECTION_SIZE: u32 = 524_328;
 const _: () = assert!(SECTION_SIZE as usize == SIZE);
 
 /// The depth map step that failed.
@@ -93,13 +96,15 @@ impl From<SectionFault> for SectionError {
     }
 }
 
-/// The layer a frame draws into each half and its UI disparity.
+/// The layer a frame draws into each half, its UI disparity and its interface area.
 #[derive(Clone, Copy, Debug)]
 pub struct MapUi<'frame> {
     pub layer: &'frame ID3D11Texture2D,
     /// The crossed disparity of the interface as a share, 0 or more. The UI draw moves the layer
     /// half of it to the right in the left half.
     pub disparity: f32,
+    /// The rectangle of each half the UI draw put the layer into before that move.
+    pub area: InterfaceArea,
 }
 
 /// Where a frame's scene disparity comes from.
@@ -208,7 +213,9 @@ impl DepthMapRead {
         };
         let target = self.target.insert(target);
         self.pipeline.draw(context, target, [layer, distances], start);
-        let info = MapInfo { grid, depth_offset: start.scene.offset(), present: start.present };
+        let area = start.ui.map_or(InterfaceArea::FULL, |ui| ui.area);
+        let info =
+            MapInfo { grid, depth_offset: start.scene.offset(), present: start.present, area };
         self.readback.queue(context, target, MapStep::Staging, info)
     }
 
@@ -257,7 +264,8 @@ impl MapSection {
         Ok(Self { section })
     }
 
-    /// Writes the map of no cell and no depth offset of the frame of `present`.
+    /// Writes the map of no cell, no depth offset and the entire half as its area of the frame of
+    /// `present`.
     pub fn write_empty(&self, present: u32) {
         self.write_cells(MapInfo::empty(present), None);
     }

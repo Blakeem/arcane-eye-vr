@@ -1,5 +1,5 @@
 //! The menu's rows View and Horizon: the rows of each view's menu, the switch of each row's wish at
-//! a press of either button, and no repeat of a held press.
+//! a press of either button, and no repeat of a held press. `scale.rs` holds the row Menu scale.
 
 use std::time::Duration;
 
@@ -24,9 +24,11 @@ fn wished(wish: ViewWish) -> Values {
     leveled(wish, HorizonWish::Camera)
 }
 
-/// The values of a menu over a 2.5 m distance and a 3 m width whose rows show `view` and `horizon`.
+/// The values of a menu over a 2.5 m distance and a 3 m width whose rows show `view`, `horizon`
+/// and the scale wish of each start.
 fn leveled(view: ViewWish, horizon: HorizonWish) -> Values {
-    Values { screen: screen(2.5, 3.0), wishes: Some(Wishes { view, horizon }) }
+    let wishes = Wishes { view, horizon, ..Wishes::default() };
+    Values { screen: screen(2.5, 3.0), wishes: Some(wishes) }
 }
 
 /// The view wishes of the run's events.
@@ -37,7 +39,8 @@ fn viewed(run: &Run) -> Vec<ViewWish> {
         | Event::Moved(_)
         | Event::Closed(_)
         | Event::Stepped(_)
-        | Event::Horizon(_) => None,
+        | Event::Horizon(_)
+        | Event::Scaled(_) => None,
     });
     wishes.collect()
 }
@@ -50,19 +53,20 @@ fn horizons(run: &Run) -> Vec<HorizonWish> {
         | Event::Moved(_)
         | Event::Closed(_)
         | Event::Stepped(_)
-        | Event::Viewed(_) => None,
+        | Event::Viewed(_)
+        | Event::Scaled(_) => None,
     });
     wishes.collect()
 }
 
 #[test]
-fn the_menu_of_the_view_immersive_has_four_rows_and_the_menu_of_the_view_screen_two() {
+fn the_menu_of_the_view_immersive_has_five_rows_and_the_menu_of_the_view_screen_two() {
     let dir = test_dir("menu-view-rows");
-    let start = Wishes { view: ViewWish::World, horizon: HorizonWish::Camera };
-    let cases = [
-        (View::Immersive, vec!["Distance", "Size", "View", "Horizon"], Some(start)),
-        (View::Screen, vec!["Distance", "Size"], None),
-    ];
+    let start = Wishes::default();
+    assert_eq!((start.view, start.horizon), (ViewWish::World, HorizonWish::Camera));
+    let immersive = vec!["Distance", "Size", "View", "Horizon", "Menu scale"];
+    let cases =
+        [(View::Immersive, immersive, Some(start)), (View::Screen, vec!["Distance", "Size"], None)];
     for (view, labels, wishes) in cases {
         let menu = ScreenMenu::new(screen(2.5, 3.0), view, PlayerFile::Read, dir.path());
         let shown = rows::menu(menu.model.values()).expect("the rows fit the panel");
@@ -143,6 +147,6 @@ fn the_screen_rows_of_a_menu_with_wishes_still_repeat() {
     }
     assert_eq!(run.steps(), 7, "one at the press, one at 0.4 s and five to 0.9 s");
     let wishes = run.model.values().wishes;
-    let kept = Some(Wishes { view: ViewWish::Screen, horizon: HorizonWish::Camera });
+    let kept = wished(ViewWish::Screen).wishes;
     assert_eq!(wishes, kept, "the wishes stay");
 }

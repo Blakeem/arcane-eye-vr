@@ -11,16 +11,14 @@ use std::time::Duration;
 use diag::rate::RateLimit;
 use diag::warn_every;
 use gfx::region::{RegionDraw, RegionError};
-use ipc_layout::viewer_header::horizon_wish::HorizonWish;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose};
 use ipc_layout::viewer_header::screen::ParallelShare;
-use ipc_layout::viewer_header::view_wish::ViewWish;
 use ipc_layout::viewer_header::{AdapterLuid, TextureInfo};
 use tracing::info;
 use viewer_client::frame::PixelFormat;
 use viewer_client::header::{
-    HeaderReadError, Names, read_header, write_head_pose, write_horizon_wish, write_screen,
-    write_view_wish,
+    HeaderReadError, Names, read_header, write_head_pose, write_horizon_wish, write_scale_wish,
+    write_screen, write_view_wish,
 };
 use viewer_client::region::Region;
 use viewer_client::{Device, GpuError, HeaderView, SharedTexture};
@@ -28,6 +26,8 @@ use windows::Win32::Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11Textu
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
 use windows::core::HSTRING;
 use xr::format::Sampling;
+
+use super::menu::Wishes;
 
 /// The shortest time between two log lines of a failed frame read.
 const LOG_PERIOD: Duration = Duration::from_secs(5);
@@ -125,8 +125,7 @@ impl Picture {
 }
 
 /// The session's view of the viewer link, which reads the frames and writes the head pose, the
-/// screen, the view wish and the horizon wish. The heartbeat thread holds its own view of the
-/// header.
+/// screen and the menu's wishes. The heartbeat thread holds its own view of the header.
 pub(crate) struct Link {
     picture: Option<Picture>,
     header: Option<HeaderView>,
@@ -193,20 +192,17 @@ impl Link {
         Ok(())
     }
 
-    /// Writes `view_wish` as the view wish and `horizon_wish` as the horizon wish into the viewer
+    /// Writes the view wish, the horizon wish and the scale wish of `wishes` into the viewer
     /// header, and writes nothing while no core created the header.
     ///
     /// # Errors
     ///
     /// Returns the [`HeaderReadError`] of a header that cannot be opened or holds another layout.
-    pub(crate) fn write_wishes(
-        &mut self,
-        view_wish: ViewWish,
-        horizon_wish: HorizonWish,
-    ) -> Result<(), HeaderReadError> {
+    pub(crate) fn write_wishes(&mut self, wishes: Wishes) -> Result<(), HeaderReadError> {
         let Some(view) = self.header_view()? else { return Ok(()) };
-        write_view_wish(view, view_wish)?;
-        write_horizon_wish(view, horizon_wish)?;
+        write_view_wish(view, wishes.view)?;
+        write_horizon_wish(view, wishes.horizon)?;
+        write_scale_wish(view, wishes.scale)?;
         Ok(())
     }
 

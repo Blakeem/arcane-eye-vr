@@ -153,6 +153,7 @@ fn info_changed_dev(started: Config, flags: DevFlags) {
             horizon = flags.vr.horizon.as_str(),
             test_head = flags.vr.test_head.as_str(),
             test_yaw_deg = flags.vr.test_yaw_deg.degrees(),
+            ui_scale_percent = flags.vr.ui_scale_percent.percent(),
             "dev file changed, and its vr flags apply at the next start"
         );
     }

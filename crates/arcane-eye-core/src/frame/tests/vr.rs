@@ -159,7 +159,7 @@ fn a_level_frame_has_the_head_pose_and_no_offset_and_a_title_frame_the_screens_o
     assert_eq!(viewer.header().frame_tag(), FrameTag::NONE, "the state id 7");
     let depth: Vec<&String> = lines.iter().filter(|line| line.contains("\"ui depth\"")).collect();
     let [line] = depth.as_slice() else { panic!("one ui depth line: {lines:#?}") };
-    assert!(line.ends_with(" offset=0.0065 offset_from=screen"), "{line}");
+    assert!(line.ends_with(" offset=0.0065 offset_from=screen ui_w=1.0 ui_h=1.0"), "{line}");
 }
 
 #[test]

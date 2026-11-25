@@ -1,15 +1,18 @@
 //! The depth map's decisions: what a frame's map shows from what the UI layer drew into the frame,
 //! the UI disparity of the UI's columns and the crossed disparity of the distance texture's unit.
 
+use ipc_layout::viewer_header::depth_map::InterfaceArea;
+
 use crate::pair::PairState;
 use crate::ui_layer::decide::{Draw, Seen};
 
-/// The draw of a frame that ran to its end and who drew the frame's UI, as its UI enable byte
-/// showed it.
+/// The draw of a frame that ran to its end, who drew the frame's UI, as its UI enable byte
+/// showed it, and the interface area the draw put the UI texture into.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Drawn {
     pub(crate) draw: Draw,
     pub(crate) seen: Option<Seen>,
+    pub(crate) area: InterfaceArea,
 }
 
 /// Whether a frame's map holds the UI texture.
@@ -36,7 +39,7 @@ pub(crate) enum Content {
 /// draw hold the scene alone when the game switched its UI off. Each holds the game's UI when the
 /// game drew it or no composite stage was found, so its map holds no cell.
 pub(crate) const fn content(pair: PairState, drawn: Option<Drawn>) -> Content {
-    let Some(Drawn { draw, seen }) = drawn else { return Content::Empty };
+    let Some(Drawn { draw, seen, .. }) = drawn else { return Content::Empty };
     if pair.is_flat() {
         return Content::Empty;
     }
@@ -76,6 +79,7 @@ pub(crate) fn crossed_per_unit(lens: f32, eye_m: f32, far_m: f32) -> Option<f32>
 #[cfg(test)]
 mod tests {
     use diag::health::Feature;
+    use ipc_layout::viewer_header::depth_map::InterfaceArea;
     use settings::player::DepthOffsetPercent;
 
     use super::{Content, Drawn, UiShown, content, crossed_per_unit, ui_disparity};
@@ -86,7 +90,7 @@ mod tests {
     /// What the map shows of a frame of the pair `pair` whose draw `draw` ran to its end and whose
     /// UI enable byte showed `seen`.
     const fn shown(pair: PairState, draw: Draw, seen: Seen) -> Content {
-        content(pair, Some(Drawn { draw, seen: Some(seen) }))
+        content(pair, Some(Drawn { draw, seen: Some(seen), area: InterfaceArea::FULL }))
     }
 
     #[test]
@@ -94,7 +98,8 @@ mod tests {
         let percent = DepthOffsetPercent::try_from(1.5).expect("a depth offset in range");
         let shift = depth_shift(2560, 1600, DepthOffset::of_setting(percent)).expect("a move");
         let (running, flat) = (PairState::Running, PairState::Flat { cause: Feature::UiLayer });
-        let no_stage = |draw| content(running, Some(Drawn { draw, seen: None }));
+        let area = InterfaceArea::FULL;
+        let no_stage = |draw| content(running, Some(Drawn { draw, seen: None, area }));
 
         assert_eq!(shown(running, Draw::Nothing, Seen::DrawnByGame), Content::Empty);
         assert_eq!(no_stage(Draw::Nothing), Content::Empty, "no composite stage");

@@ -58,6 +58,7 @@ fn info_vr_flags(mode: Mode, vr: VrFlags) {
         horizon = vr.horizon.as_str(),
         test_head = vr.test_head.as_str(),
         test_yaw_deg = vr.test_yaw_deg.degrees(),
+        ui_scale_percent = vr.ui_scale_percent.percent(),
         "vr flags"
     );
 }
@@ -169,7 +170,7 @@ mod tests {
         let expected = [
             "\"settings loaded\" ipd_mm=65.0 depth_offset_percent=1.5 main_view_eye=center \
              second_view=true ui_forward_wait_ms=400 viewer_source=back_buffer",
-            "\"vr flags\" horizon=camera test_head=yaw test_yaw_deg=-45.0",
+            "\"vr flags\" horizon=camera test_head=yaw test_yaw_deg=-45.0 ui_scale_percent=100",
         ];
         assert_eq!(messages(&text), expected);
     }

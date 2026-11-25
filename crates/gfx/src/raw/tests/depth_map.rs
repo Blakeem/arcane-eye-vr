@@ -5,7 +5,8 @@ use std::process;
 use std::time::{Duration, Instant};
 
 use ipc_layout::viewer_header::depth_map::{
-    CELLS_OFFSET, Cell, Grid, HEADER_WORDS, INTERFACE, MapHeader, SCENE, SIZE,
+    CELLS_OFFSET, COVERED_SCENE, Cell, Grid, HEADER_WORDS, INTERFACE, InterfaceArea, MapHeader,
+    SCENE, SIZE,
 };
 use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::Graphics::Direct3D11::{D3D11_BIND_SHADER_RESOURCE, ID3D11Texture2D};
@@ -155,7 +156,7 @@ fn a_ui_texel_of_alpha_0_5_shows_the_interface_and_one_of_alpha_0_2_the_scene() 
     let far_wall = wall(&gpu, 4.0 / FAR_M);
     let half = ui(&gpu, 256, HALF, 0..0);
     let faint = ui(&gpu, 256, FAINT, 0..0);
-    let drawn = |layer| Some(MapUi { layer, disparity: 0.02 });
+    let drawn = |layer| Some(MapUi { layer, disparity: 0.02, area: InterfaceArea::FULL });
 
     let (_, covered) = map_once(&gpu, "ui-half", &rendered(&far_wall, drawn(&half)));
     let (_, shown) = map_once(&gpu, "ui-faint", &rendered(&far_wall, drawn(&faint)));
@@ -173,7 +174,7 @@ fn with_a_ui_disparity_of_0_1_the_cell_at_the_share_0_5_reads_the_ui_texel_at_th
     let at_050 = ui(&gpu, 1000, CLEAR, 495..506);
     let start = |layer| MapStart {
         grid: layer_grid(layer),
-        ui: Some(MapUi { layer, disparity: 0.1 }),
+        ui: Some(MapUi { layer, disparity: 0.1, area: InterfaceArea::FULL }),
         ..rendered(&distances, None)
     };
     assert_eq!(Some(layer_grid(&at_045)), Grid::new(63, 1), "the grid over the UI's texels");
@@ -189,7 +190,7 @@ fn with_a_ui_disparity_of_0_1_the_cell_at_the_share_0_5_reads_the_ui_texel_at_th
 fn a_pair_made_from_a_flat_picture_shows_the_disparity_0_where_no_ui_covers() {
     let gpu = warp();
     let layer = ui(&gpu, 256, CLEAR, 0..16);
-    let ui = Some(MapUi { layer: &layer, disparity: 0.0 });
+    let ui = Some(MapUi { layer: &layer, disparity: 0.0, area: InterfaceArea::FULL });
     let start = MapStart { grid: Grid::covering(256, 16), present: 3, ui, scene: MapScene::Flat };
 
     let (header, cells) = map_once(&gpu, "flat-pair", &start);
@@ -238,6 +239,7 @@ fn each_write_ends_on_the_next_even_sequence_number_and_an_empty_map_has_no_cell
         (empty.info.grid, empty.info.present, empty.info.depth_offset),
         (Grid::EMPTY, 8, 0.0)
     );
+    assert_eq!(empty.info.area, InterfaceArea::FULL, "an empty map's area");
     assert_eq!(cells, Vec::<Cell>::new());
 }
 
@@ -294,4 +296,93 @@ fn the_map_belongs_to_the_device_that_created_it() {
 
     assert!(read.belongs_to(&gpu.device));
     assert!(!read.belongs_to(&other.device));
+}
+
+/// A UI texture of 256 by 256 texels whose one covering block fills the top left quarter of each
+/// side, the game places from 0 to 0.25.
+fn block_ui(gpu: &Gpu) -> ID3D11Texture2D {
+    let pixels: Vec<[u8; 4]> = (0..256_u32)
+        .flat_map(|row| (0..256_u32).map(move |column| (column, row)))
+        .map(|(column, row)| if column < 64 && row < 64 { OPAQUE } else { CLEAR })
+        .collect();
+    texture(gpu, 256, 256, D3D11_BIND_SHADER_RESOURCE.0, &pixels)
+}
+
+/// The kinds of the 16 by 16 cells of a frame of `scene` that draws `layer` into `area`, with the
+/// map's header.
+fn block_kinds(
+    gpu: &Gpu,
+    test: &str,
+    layer: &ID3D11Texture2D,
+    area: InterfaceArea,
+    scene: MapScene<'_>,
+) -> (MapHeader, Vec<f32>) {
+    let ui = Some(MapUi { layer, disparity: 0.0, area });
+    let start = MapStart { grid: layer_grid(layer), present: 3, ui, scene };
+    let (header, cells) = map_once(gpu, test, &start);
+    (header, cells.iter().map(|&[_, kind]| kind).collect())
+}
+
+/// The kind each of the 16 by 16 cells holds when the cells of `interface` and `covered`, as
+/// column and row ranges, are the interface and a covered scene and every other cell the scene.
+fn expected_kinds(
+    interface: &[std::ops::Range<usize>; 2],
+    covered: &[std::ops::Range<usize>; 2],
+) -> Vec<f32> {
+    let inside = |ranges: &[std::ops::Range<usize>; 2], column, row| {
+        ranges[0].contains(&column) && ranges[1].contains(&row)
+    };
+    (0..256)
+        .map(|index| (index % 16, index / 16))
+        .map(|(column, row)| {
+            if inside(interface, column, row) {
+                INTERFACE
+            } else if inside(covered, column, row) {
+                COVERED_SCENE
+            } else {
+                SCENE
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn a_shrunk_area_shows_the_block_at_its_area_place_and_covers_the_scene_at_its_game_place() {
+    let gpu = warp();
+    let layer = block_ui(&gpu);
+    let area = InterfaceArea { width: 0.5, height: 0.25 };
+
+    let (header, kinds) = block_kinds(&gpu, "area-shrunk", &layer, area, MapScene::Flat);
+
+    // The block's game places 0 to 0.25 lie at the area places 0.25 to 0.375 across and 0.375 to
+    // 0.4375 down, the middles of the columns 4 and 5 of row 6.
+    assert_eq!(kinds, expected_kinds(&[4..6, 6..7], &[0..4, 0..4]));
+    assert_eq!(header.info.area, area, "both shares in the header");
+}
+
+#[test]
+fn a_rendered_scene_is_covered_where_its_place_less_half_its_crossed_disparity_meets_the_block() {
+    let gpu = warp();
+    let layer = block_ui(&gpu);
+    let area = InterfaceArea { width: 0.5, height: 0.25 };
+    // A wall of the crossed disparity 0.25, whose game place lies 0.125, two columns, left of its
+    // place in the left half.
+    let distances = wall(&gpu, crossed() / 0.25);
+    let scene = MapScene::Rendered { distances: &distances, crossed: crossed(), offset: OFFSET };
+
+    let (_, kinds) = block_kinds(&gpu, "area-rendered", &layer, area, scene);
+
+    assert_eq!(kinds, expected_kinds(&[4..6, 6..7], &[2..6, 0..4]));
+}
+
+#[test]
+fn the_entire_half_as_the_area_gives_the_cells_of_a_draw_over_the_entire_half() {
+    let gpu = warp();
+    let layer = block_ui(&gpu);
+
+    let (header, kinds) =
+        block_kinds(&gpu, "area-full", &layer, InterfaceArea::FULL, MapScene::Flat);
+
+    assert_eq!(kinds, expected_kinds(&[0..4, 0..4], &[0..0, 0..0]), "no covered scene");
+    assert_eq!(header.info.area, InterfaceArea::FULL);
 }

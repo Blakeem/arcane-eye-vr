@@ -1,11 +1,16 @@
 //! The place of the drawn cursor in each half of the back buffer.
 //!
 //! The game reads the pointer across the entire window, so a pointer at column x of a window W
-//! columns wide belongs at column x / 2 of the left half and W / 2 + x / 2 of the right half. The
-//! image is drawn at half its width and its full height, with its hotspot at that place, and is
-//! clipped to its half.
+//! columns wide belongs at column x / 2 of the left half and W / 2 + x / 2 of the right half, its
+//! game place. A cursor over the UI sits where the frame drew the UI texel under it: at the area
+//! place of its game place in the frame's interface area. The image is drawn at half its width
+//! and its full height, each times the interface area's share, with its hotspot at that place,
+//! and is clipped to its half.
 
 use gfx::layer::{Area, Placement, Rect};
+use ipc_layout::viewer_header::depth_map::InterfaceArea;
+
+use crate::ui_layer::ui_depth::Over;
 
 /// The pointer in the game window's client area, in pixels from its top left corner, and the
 /// client area's size, as Windows reports them.
@@ -60,31 +65,55 @@ pub(crate) fn spot(pointer: Pointer) -> Option<Spot> {
     })
 }
 
-/// Where `sprite` is drawn into each of `halves` for the pointer at `spot`. The client area's size
+/// Where `sprite` is drawn into each of `halves` for the pointer at `spot` in a frame that drew
+/// the UI into `area`, while the newest pointer read's result is `over`. The client area's size
 /// scales to each half's size, so a client area that differs from the back buffer in size still
-/// puts the hotspot where the game reads the pointer.
-pub(crate) fn place(spot: Spot, sprite: Sprite, halves: &[Rect; 2]) -> [Placement; 2] {
+/// puts the hotspot where the game reads the pointer. Only a cursor over the UI moves to the area
+/// place, and every cursor's image takes the area's size.
+pub(crate) fn place(
+    spot: Spot,
+    sprite: Sprite,
+    halves: &[Rect; 2],
+    area: InterfaceArea,
+    over: Over,
+) -> [Placement; 2] {
+    let shown = if over == Over::Ui { area } else { InterfaceArea::FULL };
     halves.map(|half| {
         let hot_x =
             f32::from(half.x) + f32::from(spot.x) * f32::from(half.width) / f32::from(spot.width);
         let hot_y =
             f32::from(half.y) + f32::from(spot.y) * f32::from(half.height) / f32::from(spot.height);
+        let [hot_x, hot_y] = area_hotspot([hot_x, hot_y], half, shown);
         let [sprite_x, sprite_y] = sprite.hotspot;
         let area = Area {
-            x: hot_x - f32::from(sprite_x) / 2.0,
-            y: hot_y - f32::from(sprite_y),
-            width: f32::from(sprite.width) / 2.0,
-            height: f32::from(sprite.height),
+            x: hot_x - f32::from(sprite_x) / 2.0 * area.width,
+            y: hot_y - f32::from(sprite_y) * area.height,
+            width: f32::from(sprite.width) / 2.0 * area.width,
+            height: f32::from(sprite.height) * area.height,
         };
         Placement { area, clip: half }
     })
 }
 
+/// The pixel of `half` where a frame that drew the UI into `area` shows the UI texel whose game
+/// place lies at the pixel `game`. An area of the entire half leaves the pixel as it is.
+fn area_hotspot(game: [f32; 2], half: Rect, area: InterfaceArea) -> [f32; 2] {
+    if area == InterfaceArea::FULL {
+        return game;
+    }
+    let middle_x = f32::from(half.x) + f32::from(half.width) / 2.0;
+    let middle_y = f32::from(half.y) + f32::from(half.height) / 2.0;
+    let [x, y] = game;
+    [middle_x + (x - middle_x) * area.width, middle_y + (y - middle_y) * area.height]
+}
+
 #[cfg(test)]
 mod tests {
     use gfx::layer::{Area, Placement, Rect};
+    use ipc_layout::viewer_header::depth_map::InterfaceArea;
 
-    use super::{Pointer, Sprite, place, spot};
+    use super::{Pointer, Spot, Sprite, spot};
+    use crate::ui_layer::ui_depth::Over;
 
     const HALVES: [Rect; 2] = [
         Rect { x: 0, y: 0, width: 960, height: 1080 },
@@ -99,6 +128,11 @@ mod tests {
 
     fn areas(placements: [Placement; 2]) -> [Area; 2] {
         placements.map(|placement| placement.area)
+    }
+
+    /// The places of `sprite` for `spot` in a frame that drew the UI over the entire half.
+    fn place(spot: Spot, sprite: Sprite, halves: &[Rect; 2]) -> [Placement; 2] {
+        super::place(spot, sprite, halves, InterfaceArea::FULL, Over::Ui)
     }
 
     #[test]
@@ -158,5 +192,33 @@ mod tests {
         assert_eq!(left.clip, HALVES[0], "the left cursor ends at the left half's edge");
         assert_eq!(right.clip, HALVES[1], "the right cursor ends at the frame's edge");
         assert!(left.area.x + left.area.width > 960.0, "the left cursor crosses the edge");
+    }
+
+    #[test]
+    fn a_cursor_over_the_ui_sits_at_the_area_place_with_the_image_at_the_areas_size() {
+        let area = InterfaceArea { width: 0.5, height: 0.25 };
+        let sprite = Sprite { hotspot: [10, 8], ..ARROW };
+        let spot = spot(pointer(800, 300)).expect("a pointer inside");
+
+        let [left, right] = areas(super::place(spot, sprite, &HALVES, area, Over::Ui));
+
+        // The game place 400, 300 lies 80 left and 240 above the left half's middle 480, 540, which
+        // the area moves to 40 left and 60 above it.
+        let image = Area { x: 440.0 - 2.5, y: 480.0 - 2.0, width: 8.0, height: 8.0 };
+        assert_eq!(left, image);
+        assert_eq!(right, Area { x: 1400.0 - 2.5, ..image });
+    }
+
+    #[test]
+    fn a_cursor_over_the_scene_or_no_result_sits_at_its_game_place_with_the_areas_size() {
+        let area = InterfaceArea { width: 0.5, height: 0.25 };
+        let spot = spot(pointer(800, 300)).expect("a pointer inside");
+
+        for over in [Over::Scene, Over::NoResult] {
+            let [left, right] = areas(super::place(spot, ARROW, &HALVES, area, over));
+
+            let image = Area { x: 400.0, y: 300.0, width: 8.0, height: 8.0 };
+            assert_eq!([left, right], [image, Area { x: 1360.0, ..image }], "{over:?}");
+        }
     }
 }

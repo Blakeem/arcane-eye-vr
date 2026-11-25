@@ -155,7 +155,7 @@ fn a_changed_vr_table_logs_its_own_line_in_the_mode_vr_only() {
     assert_eq!(desktop, [reloaded], "the mode desktop-stereo never reads the [vr] table");
     let vr = apply_logged_in(Mode::Vr, root, &published, "reload-dev-vr-log-2");
     let vr_changed = "\"dev file changed, and its vr flags apply at the next start\" \
-                      horizon=level test_head=sweep test_yaw_deg=20.0";
+                      horizon=level test_head=sweep test_yaw_deg=20.0 ui_scale_percent=100";
     assert_eq!(vr, [reloaded, vr_changed]);
     fs::write(root.join("dev.toml"), "[stereo]\nsecond_view = false\n").expect("write");
     let stereo = apply_logged_in(Mode::Vr, root, &published, "reload-dev-vr-log-3");

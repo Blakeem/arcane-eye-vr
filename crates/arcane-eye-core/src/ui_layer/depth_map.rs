@@ -5,7 +5,8 @@
 //! PRESENT CALL SITE, render thread, after the UI layer's frame, before the debug viewer's copy
 //!   [sink]      the depth map section and the present number the frame gets, while the viewing
 //!               program's heartbeat runs, from the viewer link
-//!   [content]   what the UI layer drew into the frame, in `decide`
+//!   [content]   what the UI layer drew into the frame and the interface area it drew the UI
+//!               texture into, in `decide`
 //!   [inputs]    the UI texture the frame drew, and in a frame the game rendered side by side the
 //!               distance texture the UI depth read, or else reads now, and the main view's camera
 //!   [finished]  each map the GPU finished, written into the section
@@ -26,7 +27,7 @@ mod decide;
 use diag::rate::RateLimit;
 use diag::warn_every;
 use gfx::depth_map::{DepthMapRead, MapError, MapScene, MapSection, MapStart, MapUi, layer_grid};
-use ipc_layout::viewer_header::depth_map::Grid;
+use ipc_layout::viewer_header::depth_map::{Grid, InterfaceArea};
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 
 pub(crate) use self::decide::Drawn;
@@ -104,12 +105,13 @@ impl DepthMap {
         frame: &MapFrame<'_>,
     ) {
         let shown = content(frame.pair, frame.drawn);
-        let ui_columns = sources.depth.report().columns;
+        let ui_columns = sources.depth.columns();
         let inputs = self.inputs(shown, sources, frame.input);
         let offset = frame.drawn.map_or(0.0, |drawn| drawn_offset(drawn.draw));
-        let start = inputs
-            .as_ref()
-            .map(|inputs| map_start(inputs, ui_columns, frame.size, offset, sink.present));
+        let area = frame.drawn.map_or(InterfaceArea::FULL, |drawn| drawn.area);
+        let ui = UiPlace { columns: ui_columns, area };
+        let start =
+            inputs.as_ref().map(|inputs| map_start(inputs, ui, frame.size, offset, sink.present));
         self.on_frame(frame.devices, sink, start.as_ref());
     }
 
@@ -230,20 +232,28 @@ impl DepthMap {
     }
 }
 
-/// The start of the map of `inputs` in a frame of `size`, whose UI moved `ui_columns` in each
-/// half and whose depth offset in use is `offset`, with the present number `present`. The grid
-/// covers the UI texture, or the frame in a frame that draws none.
+/// Where a frame drew its UI texture: the columns it moved the UI in each half and the interface
+/// area it drew the UI into.
+#[derive(Clone, Copy)]
+struct UiPlace {
+    columns: u16,
+    area: InterfaceArea,
+}
+
+/// The start of the map of `inputs` in a frame of `size`, whose UI the frame drew at `place` and
+/// whose depth offset in use is `offset`, with the present number `present`. The grid covers the
+/// UI texture, or the frame in a frame that draws none.
 fn map_start(
     inputs: &Inputs,
-    ui_columns: u16,
+    place: UiPlace,
     size: BackBuffer,
     offset: f32,
     present: u32,
 ) -> MapStart<'_> {
     let BackBuffer { width, height, .. } = size;
     let half_width = halves(width, height).map_or(0, |[left, _]| left.width);
-    let disparity = ui_disparity(ui_columns, half_width);
-    let ui = inputs.ui.as_ref().map(|layer| MapUi { layer, disparity });
+    let disparity = ui_disparity(place.columns, half_width);
+    let ui = inputs.ui.as_ref().map(|layer| MapUi { layer, disparity, area: place.area });
     let grid = ui.map_or_else(|| Grid::covering(width, height), |drawn| layer_grid(drawn.layer));
     let scene = inputs.scene.as_ref().map_or(MapScene::Flat, |scene| MapScene::Rendered {
         distances: &scene.distances,

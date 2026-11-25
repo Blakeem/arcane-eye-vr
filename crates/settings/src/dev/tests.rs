@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use super::{
     DevFlags, ForwardWaitMs, Horizon, MainViewEye, SecondView, StereoFlags, TestHead, TestYawDeg,
-    ViewerFlags, ViewerSource, VrFlags, parse,
+    UiScalePercent, ViewerFlags, ViewerSource, VrFlags, parse,
 };
 use crate::rejection::{Position, Rejection};
 
@@ -112,16 +112,19 @@ fn the_vr_flags_default_to_a_level_horizon_and_no_test_head_turned_20_degrees() 
     assert_eq!(vr.horizon, Horizon::Level);
     assert_eq!(vr.test_head, TestHead::Off);
     assert_eq!(vr.test_yaw_deg, TestYawDeg::try_from(20.0).expect("in range"));
+    assert_eq!(vr.ui_scale_percent.percent(), 100);
     assert_eq!(parse("[vr]\n"), Ok(DevFlags::default()));
 }
 
 #[test]
 fn each_vr_flag_parses_from_the_value_it_logs_under() {
-    let text = "[vr]\nhorizon = \"camera\"\ntest_head = \"sweep\"\ntest_yaw_deg = -45\n";
+    let text = "[vr]\nhorizon = \"camera\"\ntest_head = \"sweep\"\ntest_yaw_deg = -45\n\
+                ui_scale_percent = 70\n";
     let vr = VrFlags {
         horizon: Horizon::Camera,
         test_head: TestHead::Sweep,
         test_yaw_deg: TestYawDeg::try_from(-45.0).expect("in range"),
+        ui_scale_percent: UiScalePercent::try_from(70).expect("in range"),
     };
     assert_eq!(parse(text), Ok(DevFlags { vr, ..DevFlags::default() }));
     for test_head in [TestHead::Off, TestHead::Yaw, TestHead::Sweep] {
@@ -141,6 +144,21 @@ fn an_unknown_horizon_or_a_test_yaw_past_180_degrees_rejects_the_file() {
     assert_eq!(parse("[vr]\nhorizon = \"up\"\n"), Err(rejection(reason, 2, 11)));
     let range = "test_yaw_deg must be from -180 to 180 degrees, got 200";
     assert_eq!(parse("[vr]\ntest_yaw_deg = 200\n"), Err(rejection(range, 2, 16)));
+}
+
+#[test]
+fn an_interface_scale_parses_from_40_to_100_percent_and_rejects_the_file_outside() {
+    let scale = |value: i64| parse(&format!("[vr]\nui_scale_percent = {value}\n"));
+    for percent in [40, 70, 100] {
+        let parsed = scale(i64::from(percent)).map(|flags| flags.vr.ui_scale_percent.percent());
+        assert_eq!(parsed, Ok(percent));
+    }
+    let below = "ui_scale_percent must be from 40 to 100 percent, got 39";
+    assert_eq!(scale(39), Err(rejection(below, 2, 20)));
+    let past = "ui_scale_percent must be from 40 to 100 percent, got 101";
+    assert_eq!(scale(101), Err(rejection(past, 2, 20)));
+    let share = UiScalePercent::try_from(70).map(UiScalePercent::share);
+    assert!(share.is_ok_and(|share| (share - 0.7).abs() < 1e-6), "{share:?}");
 }
 
 fn forward_wait(value: &str) -> Result<DevFlags, Rejection> {

@@ -1,16 +1,18 @@
 //! The menu's state across frames: the hand it is on, its panel's pose, the press of the pointing
 //! hand's `select` with its repeat, and the values that the steps change: the screen's values, the
-//! view wish of the row View and the horizon wish of the row Horizon.
+//! view wish of the row View, the horizon wish of the row Horizon and the scale wish of the row
+//! Menu scale.
 //!
 //! The pointing hand is the hand the menu is not on. A press of `select` over an enabled button
-//! gives one step. While the press holds over a button of a screen setting, the step repeats after
-//! [`REPEAT_DELAY`] and then every [`REPEAT_PERIOD`]. A button of the row View or the row Horizon
-//! does not repeat.
+//! gives one step. While the press holds over a button of a screen setting or of the row Menu
+//! scale, the step repeats after [`REPEAT_DELAY`] and then every [`REPEAT_PERIOD`]. A button of
+//! the row View or the row Horizon does not repeat.
 
 use std::time::{Duration, Instant};
 
 use device_profile::profile::Hand;
 use ipc_layout::viewer_header::horizon_wish::HorizonWish;
+use ipc_layout::viewer_header::scale_wish::ScaleWish;
 use ipc_layout::viewer_header::view_wish::ViewWish;
 use openxr::Posef;
 use overlay::layout::{self, Hit, PanelPoint};
@@ -20,7 +22,7 @@ use settings::player::ScreenSettings;
 use xr::input::ButtonState;
 
 use super::place::{LASER_REACH_M, Laser, PANEL_SIZE, laser, panel_point, panel_pose};
-use super::rows::{self, Line, Values, Wishes, stepped, switched, switched_horizon};
+use super::rows::{self, Line, Values, Wishes, stepped, stepped_scale, switched, switched_horizon};
 use crate::screen::controls::{Buttons, Frame};
 use crate::screen::geometry::{self, Ray};
 
@@ -60,6 +62,8 @@ pub(crate) enum Event {
     Viewed(ViewWish),
     /// A press of the row Horizon gave this horizon wish.
     Horizon(HorizonWish),
+    /// A step of the row Menu scale gave this scale wish.
+    Scaled(ScaleWish),
 }
 
 impl Event {
@@ -249,8 +253,8 @@ impl Model {
         self.hold = Some(hold);
     }
 
-    /// Takes one press of the button `hit`: a step of a screen setting within its range, or a
-    /// switch of the view wish or the horizon wish.
+    /// Takes one press of the button `hit`: a step of a screen setting or of the scale wish within
+    /// its range, or a switch of the view wish or the horizon wish.
     fn step(&mut self, hit: Hit, on_event: &mut impl FnMut(Event)) -> Step {
         let line = Line::of_row(hit.row, self.values);
         let wishes = self.values.wishes;
@@ -275,7 +279,17 @@ impl Model {
                 on_event(Event::Horizon(horizon));
                 Step::Once
             }
-            (Some(Line::View(_) | Line::Horizon(_)), None) | (None, _) => Step::Refused,
+            (Some(Line::Scale(scale)), Some(wishes)) => {
+                let Some(scale) = stepped_scale(scale, hit.button) else {
+                    return Step::Refused;
+                };
+                self.values.wishes = Some(Wishes { scale, ..wishes });
+                on_event(Event::Scaled(scale));
+                Step::Repeats
+            }
+            (Some(Line::View(_) | Line::Horizon(_) | Line::Scale(_)), None) | (None, _) => {
+                Step::Refused
+            }
         }
     }
 }

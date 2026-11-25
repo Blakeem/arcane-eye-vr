@@ -1,7 +1,9 @@
 //! The screen menu across frames of controller input and its writes of the player file. `pixels.rs`
-//! holds the draw of its pixels into a panel image and `view.rs` the rows View and Horizon.
+//! holds the draw of its pixels into a panel image, `view.rs` the rows View and Horizon and
+//! `scale.rs` the row Menu scale.
 
 mod pixels;
+mod scale;
 mod view;
 
 use std::cell::Cell;

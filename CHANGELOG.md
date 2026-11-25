@@ -23,6 +23,7 @@ These changes are on the main branch. No headset has tested them yet.
 - In `--mode vr`, the controllers work around the player and on the screen as in `--mode screen`: the menu opens, the laser ends on what it points at, and the mouse pointer sits there.
 - In `--mode vr`, the menu's row View keeps the game on the screen during play when its value is Screen.
 - In `--mode vr`, the menu's row Horizon tilts the world with the game camera when its value is Camera, and keeps the world's floor level when its value is Level.
+- In `--mode vr`, the menu's row Menu scale draws the game's interface smaller around the middle of the world view, from 40 to 100 percent.
 - In `--mode screen` and `--mode vr`, the left thumbstick pans the camera with the keys W, A, S and D. The right thumbstick turns the camera and is the mouse wheel, whichever controller points.
 
 ## 0.0.1 Beta (2026-11-18)

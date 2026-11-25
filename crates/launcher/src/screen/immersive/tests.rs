@@ -3,9 +3,11 @@
 
 use ipc_layout::viewer_header::horizon_wish::HorizonWish;
 use ipc_layout::viewer_header::pose::{FrameTag, HeadPose};
+use ipc_layout::viewer_header::scale_wish::ScaleWish;
 use ipc_layout::viewer_header::view_wish::ViewWish;
 use ipc_layout::viewer_header::{
-    HORIZON_WISH_OFFSET, HeaderError, LAYOUT_VERSION, TextureInfo, VIEW_WISH_OFFSET, ViewerHeader,
+    HORIZON_WISH_OFFSET, HeaderError, LAYOUT_VERSION, SCALE_WISH_OFFSET, TextureInfo,
+    VIEW_WISH_OFFSET, ViewerHeader,
 };
 use openxr::{Posef, Quaternionf, sys};
 use stereo_core::eye::PerEye;
@@ -97,11 +99,15 @@ fn a_header_of_another_layout_takes_no_head_pose_and_keeps_none() {
     assert!(matches!(immersive.choose(tag(2)), Choice::Quad(_)), "no pose was kept");
 }
 
-/// The view wish and the horizon wish in the header of `mapping`.
-fn wishes(mapping: &CoreMapping) -> (ViewWish, Option<HorizonWish>) {
+/// The view wish, the horizon wish and the scale wish in percent in the header of `mapping`.
+fn wishes(mapping: &CoreMapping) -> (ViewWish, Option<HorizonWish>, Option<u8>) {
     let mut core_view = None;
     let (_, read) = read_header(&mut core_view, &mapping.name).expect("the core's header");
-    (read.view_wish(), read.horizon_wish())
+    (read.view_wish(), read.horizon_wish(), read.scale_wish().map(ScaleWish::percent))
+}
+
+fn scale(percent: u32) -> ScaleWish {
+    ScaleWish::from_percent(percent).expect("a scale in range")
 }
 
 #[test]
@@ -109,14 +115,15 @@ fn each_wishes_write_reaches_the_header_and_overwrites_the_wishes_an_earlier_ses
     let (mapping, mut link) = header("immersive-wish");
     mapping.write_word(VIEW_WISH_OFFSET, ViewWish::Screen.to_word()).expect("an earlier wish");
     mapping.write_word(HORIZON_WISH_OFFSET, 1).expect("an earlier horizon wish");
+    mapping.write_word(SCALE_WISH_OFFSET, 40).expect("an earlier scale wish");
     let mut immersive = Immersive::new();
-    let start = Wishes { view: ViewWish::World, horizon: HorizonWish::Camera };
+    let start = Wishes::default();
     immersive.write_wishes(start, &mut link);
-    let written = (ViewWish::World, Some(HorizonWish::Camera));
+    let written = (ViewWish::World, Some(HorizonWish::Camera), Some(70));
     assert_eq!(wishes(&mapping), written, "this session's wishes");
-    let switched = Wishes { view: ViewWish::Screen, horizon: HorizonWish::Level };
+    let switched = Wishes { view: ViewWish::Screen, horizon: HorizonWish::Level, scale: scale(90) };
     immersive.write_wishes(switched, &mut link);
-    assert_eq!(wishes(&mapping), (ViewWish::Screen, Some(HorizonWish::Level)));
+    assert_eq!(wishes(&mapping), (ViewWish::Screen, Some(HorizonWish::Level), Some(90)));
     immersive.write_wishes(start, &mut self::link("immersive-wish-no-header"));
 }
 
@@ -124,16 +131,16 @@ fn each_wishes_write_reaches_the_header_and_overwrites_the_wishes_an_earlier_ses
 fn a_header_of_another_layout_takes_no_wish() {
     let (mapping, mut link) = header("immersive-wish-other-layout");
     mapping.write_word(LAYOUT_VERSION_OFFSET, 1).expect("write the layout version");
-    let refused = link.write_wishes(ViewWish::Screen, HorizonWish::Level);
+    let wished = Wishes { view: ViewWish::Screen, horizon: HorizonWish::Level, scale: scale(50) };
+    let refused = link.write_wishes(wished);
     let expected = HeaderError::LayoutVersion { found: 1 };
     assert!(
         matches!(refused, Err(HeaderReadError::Layout(found)) if found == expected),
         "{refused:?}"
     );
-    let wished = Wishes { view: ViewWish::Screen, horizon: HorizonWish::Level };
     Immersive::new().write_wishes(wished, &mut link);
     mapping.write_word(LAYOUT_VERSION_OFFSET, LAYOUT_VERSION).expect("write the layout version");
-    assert_eq!(wishes(&mapping), (ViewWish::World, None), "nothing was written");
+    assert_eq!(wishes(&mapping), (ViewWish::World, None, None), "nothing was written");
 }
 
 #[test]

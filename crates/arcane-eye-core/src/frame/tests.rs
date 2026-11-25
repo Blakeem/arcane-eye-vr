@@ -1,5 +1,6 @@
 //! Tests of the frame handler against WARP swapchains, with the session log captured.
 
+mod area;
 mod camera;
 mod depth;
 mod failed;
@@ -172,7 +173,7 @@ fn a_perf_window_with_a_ui_layer_logs_one_ui_depth_and_cursor_depth_line_before_
     let depth: Vec<&String> = lines.iter().filter(|line| line.contains("\"ui depth\"")).collect();
     let [line] = depth.as_slice() else { panic!("one ui depth line: {lines:#?}") };
     let fields = " arcane_eye_core::frame msg=\"ui depth\" nearest_m=-1.0 ui_columns=0 \
-                  eye_scale=1.0 offset=0.015 offset_from=setting";
+                  eye_scale=1.0 offset=0.015 offset_from=setting ui_w=1.0 ui_h=1.0";
     let expected = "no result, no UI disparity, the full eye distance and the setting's offset";
     assert!(line.ends_with(fields), "{expected}: {line}");
     let cursor: Vec<&String> =
